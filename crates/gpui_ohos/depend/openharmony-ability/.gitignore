@@ -1,0 +1,13 @@
+/target
+/.cache
+/node_modules
+
+.DS_Store
+.vscode
+*.so
+*.har
+package/src/main/ets
+package/libs
+dist
+oh_modules
+build/

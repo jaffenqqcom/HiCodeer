@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "native_ability",
+    "type": "har",
+    "deviceTypes": [
+      "tablet",
+      "2in1"
+    ]
+  }
+}
