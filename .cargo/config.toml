@@ -16,6 +16,23 @@ rustflags = [
     "target-feature=+crt-static", # This fixes the linking issue when compiling livekit on Windows
 ]
 
+# Force GLES backend for OHOS since Vulkan doesn't support VK_KHR_dynamic_rendering
+# This applies to all OHOS targets (e.g., aarch64-unknown-linux-ohos)
+[target.'cfg(target_env = "ohos")']
+rustflags = [
+    "--cfg",
+    "gles",
+]
+
+# Also configure for the specific OHOS target triple if needed
+[target.aarch64-unknown-linux-ohos]
+rustflags = [
+    "--cfg",
+    "gles",
+    "-C",
+    "target-feature=+fp16",
+]
+
 # We need lld to link libwebrtc.a successfully on aarch64-linux
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
