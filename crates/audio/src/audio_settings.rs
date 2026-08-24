@@ -1,6 +1,9 @@
 use std::str::FromStr;
 
-use cpal::DeviceId;
+#[cfg(not(target_env = "ohos"))]
+pub use cpal::DeviceId;
+#[cfg(target_env = "ohos")]
+pub type DeviceId = String;
 use settings::{RegisterSetting, Settings};
 
 #[derive(Clone, Debug, RegisterSetting)]

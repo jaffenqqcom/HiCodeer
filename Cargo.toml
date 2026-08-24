@@ -96,6 +96,10 @@ members = [
     "crates/gpui_linux",
     "crates/gpui_macos",
     "crates/gpui_macros",
+    "crates/gpui_ohos",
+    "crates/gpui_ohos/depend/gpui_ohos_linker",
+    "crates/gpui_ohos/depend/launch-zed",
+    "crates/gpui_ohos/depend/ohos-file-geturi",
     "crates/gpui_platform",
     "crates/gpui_tokio",
     "crates/gpui_util",
@@ -359,6 +363,7 @@ gpui_shared_string = { path = "crates/gpui_shared_string" }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
 gpui_macros = { path = "crates/gpui_macros" }
+gpui_ohos_linker = { path = "crates/gpui_ohos/depend/gpui_ohos_linker" }
 gpui_platform = { path = "crates/gpui_platform", default-features = false }
 gpui_web = { path = "crates/gpui_web" }
 gpui_wgpu = { path = "crates/gpui_wgpu" }
@@ -783,7 +788,7 @@ rsa = "0.9.6"
 runtimelib = { version = "1.4.0", default-features = false, features = [
     "async-dispatcher-runtime", "aws-lc-rs"
 ] }
-rust-embed = { version = "8.11", features = ["include-exclude"] }
+rust-embed = { version = "8.11", features = ["include-exclude", "debug-embed"] }
 rustc-hash = "2.1.0"
 rustix = { version = "1.1", features = ["fs"] }
 rustls = { version = "0.23.26" }
@@ -977,6 +982,9 @@ libwebrtc = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev =
 notify = { git = "https://github.com/zed-industries/notify", rev = "0890bbb8ca40a4b5d1f67031698dd7918b37d991" }
 notify-types = { git = "https://github.com/zed-industries/notify", rev = "0890bbb8ca40a4b5d1f67031698dd7918b37d991" }
 webrtc-sys = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "d0e27be0cdad89eadab3e36207cda0a2b6e359ee" }
+nix = { path = "patches/nix" }
+ohos-xcomponent-binding = { path = "crates/gpui_ohos/depend/ohos-xcomponent-binding" }
+ohos-xcomponent-sys = { path = "crates/gpui_ohos/depend/ohos-xcomponent-sys" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

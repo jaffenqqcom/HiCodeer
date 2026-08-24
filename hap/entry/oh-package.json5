@@ -1,0 +1,16 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Please describe the basic information.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "@ohos-rs/ability": "file:../../crates/gpui_ohos/depend/openharmony-ability/native_ability",
+    "@ohos-rs/ability-plugin-cursor": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/cursor",
+    "@ohos-rs/ability-plugin-files": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/files",
+    "@ohos-rs/ability-plugin-pinch": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/pinch",
+    "@ohos-rs/ability-plugin-filedrop": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/filedrop",
+    "libzcoder.so": "file:./src/main/cpp/types/libzcoder"
+  }
+}

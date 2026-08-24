@@ -1,5 +1,4 @@
-use audio::{AudioSettings, CHANNEL_COUNT, RodioExt, SAMPLE_RATE};
-use cpal::DeviceId;
+use audio::{AudioSettings, CHANNEL_COUNT, DeviceId, RodioExt, SAMPLE_RATE};
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Render, Size, Window, WindowBounds, WindowKind,
     WindowOptions, prelude::*, px,

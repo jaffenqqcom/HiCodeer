@@ -1157,10 +1157,26 @@ impl RealGitRepository {
         system_git_binary_path: Option<PathBuf>,
         executor: BackgroundExecutor,
     ) -> Result<Self> {
-        let any_git_binary_path = system_git_binary_path
-            .clone()
-            .or(bundled_git_binary_path)
-            .context("no git binary available")?;
+        // On OHOS the device-side `which git` finds nothing and no bundled git
+        // ships with the app, so fall back to the bare program name: the
+        // cmd-agent server resolves `git` against the VM's PATH. On other
+        // platforms a missing git binary stays a hard error.
+        let any_git_binary_path = {
+            #[cfg(target_env = "ohos")]
+            {
+                system_git_binary_path
+                    .clone()
+                    .or(bundled_git_binary_path)
+                    .unwrap_or_else(|| PathBuf::from("git"))
+            }
+            #[cfg(not(target_env = "ohos"))]
+            {
+                system_git_binary_path
+                    .clone()
+                    .or(bundled_git_binary_path)
+                    .context("no git binary available")?
+            }
+        };
         log::info!(
             "opening git repository at {dotgit_path:?} using git binary {any_git_binary_path:?}"
         );
@@ -5994,7 +6010,7 @@ mod tests {
         .await
         .unwrap();
 
-        // List worktrees — should have just the main one
+        // List worktrees - should have just the main one
         let worktrees = repo.worktrees().await.unwrap();
         assert_eq!(worktrees.len(), 1);
         assert_eq!(
@@ -6015,7 +6031,7 @@ mod tests {
         .await
         .unwrap();
 
-        // List worktrees — should have two
+        // List worktrees - should have two
         let worktrees = repo.worktrees().await.unwrap();
         assert_eq!(worktrees.len(), 2);
 
@@ -6340,7 +6356,7 @@ mod tests {
         );
 
         // Worktree: common_dir is the main repo's .git
-        // (same result — that's the point, it always traces back to the original)
+        // (same result - that's the point, it always traces back to the original)
         assert_eq!(
             original_repo_path_from_common_dir(Path::new("/code/zed5/.git")),
             Some(PathBuf::from("/code/zed5"))

@@ -4,6 +4,8 @@ pub use log as log_impl;
 mod env_config;
 pub mod filter;
 pub mod sink;
+#[cfg(target_env = "ohos")]
+pub mod ohos;
 
 pub use sink::{flush, init_output_file, init_output_stderr, init_output_stdout};
 
@@ -18,10 +20,23 @@ pub fn init() {
 
 pub fn try_init(filter: Option<String>) -> anyhow::Result<()> {
     log::set_logger(&ZLOG)?;
-    log::set_max_level(log::LevelFilter::max());
+    set_default_max_level();
     process_env(filter);
     filter::refresh_from_settings(&std::collections::HashMap::default());
     Ok(())
+}
+
+#[cfg(not(target_env = "ohos"))]
+fn set_default_max_level() {
+    log::set_max_level(log::LevelFilter::max());
+}
+
+#[cfg(target_env = "ohos")]
+fn set_default_max_level() {
+    #[cfg(debug_assertions)]
+    log::set_max_level(log::LevelFilter::Debug);
+    #[cfg(not(debug_assertions))]
+    log::set_max_level(log::LevelFilter::Warn);
 }
 
 pub fn init_test() {
@@ -85,6 +100,11 @@ impl log::Log for Zlog {
         };
         let level = record.metadata().level();
         if !filter::is_scope_enabled(&crate_name_scope, Some(record.target()), level) {
+            return;
+        }
+        #[cfg(target_env = "ohos")]
+        {
+            ohos::submit_to_hilog(record);
             return;
         }
         sink::submit(sink::Record {

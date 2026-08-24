@@ -1,0 +1,91 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "material": {
+          "storePassword": "000000200E1E39CACC6662E9BDAC98460D4A47EDB7F6348BEF53C9566C7B2888041BE99985BEDBC47D8CBDF145C0BFC0",
+          "certpath": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "000000200E1E39CACC6662E9BDAC98460D4A47EDB7F6348BEF53C9566C7B2888041BE99985BEDBC47D8CBDF145C0BFC0",
+          "profile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"
+        },
+        "type": "HarmonyOS"
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.1.0(23)",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "nativeLib": {
+            "collectAllLibs": true
+          },
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          },
+          "externalNativeOptions": {
+            "path": "./src/main/cpp/CMakeLists.txt",
+            "abiFilters": [
+              "arm64-v8a"
+            ]
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug",
+        "buildOption": {
+          "debuggable": true
+        }
+      },
+      {
+        "name": "release",
+        "buildOption": {
+          "debuggable": true
+        }
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "native_ability",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/native_ability"
+    },
+    {
+      "name": "plugin_files",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/files"
+    },
+    {
+      "name": "plugin_cursor",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/cursor"
+    },
+    {
+      "name": "plugin_pinch",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/pinch"
+    },
+    {
+      "name": "plugin_filedrop",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/filedrop"
+    }
+  ]
+}

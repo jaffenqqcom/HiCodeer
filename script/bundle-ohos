@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Function for displaying help info
+help_info() {
+  echo "
+Usage: ${0##*/} [options]
+Build a HarmonyOS NEXT HAP for zcoder.
+
+Builds the Rust crate as a cdylib (libzcoder.so), stages it into the HAP
+project's libs directory, and runs hvigor assembleHap.
+
+Options:
+  --release      Build in release mode (default: debug)
+  --server-only  Only build cmd-agent-server (host toolchain) and stage resfile
+  --hap-only     Skip Rust builds; only run ohpm install + hvigor assembleHap
+  -h, --help     Display this help and exit.
+"
+}
+
+# Parse all arguments manually
+IS_RELEASE=false
+MODE="all"
+CARGO_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help)
+      help_info
+      exit 0
+      ;;
+    --release)
+      IS_RELEASE=true
+      shift
+      ;;
+    --server-only)
+      MODE="server"
+      shift
+      ;;
+    --hap-only)
+      MODE="hap"
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      help_info
+      exit 1
+      ;;
+    *)
+      CARGO_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# ==================== 路径配置 ====================
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"            # .../zcoder/script
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"           # .../zcoder
+HAP_DIR="$PROJECT_ROOT/hap"
+
+TOOLCHAIN="/mnt/linux_share/workspace/commandline-linux-arm64"
+NODE_CMD="$TOOLCHAIN/tool/node/bin/node"
+HVIGORW_JS="$TOOLCHAIN/hvigor/bin/hvigorw.js"
+export DEVECO_SDK_HOME="$TOOLCHAIN/sdk"
+export OHOS_BASE_SDK_HOME="$TOOLCHAIN/sdk"
+export HARMONYBREW_SDK="$TOOLCHAIN/sdk"
+OHPM_CMD="$TOOLCHAIN/ohpm/bin/ohpm"
+SDK_LLVM_BIN="$TOOLCHAIN/sdk/default/openharmony/native/llvm/bin"
+
+OHOS_TARGET="aarch64-unknown-linux-ohos"
+CRATE="launch-zed"
+OHOS_LIB_NAME="libzcoder.so"   # 产品名 zcoder，moduleName="zcoder"，与 EntryAbility 对应
+
+PROFILE_DIR="debug"
+BUILD_MODE="debug"
+if [ "$IS_RELEASE" = true ]; then
+  PROFILE_DIR="release"
+  BUILD_MODE="release"
+fi
+
+# ==================== virtiofs 元数据 shim（LD_PRELOAD 放行 EPERM） ====================
+# 共享盘（virtiofs）对非 root 的 fchmod/fchown/utimensat/copy_file_range 返回
+# EPERM。此 shim 在真实调用仅因 EPERM 失败时返回成功（copy_file_range 则改为
+# ENOSYS 触发调用方降级到 read/write），使 cargo 与 hvigor 的产物可直接写共享盘
+# （无需 bind mount，与 DevEco Studio 共用同一份 build 输出）。本地文件系统不受影响。
+SHIM_C="$TOOLCHAIN/tool/shim/ohos-meta-shim.c"
+SHIM_SO="$TOOLCHAIN/tool/shim/ohos-meta-shim.so"
+if [ ! -f "$SHIM_SO" ] || [ "$SHIM_C" -nt "$SHIM_SO" ]; then
+  echo "[zcoder-ohos-build] 编译 virtiofs meta shim -> $SHIM_SO"
+  gcc -shared -fPIC -o "$SHIM_SO" "$SHIM_C" -ldl
+fi
+export LD_PRELOAD="$SHIM_SO${LD_PRELOAD:+:$LD_PRELOAD}"
+echo "[zcoder-ohos-build] LD_PRELOAD=$SHIM_SO"
+
+# ==================== Cargo build（OHOS 交叉编译） ====================
+# 工具链版本：zcoder 根 rust-toolchain.toml 指定 1.97.1。此前该工具链组件损坏
+# （bin 目录缺 rustc/cargo，cargo 每次自修复失败），故临时绕到 warp 使用的 1.92.0。
+# 1.97.1 组件已补全（rustup toolchain install 修复），且 merman 0.7.0 声明
+# rust-version="1.95"，必须用 ≥1.95 的工具链，故恢复使用 1.97.1。
+export RUSTUP_TOOLCHAIN=1.97.1
+# 用 commandline-linux-arm64 的 clang wrapper（系统 clang-17 + OHOS target + sysroot）
+export CC_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/clang"
+export CXX_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/clang++"
+export AR_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/llvm-ar"
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER="$SDK_LLVM_BIN/clang"
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_CXX="$SDK_LLVM_BIN/clang++"
+
+# 完全脱离旧 SDK：覆盖用户 shell 残留的 OHOS 环境变量
+SDK_NATIVE="$TOOLCHAIN/sdk/default/openharmony/native"
+export OHOS_NDK_HOME="$SDK_NATIVE"
+export CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_ohos="$SDK_NATIVE/build/cmake/ohos.toolchain.cmake"
+# aws-lc-sys 等 C crate 用 Unix Makefiles generator，需要 make 而非 ninja
+export CMAKE_MAKE_PROGRAM="/usr/bin/make"
+
+# 某些 C crate（zstd-sys/gettext-sys 等）需要额外 C 宏；
+# clang-17 把 incompatible-function-pointer-types 当错误，必须显式关闭
+export CFLAGS_aarch64_unknown_linux_ohos="-DZSTD_NOVMS -D__ANDROID__ -Wno-incompatible-function-pointer-types"
+export RANLIB_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/llvm-ranlib"
+
+# Rust 编译产物放本地磁盘 $HOME/rust-target：virtiofs 共享盘不支持硬链接，
+# cargo 退化为逐文件拷贝，拖慢编译。每个编译目标一个独立子目录，当前用户
+# 直接创建（无 sudo、无 bind mount）。只动 rust 的 target；hap 的 build
+# （hap/entry/build）由 hvigor 管理，不受影响。
+RUST_TARGET_ROOT="${HOME}/rust-target"
+# Unique per source checkout: parallel builds of different zcoder copies must
+# not share a cargo target dir (cargo locks it and fingerprints collide).
+PROJECT_HASH="$(printf '%s' "$PROJECT_ROOT" | sha256sum | cut -c1-8)"
+
+ensure_rust_target() {
+  local name="$1"
+  # Create the target dir as the current user: no sudo, no bind mount. It
+  # lives under $HOME, which always supports hard links (the virtiofs share
+  # does not, so cargo had to copy every file instead).
+  mkdir -p "$RUST_TARGET_ROOT/${PROJECT_HASH}-${name}"
+}
+
+# NAPI 模块注册名：napi-derive-ohos 用 NAPI_BUILD_TARGET_NAME > CARGO_CRATE_NAME > CARGO_PKG_NAME
+# 决定 nm_modname。zcoder 的 zed crate 包名是 "zed"，但 so 文件名是 libzcoder.so（产品名 zcoder），
+# 二者必须一致，否则 loadNativeModule 找不到模块。设 NAPI_BUILD_TARGET_NAME=zcoder 使模块名与
+# libzcoder.so 统一（EntryAbility.moduleName='zcoder'）。
+export NAPI_BUILD_TARGET_NAME=zcoder
+
+# 全量编译加 -A warnings 避免既有警告阻塞；
+# codegen-units=16 降低编译内存峰值
+export RUSTFLAGS="${RUSTFLAGS:-} -A warnings"
+if [ "$IS_RELEASE" = true ]; then
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+else
+  export CARGO_PROFILE_DEV_CODEGEN_UNITS=16
+fi
+
+cd "$PROJECT_ROOT"
+
+# --hap-only 跳过 launch-zed 编译与 so 拷贝，直接复用现有 libzcoder.so
+if [ "$MODE" != "hap" ]; then
+  NPROC=$(nproc 2>/dev/null || echo 4)
+  OHOS_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-ohos-$BUILD_MODE"
+  ensure_rust_target "ohos-$BUILD_MODE"
+  echo "[zcoder-ohos-build] Cargo build ($PROFILE_DIR, $NPROC CPUs) ..."
+  CARGO_TARGET_DIR="$OHOS_TARGET_DIR" \
+    cargo build $($IS_RELEASE && echo --release) --lib -p "$CRATE" --target "$OHOS_TARGET" -j "$NPROC" "${CARGO_ARGS[@]}"
+
+  # ==================== 拷贝 libzcoder.so ====================
+  HAP_LIBS_DIR="$HAP_DIR/entry/libs/arm64-v8a"
+  mkdir -p "$HAP_LIBS_DIR"
+  # launch-zed 的 [lib] name 是 zcoder，产物直接是 libzcoder.so（无需改名）
+  cp "$OHOS_TARGET_DIR/$OHOS_TARGET/$PROFILE_DIR/libzcoder.so" "$HAP_LIBS_DIR/$OHOS_LIB_NAME"
+  echo "[zcoder-ohos-build] $OHOS_LIB_NAME staged at $HAP_LIBS_DIR/$OHOS_LIB_NAME"
+fi
+
+# ==================== cmd-agent-server 编译 + 打包 resfile ====================
+# server 运行在 VM（arm64 openEuler）上，用 host 工具链（本机 aarch64-linux）编译成
+# 独立可执行文件，随应用一起打进 HAP 的 resfile。resfile 随安装解压到应用沙箱，
+# 业务侧用 OH_AbilityRuntime_ApplicationContextGetResourceDir 拿到其只读路径，
+# daemon 直接按路径读取（无需 resourceManager、无需 ArkTS）。
+# host 工具链变量显式声明（当前为本机工具链），后续换 VM 工具链只需改此处。
+SERVER_CRATE="cmd-agent-server"
+# cmd-agent crates are not members of the zcoder workspace; build the server
+# standalone by manifest path (it runs on the VM with the host toolchain).
+SERVER_MANIFEST="$PROJECT_ROOT/crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-server/Cargo.toml"
+# resfile is packaged by hvigor from src/main/resources/resfile (NOT
+# src/main/resfile); staging the server into the wrong directory silently
+# shipped the stale cached server inside the HAP.
+SERVER_RESFILE_DIR="$HAP_DIR/entry/src/main/resources/resfile"
+SERVER_RESFILE_NAME="cmd-agent-server"
+
+export CC_aarch64_unknown_linux_gnu=/usr/bin/cc
+export CXX_aarch64_unknown_linux_gnu=/usr/bin/c++
+export AR_aarch64_unknown_linux_gnu=/usr/bin/ar
+export RANLIB_aarch64_unknown_linux_gnu=/usr/bin/ranlib
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/cc
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_CXX=/usr/bin/c++
+
+# --hap-only 跳过 server 编译（resfile 里已有现成二进制）
+if [ "$MODE" = "all" ] || [ "$MODE" = "server" ]; then
+  SERVER_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-cmd-agent-server"
+  ensure_rust_target "cmd-agent-server"
+  echo "[zcoder-ohos-build] Building $SERVER_CRATE (host aarch64-linux) ..."
+  CARGO_TARGET_DIR="$SERVER_TARGET_DIR" \
+    cargo build --release --manifest-path "$SERVER_MANIFEST"
+
+  mkdir -p "$SERVER_RESFILE_DIR"
+  cp "$SERVER_TARGET_DIR/release/$SERVER_CRATE" "$SERVER_RESFILE_DIR/$SERVER_RESFILE_NAME"
+  echo "[zcoder-ohos-build] $SERVER_RESFILE_NAME staged at $SERVER_RESFILE_DIR/$SERVER_RESFILE_NAME"
+fi
+
+# ==================== cmd-agent daemon（线程运行，无需 cdylib） ====================
+# The cmd-agent daemon now runs as a zcoder thread (spawned in launch-zed's
+# launch_app.rs), so libcmd_agent_client.so is no longer built or packaged.
+
+# --server-only 跳过 ohpm install 与 hvigor 打包
+if [ "$MODE" != "server" ]; then
+
+# ==================== ohpm install（首次 / 为空 / 有坏符号链接 / 关键 so 链接缺失时） ====================
+# 说明：hvigor 在 DevEco Studio 里会自动触发 ohpm install；命令行 assembleHap 不一定触发。
+# 新增 Rust so 依赖（libzcoder.so）后，若 oh_modules 里缺对应符号链接，ArkTS 编译报
+# "Cannot find module 'libxxx.so'"。此处兜底：顶层与 entry 两处 oh_modules 的关键 so 链接
+# 齐全才跳过 install，否则补跑（顶层 + entry 各一次）。
+OHPM_LINK_DEPS=(
+  "$OHOS_LIB_NAME"   # 工程 Rust NAPI 引擎库（与 OHOS_LIB_NAME 一致）
+)
+ohpm_links_missing() {
+  # 顶层 oh_modules 关键 so 链接
+  local dep
+  for dep in "${OHPM_LINK_DEPS[@]}"; do
+    if [ ! -L "$HAP_DIR/oh_modules/$dep" ]; then
+      return 0
+    fi
+  done
+  # entry 级 oh_modules 关键 so 链接 + @ohos-rs/ability 解析
+  for dep in "${OHPM_LINK_DEPS[@]}"; do
+    if [ ! -L "$HAP_DIR/entry/oh_modules/$dep" ]; then
+      return 0
+    fi
+  done
+  if [ ! -L "$HAP_DIR/entry/oh_modules/@ohos-rs/ability" ]; then
+    return 0
+  fi
+  # entry 级 @ohos-rs/ability 能力插件链接（新增插件必须在此登记）
+  local plugin
+  for plugin in ability-plugin-cursor ability-plugin-files ability-plugin-pinch ability-plugin-filedrop; do
+    if [ ! -L "$HAP_DIR/entry/oh_modules/@ohos-rs/$plugin" ]; then
+      return 0
+    fi
+  done
+  # 目录为空或坏符号链接（保留原有兜底）
+  local dir
+  for dir in "$HAP_DIR/oh_modules" "$HAP_DIR/entry/oh_modules"; do
+    if [ ! -d "$dir" ] || [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+      return 0
+    fi
+    local link
+    while IFS= read -r -d '' link; do
+      if [ -L "$link" ] && [ ! -e "$link" ]; then
+        return 0
+      fi
+    done < <(find "$dir" -type l -print0 2>/dev/null)
+  done
+  return 1
+}
+if ohpm_links_missing; then
+  echo "[zcoder-ohos-build] ohpm install (top-level) ..."
+  PATH="$TOOLCHAIN/tool/node/bin:$TOOLCHAIN/ohpm/bin:$PATH" \
+    bash -c "cd '$HAP_DIR' && '$OHPM_CMD' install --all"
+  echo "[zcoder-ohos-build] ohpm install (entry) ..."
+  PATH="$TOOLCHAIN/tool/node/bin:$TOOLCHAIN/ohpm/bin:$PATH" \
+    bash -c "cd '$HAP_DIR/entry' && '$OHPM_CMD' install"
+fi
+
+# ==================== 清理 stale cmake/ninja ====================
+CXX_DIR="$HAP_DIR/entry/.cxx/default/default/$BUILD_MODE/arm64-v8a"
+rm -f "$CXX_DIR/.ninja_log" "$CXX_DIR/.ninja_deps" 2>/dev/null || true
+
+# ==================== hvigor assembleHap ====================
+cd "$HAP_DIR"   # hvigor 必须在 HAP 工程根目录运行（找 hvigor-config.json5 / build-profile.json5）
+# 停止旧 daemon：hvigor daemon 常驻并缓存启动时的环境变量（DEVECO_SDK_HOME 等）
+"$NODE_CMD" "$HVIGORW_JS" --stop-daemon 2>/dev/null || true
+
+echo "=== HAP Build ==="
+echo "Project : $HAP_DIR"
+echo "Node    : $("$NODE_CMD" --version)"
+echo "SDK     : $DEVECO_SDK_HOME"
+echo "Mode    : $BUILD_MODE"
+echo ""
+
+"$NODE_CMD" "$HVIGORW_JS" \
+  --mode module \
+  -p product=default \
+  -p buildMode="$BUILD_MODE" \
+  assembleHap \
+  --info --analyze=normal --parallel --incremental --no-daemon
+
+  # ==================== 清理 cmake staging ====================
+  CMAKE_STAGING_DIR="$HAP_DIR/entry/.cmake_staging"
+  if [ -d "$CMAKE_STAGING_DIR" ]; then
+    find "$CMAKE_STAGING_DIR" -depth -delete 2>/dev/null || true
+  fi
+
+fi
+
+echo ""
+echo "=== HAP BUILD SUCCESSFUL ==="
+echo "产物："
+echo "  $HAP_DIR/entry/build/default/outputs/*/entry-*-*.hap"
+echo "如需清理本地构建缓存：删除 $PROJECT_ROOT/build 目录"

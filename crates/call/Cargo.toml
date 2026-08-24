@@ -31,7 +31,7 @@ collections.workspace = true
 fs.workspace = true
 futures.workspace = true
 feature_flags.workspace = true
-gpui = { workspace = true, features = ["screen-capture"] }
+gpui = { workspace = true }
 gpui_tokio.workspace = true
 language.workspace = true
 livekit_client.workspace = true
@@ -43,6 +43,9 @@ settings.workspace = true
 telemetry.workspace = true
 util.workspace = true
 workspace.workspace = true
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+gpui = { workspace = true, features = ["screen-capture"] }
 
 [dev-dependencies]
 client = { workspace = true, features = ["test-support"] }

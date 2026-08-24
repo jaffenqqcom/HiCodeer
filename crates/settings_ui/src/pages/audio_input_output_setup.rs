@@ -1,5 +1,4 @@
-use audio::{AudioDeviceInfo, AvailableAudioDevices};
-use cpal::DeviceId;
+use audio::{AudioDeviceInfo, AvailableAudioDevices, DeviceId};
 use gpui::{AnyElement, App, ElementId, ReadGlobal, SharedString, Window};
 use settings::{AudioInputDeviceName, AudioOutputDeviceName, SettingsStore};
 use std::str::FromStr;

@@ -35,6 +35,10 @@ use worktree::{
 
 use crate::{ProjectPath, trusted_worktrees::TrustedWorktrees};
 
+#[cfg(target_env = "ohos")]
+// use openharmony_ability; // moved to ohos-file-geturi
+use ohos_file_geturi;
+
 /// The current paths for a project's worktrees. Each folder path has a corresponding
 /// main worktree path at the same position. The two lists are always the
 /// same length and are modified together via `add_path` / `remove_main_path`.
@@ -934,6 +938,22 @@ impl WorktreeStore {
 
         cx.spawn(async move |this, cx| {
             let worktree_id = next_worktree_id.await?;
+            #[cfg(target_env = "ohos")]
+            let abs_path = {
+                // Re-activate the picker authorization for worktree roots outside
+                // the app sandbox (e.g. a project restored from recent projects
+                // after restart). Without this, std::fs cannot stat the root and
+                // the directory tree silently disappears. Idempotent: sandbox
+                // paths and activation failures are returned unchanged.
+                let authorized = ohos_file_geturi::ensure_root_authorized(
+                    &abs_path.as_path().to_string_lossy(),
+                );
+                if authorized.as_path() != abs_path.as_path() {
+                    SanitizedPath::new_arc(&authorized)
+                } else {
+                    abs_path
+                }
+            };
             let worktree = Worktree::local(
                 SanitizedPath::cast_arc(abs_path.clone()),
                 visible,

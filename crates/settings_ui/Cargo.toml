@@ -29,7 +29,6 @@ collections.workspace = true
 context_server.workspace = true
 copilot.workspace = true
 copilot_ui.workspace = true
-cpal.workspace = true
 edit_prediction.workspace = true
 edit_prediction_ui.workspace = true
 editor.workspace = true
@@ -54,7 +53,6 @@ regex.workspace = true
 platform_title_bar.workspace = true
 project.workspace = true
 release_channel.workspace = true
-rodio.workspace = true
 schemars.workspace = true
 search.workspace = true
 serde.workspace = true
@@ -73,6 +71,13 @@ util.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
 zed_credentials_provider.workspace = true
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+rodio = { git = "https://github.com/RustAudio/rodio", rev = "e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a", default-features = false }
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+cpal.workspace = true
+rodio.workspace = true
 
 [dev-dependencies]
 fs = { workspace = true, features = ["test-support"] }

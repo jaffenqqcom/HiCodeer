@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "label"
+    },
+    {
+      "name": "perm_auth_reason",
+      "value": "persist read/write access to files and folders selected by the user"
+    }
+  ]
+}

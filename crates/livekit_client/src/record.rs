@@ -7,11 +7,37 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+#[cfg(target_env = "ohos")]
+use audio::DeviceId;
+#[cfg(not(target_env = "ohos"))]
 use cpal::DeviceId;
+#[cfg(not(target_env = "ohos"))]
 use cpal::traits::{DeviceTrait, StreamTrait};
+#[cfg(not(target_env = "ohos"))]
 use rodio::{buffer::SamplesBuffer, conversions::SampleTypeConverter};
 use util::ResultExt;
 
+#[cfg(target_env = "ohos")]
+pub struct CaptureInput {
+    pub name: String,
+    pub input_device: Option<DeviceId>,
+}
+
+#[cfg(target_env = "ohos")]
+impl CaptureInput {
+    pub fn start(input_device: Option<DeviceId>) -> anyhow::Result<Self> {
+        Ok(Self {
+            name: "OHOS".to_string(),
+            input_device,
+        })
+    }
+
+    pub fn finish(self) -> Result<PathBuf> {
+        Err(anyhow::anyhow!("audio capture is not available on OHOS yet"))
+    }
+}
+
+#[cfg(not(target_env = "ohos"))]
 pub struct CaptureInput {
     pub name: String,
     pub input_device: Option<DeviceId>,
@@ -20,6 +46,7 @@ pub struct CaptureInput {
     _stream: cpal::Stream,
 }
 
+#[cfg(not(target_env = "ohos"))]
 impl CaptureInput {
     pub fn start(input_device: Option<DeviceId>) -> anyhow::Result<Self> {
         let (device, config) = crate::default_device(true, input_device.as_ref())?;
@@ -51,6 +78,7 @@ impl CaptureInput {
     }
 }
 
+#[cfg(not(target_env = "ohos"))]
 fn start_capture(
     device: cpal::Device,
     config: cpal::SupportedStreamConfig,
@@ -79,6 +107,7 @@ fn start_capture(
     Ok(stream)
 }
 
+#[cfg(not(target_env = "ohos"))]
 fn write_out(
     samples: Arc<Mutex<Vec<i16>>>,
     config: cpal::SupportedStreamConfig,

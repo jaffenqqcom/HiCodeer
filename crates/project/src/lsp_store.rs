@@ -14773,6 +14773,29 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
         return Ok(None);
     }
 
+    /// Resolves a binary on the VM, where commands actually run. The device
+    /// sandbox holds no binaries (it forbids exec of external programs), so a
+    /// local `which` cannot find anything; the VM's own `which` answers.
+    #[cfg(target_env = "ohos")]
+    async fn which(&self, command: &OsStr) -> Option<PathBuf> {
+        let output = util::command::new_command("which")
+            .arg(command)
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    }
+
+    /// Desktop behavior: resolve against the local PATH.
+    #[cfg(not(target_env = "ohos"))]
     async fn which(&self, command: &OsStr) -> Option<PathBuf> {
         let mut worktree_abs_path = self.worktree_root_path().to_path_buf();
         if self.fs.is_file(&worktree_abs_path).await {

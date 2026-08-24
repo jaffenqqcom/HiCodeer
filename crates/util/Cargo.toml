@@ -63,6 +63,10 @@ mach2.workspace = true
 tendril = "0.4.3"
 windows.workspace = true
 
+[target.'cfg(target_env = "ohos")'.dependencies]
+cmd-agent-linker = { path = "../gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-linker" }
+cmd-agent-protocol = { path = "../gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-protocol" }
+
 [dev-dependencies]
 rand.workspace = true
 util_macros.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "launch-zed"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "NAPI entry that launches Zed on HarmonyOS NEXT"
+
+[lib]
+name = "zcoder"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed = { path = "../../../zed" }
+gpui_ohos = { path = "../.." }
+openharmony-ability = { path = "../openharmony-ability/crates/ability" }
+openharmony-ability-derive = { path = "../openharmony-ability/crates/derive" }
+cmd-agent-client = { path = "../ohos-openeuler-agent/cmd-agent-client" }
+cmd-agent-linker = { path = "../ohos-openeuler-agent/cmd-agent-linker" }
+util = { path = "../../../util" }
+log = "0.4"
+napi-ohos = "1.1.6"
+napi-derive-ohos = "1.1.6"
+
+[build-dependencies]
+napi-build-ohos = "1.1.6"

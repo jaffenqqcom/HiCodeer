@@ -8,8 +8,14 @@ pub const CHANNEL_COUNT: ChannelCount = nz!(2);
 
 mod audio_settings;
 pub use audio_settings::AudioSettings;
+pub use audio_settings::DeviceId;
 
+#[cfg(not(target_env = "ohos"))]
 mod audio_pipeline;
+#[cfg(target_env = "ohos")]
+mod audio_pipeline_ohos;
+#[cfg(target_env = "ohos")]
+use audio_pipeline_ohos as audio_pipeline;
 pub use audio_pipeline::Audio;
 pub use audio_pipeline::{AudioDeviceInfo, AvailableAudioDevices};
 pub use audio_pipeline::{ensure_devices_initialized, resolve_device};

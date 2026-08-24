@@ -1,0 +1,14 @@
+[package]
+name = "ohos-file-geturi"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/ohos_file_geturi.rs"
+
+[dependencies]
+log.workspace = true

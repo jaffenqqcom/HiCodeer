@@ -233,6 +233,11 @@ impl Application {
             let cx = &mut *this.borrow_mut();
             on_finish_launching(cx);
         }));
+
+        #[cfg(target_env = "ohos")]
+        {
+            _ = Box::leak(Box::new(self));
+        }
     }
 
     /// Start the application for an embedder that drives the run loop itself.

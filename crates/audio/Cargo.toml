@@ -15,16 +15,21 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 collections.workspace = true
-cpal.workspace = true
 crossbeam.workspace = true
 gpui.workspace = true
 log.workspace = true
 parking_lot.workspace = true
-rodio.workspace = true
 serde.workspace = true
 settings.workspace = true
 thiserror.workspace = true
 util.workspace = true
 
-[target.'cfg(not(any(all(target_os = "windows", target_env = "gnu"), target_os = "freebsd")))'.dependencies]
+[target.'cfg(target_env = "ohos")'.dependencies]
+rodio = { git = "https://github.com/RustAudio/rodio", rev = "e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a", default-features = false }
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+cpal.workspace = true
+rodio.workspace = true
+
+[target.'cfg(not(any(target_env = "ohos", all(target_os = "windows", target_env = "gnu"), target_os = "freebsd")))'.dependencies]
 libwebrtc.workspace = true

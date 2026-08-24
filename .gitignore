@@ -2,6 +2,7 @@
 **/*.proptest-regressions
 **/cargo-target
 **/target
+**/build
 .webrtc-sys/
 **/venv
 **/.direnv
@@ -39,6 +40,8 @@ DerivedData/
 Packages
 xcuserdata/
 crates/docs_preprocessor/actions.json
+hap/entry/libs
+**/oh_modules
 
 # Don't commit any secrets to the repo.
 .env

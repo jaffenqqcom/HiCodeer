@@ -1,0 +1,59 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    "externalNativeOptions": {
+      "path": "./src/main/cpp/CMakeLists.txt"
+    },
+    "resOptions": {
+      "copyCodeResource": {
+        "enable": true
+      }
+    },
+    "nativeLib": {
+      "debugSymbol": {
+        "strip": false
+      }
+    }
+  },
+  "buildOptionSet": [
+    {
+      "name": "release",
+      "arkOptions": {
+        "obfuscation": {
+          "ruleOptions": {
+            "enable": false,
+            "files": [
+              "./obfuscation-rules.txt"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "targets": [
+    {
+      "name": "default",
+      "config": {
+        "deviceType": [
+          "2in1",
+          "tablet"
+        ],
+        "buildOption": {
+          "arkOptions": {
+            "obfuscation": {
+              "ruleOptions": {
+                "enable": false
+              }
+            }
+          },
+          "externalNativeOptions": {
+            "abiFilters": [
+              "arm64-v8a"
+            ]
+          }
+        }
+      },
+      "runtimeOS": "HarmonyOS"
+    }
+  ]
+}

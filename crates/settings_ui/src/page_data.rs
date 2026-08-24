@@ -1544,14 +1544,37 @@ fn keymap_page() -> SettingsPage {
                     let Some(original_window) = settings_window.original_window else {
                         return;
                     };
-                    original_window
-                        .update(cx, |_workspace, original_window, cx| {
-                            original_window
-                                .dispatch_action(zed_actions::OpenKeymap.boxed_clone(), cx);
-                            original_window.activate_window();
-                        })
-                        .ok();
-                    window.remove_window();
+                    // OHOS: settings is a tab inside the workspace window, which
+                    // is mid-update while this event is handled, so defer
+                    // dispatching OpenKeymap until the workspace lease is
+                    // released. Also no window to remove: settings is a tab.
+                    #[cfg(target_env = "ohos")]
+                    {
+                        cx.defer(move |cx| {
+                            if let Err(err) =
+                                original_window.update(cx, |_workspace, original_window, cx| {
+                                    original_window
+                                        .dispatch_action(zed_actions::OpenKeymap.boxed_clone(), cx);
+                                    original_window.activate_window();
+                                })
+                            {
+                                log::error!(
+                                    "[ohos] open keymap: failed to update workspace: {err:?}"
+                                );
+                            }
+                        });
+                    }
+                    #[cfg(not(target_env = "ohos"))]
+                    {
+                        original_window
+                            .update(cx, |_workspace, original_window, cx| {
+                                original_window
+                                    .dispatch_action(zed_actions::OpenKeymap.boxed_clone(), cx);
+                                original_window.activate_window();
+                            })
+                            .ok();
+                        window.remove_window();
+                    }
                 }),
                 files: USER,
             }),

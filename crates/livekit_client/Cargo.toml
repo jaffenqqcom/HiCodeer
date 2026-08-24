@@ -24,9 +24,8 @@ anyhow.workspace = true
 async-trait.workspace = true
 audio.workspace = true
 collections.workspace = true
-cpal.workspace = true
 futures.workspace = true
-gpui = { workspace = true, features = ["screen-capture", "x11", "wayland"] }
+gpui = { workspace = true }
 gpui_tokio.workspace = true
 http_client_tls.workspace = true
 image.workspace = true
@@ -35,7 +34,6 @@ log.workspace = true
 nanoid.workspace = true
 parking_lot.workspace = true
 postage.workspace = true
-rodio.workspace = true
 serde.workspace = true
 serde_urlencoded.workspace = true
 settings.workspace = true
@@ -43,15 +41,23 @@ smallvec.workspace = true
 ui.workspace = true
 util.workspace = true
 
-[target.'cfg(not(any(all(target_os = "windows", target_env = "gnu"), target_os = "freebsd")))'.dependencies]
+[target.'cfg(target_env = "ohos")'.dependencies]
+rodio = { git = "https://github.com/RustAudio/rodio", rev = "e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a", default-features = false }
+
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+gpui = { workspace = true, features = ["screen-capture", "x11", "wayland"] }
+rodio.workspace = true
+
+[target.'cfg(not(any(target_env = "ohos", all(target_os = "windows", target_env = "gnu"), target_os = "freebsd")))'.dependencies]
+cpal.workspace = true
 libwebrtc.workspace = true
 livekit.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(all(target_os = "linux", not(target_env = "ohos")))'.dependencies]
 tokio = { workspace = true, features = ["time"] }
 webrtc-sys.workspace = true
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies]
+[target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "freebsd", target_os = "windows"))'.dependencies]
 scap.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

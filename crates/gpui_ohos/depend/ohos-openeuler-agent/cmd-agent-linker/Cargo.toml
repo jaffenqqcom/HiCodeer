@@ -1,0 +1,10 @@
+[package]
+name = "cmd-agent-linker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+cmd-agent-protocol = { path = "../cmd-agent-protocol" }
+log = "0.4"
+smol = "2"

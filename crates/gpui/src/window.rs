@@ -7,7 +7,8 @@ use crate::{
     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
+    EntityId, EventEmitter, ExternalPaths, FileDropEvent, FontId, Global, GlobalElementId, GlyphId,
+    GpuSpecs,
     Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
     MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
@@ -4979,6 +4980,25 @@ impl Window {
                             cursor_style: None,
                             external_payload_source: None,
                         });
+                    } else {
+                        // A later Entered can carry the real payload for an
+                        // external file drag that was established by an earlier
+                        // no-path Entered (platforms without a native drag
+                        // session, e.g. OHOS). Refresh the payload so the drop
+                        // listener receives the actual paths.
+                        let is_external = cx
+                            .active_drag
+                            .as_ref()
+                            .is_some_and(|drag| drag.value.downcast_ref::<ExternalPaths>().is_some());
+                        if is_external {
+                            let view: AnyView = cx.new(|_| paths.clone()).into();
+                            let refreshed = Arc::new(paths);
+                            if let Some(drag) = &mut cx.active_drag {
+                                drag.value = refreshed;
+                                drag.view = view;
+                                drag.cursor_offset = position;
+                            }
+                        }
                     }
                     PlatformInput::MouseMove(MouseMoveEvent {
                         position,

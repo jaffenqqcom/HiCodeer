@@ -1,0 +1,40 @@
+[package]
+name        = "ohos-xcomponent-binding"
+version     = "0.3.2"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+description = "OpenHarmony's xcomponent binding for rust"
+
+[features]
+# allow print log with hilog
+log = ["dep:ohos-hilog-binding"]
+# init with muilt xcomponent instance mode
+multi_mode = []
+# allow use closure to define callbacks
+callbacks = []
+
+default = ["callbacks"]
+
+api-13 = ["ohos-xcomponent-sys/api-13", "ohos-arkui-input-binding/api-13"]
+api-14 = ["api-13", "ohos-xcomponent-sys/api-14", "ohos-arkui-input-binding/api-14"]
+api-15 = ["api-14", "ohos-xcomponent-sys/api-15", "ohos-arkui-input-binding/api-15"]
+api-16 = ["api-15", "ohos-xcomponent-sys/api-16", "ohos-arkui-input-binding/api-16"]
+api-17 = ["api-16", "ohos-xcomponent-sys/api-17", "ohos-arkui-input-binding/api-17"]
+api-18 = ["api-17", "ohos-xcomponent-sys/api-18", "ohos-arkui-input-binding/api-18"]
+api-19 = ["api-18", "ohos-xcomponent-sys/api-19", "ohos-arkui-input-binding/api-19"]
+api-20 = ["api-19", "ohos-xcomponent-sys/api-20", "ohos-arkui-input-binding/api-20"]
+api-21 = ["api-20", "ohos-xcomponent-sys/api-21", "ohos-arkui-input-binding/api-21"]
+api-22 = ["api-21", "ohos-xcomponent-sys/api-22", "ohos-arkui-input-binding/api-22"]
+api-23 = ["api-22", "ohos-xcomponent-sys/api-23", "ohos-arkui-input-binding/api-23"]
+api-24 = ["api-23", "ohos-xcomponent-sys/api-24", "ohos-arkui-input-binding/api-24"]
+
+[dependencies]
+napi-sys-ohos            = { workspace = true }
+ohos-xcomponent-sys      = { workspace = true }
+napi-ohos                = { workspace = true }
+napi-derive-ohos         = { workspace = true }
+ohos-enum-derive         = { workspace = true }
+raw-window-handle        = { workspace = true }
+ohos-arkui-input-binding = { workspace = true }
+
+ohos-hilog-binding = { workspace = true, optional = true }

@@ -1,0 +1,45 @@
+[package]
+name = "gpui_ohos"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_ohos.rs"
+
+[dependencies]
+gpui.workspace = true
+gpui_ohos_linker.workspace = true
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+anyhow.workspace = true
+bytemuck = "1"
+collections.workspace = true
+etagere = "0.2"
+futures.workspace = true
+itertools.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+profiling.workspace = true
+raw-window-handle = "0.6"
+smallvec.workspace = true
+smol.workspace = true
+util.workspace = true
+uuid.workspace = true
+wgpu.workspace = true
+
+cosmic-text = "0.17.0"
+# WARNING: If you change this, you must also publish a new version of zed-font-kit to crates.io
+font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "110523127440aefb11ce0cf280ae7c5071337ec5", package = "zed-font-kit", version = "0.14.1-zed", features = [
+    "source-fontconfig-dlopen",
+] }
+# 本地副本（depend/openharmony-ability），方便后续 OHOS 适配修改，随仓库同步。
+openharmony-ability = { path = "depend/openharmony-ability/crates/ability" }
+openharmony-ability-plugin-cursor = { path = "depend/openharmony-ability/crates/plugin-cursor" }
+openharmony-ability-plugin-files = { path = "depend/openharmony-ability/crates/plugin-files" }
+openharmony-ability-plugin-pinch = { path = "depend/openharmony-ability/crates/plugin-pinch" }
+openharmony-ability-plugin-filedrop = { path = "depend/openharmony-ability/crates/plugin-filedrop" }

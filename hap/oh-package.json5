@@ -1,0 +1,7 @@
+{
+  "modelVersion": "6.1.0",
+  "description": "Please describe the basic information.",
+  "dependencies": {
+    "libzcoder.so": "file:./entry/src/main/cpp/types/libzcoder"
+  }
+}

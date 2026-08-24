@@ -68,7 +68,13 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
         )
     }
 
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(target_env = "ohos")]
+    {
+        // gpui_ohos::current_platform(headless) // OHOS impl isolated behind gpui_ohos_linker
+        gpui_ohos_linker::current_platform(headless)
+    }
+
+    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))]
     {
         gpui_linux::current_platform(headless)
     }

@@ -1,11 +1,12 @@
 // Disable command line from opening on release mode
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod reliability;
 mod zed;
 
 // Ensure the binary name stays in sync with APP_NAME so that the paths used
 // at runtime (data dir, config dir, etc.) match what the binary is called.
+#[cfg(not(target_env = "ohos"))]
 const _: () = assert!(
     paths::APP_NAME_LOWERCASE
         .as_bytes()
@@ -83,6 +84,7 @@ use crate::zed::{CrashHandler, OpenRequestKind, eager_load_active_theme_and_icon
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(not(target_env = "ohos"))]
 fn build_application() -> Application {
     let platform = gpui_platform::current_platform(false);
     if std::env::var("ZED_EXPERIMENTAL_A11Y").as_deref() == Ok("1") {
@@ -90,6 +92,14 @@ fn build_application() -> Application {
     } else {
         Application::new_inaccessible(platform)
     }
+}
+
+#[cfg(target_env = "ohos")]
+fn build_application() -> Application {
+    // OhosPlatform owns the OpenHarmonyApp (picked up from the global set by
+    // launch-zed's launch_app); gpui is never handed the platform app.
+    let platform = gpui_platform::current_platform(false);
+    Application::with_platform(platform)
 }
 
 fn files_not_created_on_launch(errors: HashMap<io::ErrorKind, Vec<&Path>>) {
@@ -163,7 +173,7 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
     }
 
     // Maybe unify this with gpui::platform::linux::platform::ResultExt::notify_err(..)?
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))]
     {
         use ashpd::desktop::notification::{Notification, NotificationProxy, Priority};
         _cx.spawn(async move |_cx| {
@@ -194,8 +204,25 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
         })
         .detach();
     }
+
+    #[cfg(target_env = "ohos")]
+    {
+        process::exit(1);
+    }
 }
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
+
+#[cfg(target_env = "ohos")]
+pub fn start_zed_main(base_path: Option<String>) {
+    zlog::ohos::direct_hilog_info("zcoder-boot", "[boot] start_zed_main entered");
+    if let Some(base_path) = base_path.filter(|path| !path.is_empty()) {
+        let data_dir = PathBuf::from(base_path).join("zed");
+        if let Some(data_dir) = data_dir.to_str() {
+            paths::set_custom_data_dir(data_dir);
+        }
+    }
+    main();
+}
 
 fn main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
@@ -292,14 +319,26 @@ fn main() {
 
     zlog::init();
 
-    if stdout_is_a_pty() {
-        zlog::init_output_stdout();
-    } else {
-        let result = zlog::init_output_file(paths::log_file(), Some(paths::old_log_file()));
-        if let Err(err) = result {
-            eprintln!("Could not open log file: {}... Defaulting to stdout", err);
+    #[cfg(not(target_env = "ohos"))]
+    {
+        if stdout_is_a_pty() {
             zlog::init_output_stdout();
-        };
+        } else {
+            let result = zlog::init_output_file(paths::log_file(), Some(paths::old_log_file()));
+            if let Err(err) = result {
+                eprintln!("Could not open log file: {}... Defaulting to stdout", err);
+                zlog::init_output_stdout();
+            };
+        }
+    }
+    #[cfg(target_env = "ohos")]
+    {
+        // OHOS: logs are redirected to hilog by zlog, so skip file/stdout output initialization;
+        // emit a boot confirmation log directly to hilog to verify the redirection chain works.
+        zlog::ohos::direct_hilog_info(
+            "zcoder-boot",
+            "zlog redirected to hilog, file logging skipped on OHOS",
+        );
     }
     ztracing::init();
 
@@ -361,7 +400,7 @@ fn main() {
     {
         false
     } else {
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        #[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))]
         {
             crate::zed::listen_for_cli_connections(open_listener.clone()).is_err()
         }
@@ -375,6 +414,11 @@ fn main() {
         {
             use zed::mac_only_instance::*;
             ensure_only_instance() != IsOnlyInstance::Yes
+        }
+
+        #[cfg(target_env = "ohos")]
+        {
+            false
         }
     };
     if failed_single_instance_check {
