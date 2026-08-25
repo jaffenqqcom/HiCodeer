@@ -527,6 +527,33 @@ WasmState process::Host::run_command() 到 [CapabilityGranter + util::command] �
 ExtensionLspAdapter 到 [path_from_extension] 到 扩展目录内二进制 → lsp.rs spawn 子进程  [语言服务器二进制从扩展包内解析并以独立进程启动]
 ```
 
+### Extensions 跨平台运行分析（Linux 下安装/运行可行性）
+
+**结论：能，且无需任何修改。** 扩展系统在代码层面完全平台无关：`extension_host` / `language_extension` / `theme_extension` 三个 crate **零 `cfg(target_env = "ohos")`**；`main.rs` 的 `extension::init` 与 `extension_host::init` 无条件调用（无 cfg 包裹）；`paths::extensions_dir()` 无 ohos 分支（Linux 下即 `data_dir()/extensions`）。wasm 扩展是 **wasm32-wasip2 组件**，编译产物是平台无关的纯 wasm，wasmtime 在 x86_64/aarch64 Linux 原生运行。这本质就是 Zed 桌面版的标准架构，OHOS 移植靠不改扩展核心保持一致——唯一平台差异（子进程执行）收敛在 `util::command` 这一个抽象点。
+
+```
+扩展跨平台 到 util::command::new_command() 在 crates/util/src/command.rs  [唯一平台抽象点；cfg(target_env = "ohos") 分支走 cmd-agent 远程在 OpenEuler VM 执行，其余平台走 smol::process::Command 本机执行；process::Host::run_command 与 LSP 二进制 spawn 全走此函数]
+```
+
+#### 通信接口清单（wasm ↔ zcoder，WIT 双向）
+
+```
+扩展通信 到 ExtensionCall 消息循环 → wasm 导出函数 在 crates/extension_host/src/wasm_host.rs  [zcoder → 扩展；call_init_extension / call_language_server_command / call_run_slash_command / call_context_server_command / call_get_dap_binary / call_labels_for_completions 等，WIT 层在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs（latest，带版本化兼容）]
+扩展通信 到 process::Host::run_command() 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs  [扩展 → zcoder 请求执行命令；CapabilityGranter 双重校验（manifest allow_exec + 用户 granted_extension_capabilities），默认 granted_capabilities 为空即全部拒绝]
+扩展通信 到 ExtensionImports::download_file() 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs  [扩展请求下载；grant_download_file 校验 URL → writeable_path_from_extension 路径逃逸检查（symlink / .. 拒绝）→ 下载到扩展 work_dir]
+扩展通信 到 ExtensionImports::npm_install_package() 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs  [扩展请求 npm 安装；grant_npm_install_package 校验包名]
+扩展通信 到 ExtensionImports::get_settings() 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs  [扩展读设置；经 WasmState::on_main_thread 切回主线程，按 language / lsp / context_servers 分类返回 JSON]
+扩展通信 到 HostProject / HostWorktree / HostKeyValueStore 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs  [Rust 委托对象（Arc<dyn WorktreeDelegate> 等）经 ResourceTable 压入 Store，wasm 侧持 Resource 句柄调用]
+扩展通信 到 MainThreadCall channel 在 crates/extension_host/src/wasm_host.rs  [扩展 → zcoder 主线程；mpsc unbounded 通道，主线程异步执行后 oneshot 返回]
+扩展通信 到 dap::Host::resolve_tcp_template / make_file_executable / set_language_server_installation_status 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs  [其余 import 接口：DAP TCP 解析、设可执行位、语言服务器状态上报]
+```
+
+跨文件跳转：
+```
+extension::init() 在 crates/zed/src/main.rs 到 ExtensionStore::new() 在 crates/extension_host/src/extension_host.rs  [无条件调用，无 cfg 限制；Linux 桌面分支同样启用扩展系统]
+process::Host::run_command() 在 crates/extension_host/src/wasm_host/wit/since_v0_8_0.rs 到 util::command::new_command() 在 crates/util/src/command.rs  [跨平台抽象点；OHOS 经 cmd-agent 远程执行（见 Git 操作模块跨运行时跳转）]
+```
+
 ### 应用层功能模块
 
 ```
@@ -602,6 +629,52 @@ start_language_server() 在 crates/project/src/lsp_store.rs 到 LanguageServer::
 ```
 check_if_user_installed() 到 [delegate.which] 到 which() 在 crates/project/src/lsp_store.rs  [OHOS 分支（cfg ohos，14780）经 cmd-agent 远程在 OpenEuler VM 上执行 which；非 ohos 分支（14799）用 which crate 本机查 PATH]
 which miss 到 [cmd-agent spawn -> exit != 0] 到 ensure_program_installed() 在 crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-server/src/install.rs  [which 未命中触发 VM 后台 dnf 自动安装（单 worker 串行），下次查询命中即直接用 VM 已装 LSP binary，跳过下载]
+```
+
+### Git 操作模块（git 子进程执行路径与线程归属）
+
+git 操作 100% 走 git CLI 子进程（`crates/git` 无 git2/libgit2 依赖）；OHOS 上子进程经 `util::command::Command` 远程投给 cmd-agent daemon，在 OpenEuler VM 执行（沙箱禁 exec）。线程归属分两派：**读/普通写操作在后台（BackgroundExecutor）；commit / reset / checkout_files / push / pull / fetch 与 clone 对话框在前台（UI 主线程）**。前台操作在 OHOS 上因 `Command::spawn()` 的同步阻塞握手而真实卡 UI（最长 20s，SPAWN_REPLY_TIMEOUT）。
+
+后台执行（`self.executor.spawn` BackgroundExecutor / `cx.background_spawn`，OHOS 每任务 `std::thread::spawn` 线程）：
+```
+Git 到 status() 在 crates/git/src/repository.rs  [由 git_store 状态刷新触发；executor.spawn 后台，git status 子进程]
+Git 到 diff_tree() / diff() / diff_stat() 在 crates/git/src/repository.rs  [由 diff 计算触发；executor.spawn 后台]
+Git 到 blame() / blame_at_revision() 在 crates/git/src/repository.rs  [由编辑器 git blame 触发；executor.spawn 后台]
+Git 到 stage_paths() / unstage_paths() 在 crates/git/src/repository.rs  [由 git_panel stage/unstage 触发；executor.spawn 后台]
+Git 到 stash_paths() / stash_pop() / stash_apply() / stash_drop() 在 crates/git/src/repository.rs  [由 git_panel stash 操作触发；executor.spawn 后台]
+Git 到 create_branch() / delete_branch() / checkout_branch_in_worktree() 在 crates/git/src/repository.rs  [由 git_panel 分支操作触发；executor.spawn 后台]
+Git 到 restore_checkpoint() / diff_checkpoints() 在 crates/git/src/repository.rs  [由 checkpoint 恢复/对比触发；executor.spawn 后台]
+Git 到 open_repo() 在 crates/fs/src/fs.rs  [由 git_store::LocalRepositoryState::new 的 background_spawn 调用；git2 Repository::open 后台执行]
+Git 到 git_init() / git_clone() / git_config() 在 crates/fs/src/fs.rs  [由 git_store 的 background_executor().spawn 包裹调用]
+```
+
+前台执行（UI 主线程；OHOS 上同步阻塞卡 UI）：
+```
+Git 到 commit() 在 crates/git/src/repository.rs  [由 git_panel commit 触发；inline BoxFuture 不经 executor.spawn，job 在前台 worker 执行；commit 注释明确"不能放后台线程，要阻塞等待 credential helper 弹窗"；OHOS Command::spawn 同步握手卡 UI]
+Git 到 reset() 在 crates/git/src/repository.rs  [由 git_panel reset 触发；同上前台+OHOS阻塞]
+Git 到 checkout_files() 在 crates/git/src/repository.rs  [由 git_panel revert 触发；同上]
+Git 到 push() / pull() / fetch() 在 crates/git/src/repository.rs  [由 git_panel push/pull/fetch 触发；同上]
+Git 到 clone_and_open() 在 crates/git_ui/src/clone.rs  [由 clone 对话框触发；cx.spawn 前台直接 await fs.git_clone，绕过 git_store 后台包装]
+```
+
+前台 worker 机制（承载上述写操作）：
+```
+Git 到 spawn_local_git_worker() 在 crates/project/src/git_store.rs  [由 GitStore 初始化时调用；cx.spawn 在前台启动，循环消费 job_sender 里的 job]
+Git 到 send_job() / send_keyed_job() 在 crates/project/src/git_store.rs  [由 git_panel/editor 各 git 操作触发；job 闭包套 cx.spawn 在前台 await backend 方法]
+```
+
+跨文件跳转：
+```
+git_ui commit 在 crates/git_ui/src/git_panel.rs 到 repo.commit() 在 crates/project/src/git_store.rs  [返回 oneshot Receiver；job 在前台 worker 执行]
+git_store::commit() 在 crates/project/src/git_store.rs 到 backend.commit() 在 crates/git/src/repository.rs  [send_job 包装；backend.commit 是 inline BoxFuture，前台 poll 时跑 git 子进程]
+git_store::checkout_files() 在 crates/project/src/git_store.rs 到 backend.checkout_files() 在 crates/git/src/repository.rs  [send_job 包装；前台执行]
+git_ui clone 在 crates/git_ui/src/clone.rs 到 fs.git_clone() 在 crates/fs/src/fs.rs  [cx.spawn 前台直接 await；不走 git_store 后台包装]
+git_store::spawn_local_git_worker() 在 crates/project/src/git_store.rs 到 send_keyed_job() 在 crates/project/src/git_store.rs  [job 经 job_sender 投递到前台 worker 执行]
+```
+
+跨运行时跳转：
+```
+Git 到 util::command::Command::spawn() 在 crates/util/src/command/ohos.rs 到 [ExecSpec + SpawnReply] 到 cmd-agent daemon 在 crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-client/src/client.rs  [OHOS 沙箱禁 exec，git 在 OpenEuler VM 远程执行；spawn 是同步阻塞握手（rx.recv_timeout，超时上限 20s）——前台 git 写操作因此卡 UI 最多 20s]
 ```
 
 ### 关键配置与产物

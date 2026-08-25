@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+# patches/wgpu is a self-contained nested workspace (own [workspace] + Cargo.lock),
+# so exclude it from this workspace to keep its workspace-inherited values intact.
+exclude = ["patches/wgpu"]
 members = [
     "crates/acp_thread",
     "crates/acp_tools",
@@ -905,7 +908,7 @@ js-sys = "0.3"
 console_error_panic_hook = "0.1.7"
 web-time = "1.1.0"
 webrtc-sys = "0.3.23"
-wgpu = "29.0.4"
+wgpu = "29.0.3"
 windows-core = "0.61"
 windows-registry = "0.6.0"
 yaml-rust2 = "0.8"
@@ -988,6 +991,15 @@ webrtc-sys = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev 
 nix = { path = "patches/nix" }
 ohos-xcomponent-binding = { path = "crates/gpui_ohos/depend/ohos-xcomponent-binding" }
 ohos-xcomponent-sys = { path = "crates/gpui_ohos/depend/ohos-xcomponent-sys" }
+# Local patched wgpu tree (copied from warp-ohos), which adds OHOS Vulkan
+# surface support (VK_OHOS_surface) on top of wgpu 29.0.3. The OHOS-specific
+# changes are guarded by #[cfg(target_env = "ohos")], so other platforms
+# compile the same code as upstream 29.0.3.
+wgpu = { path = "patches/wgpu/wgpu" }
+wgpu-core = { path = "patches/wgpu/wgpu-core" }
+wgpu-hal = { path = "patches/wgpu/wgpu-hal" }
+wgpu-types = { path = "patches/wgpu/wgpu-types" }
+naga = { path = "patches/wgpu/naga" }
 
 [profile.dev]
 split-debuginfo = "unpacked"
