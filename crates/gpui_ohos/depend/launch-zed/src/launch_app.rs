@@ -7,7 +7,7 @@ const SSH_HOST: &str = "172.16.100.2";
 const SSH_PORT: u16 = 22;
 const SSH_USER: &str = "user";
 const SSH_PASS: &str = "12345678";
-const REMOTE_DIR: &str = "~/cmd-agent";
+const REMOTE_DIR: &str = "/home/user/cmd-agent";
 const AGENT_PORT: u16 = 4040;
 /// Number of attempts to initialize the business-side client after the daemon
 /// thread starts (the daemon needs a moment to bind its unix socket).
@@ -88,6 +88,7 @@ fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
                 if let Err(err) = util::command::init(&socket_path, None) {
                     log::warn!("cmd-agent util init failed: {err}");
                 }
+                capture_vm_arch();
                 log::info!("cmd-agent client initialized (attempt {attempt})");
                 return;
             }
@@ -98,6 +99,42 @@ fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
         }
     }
     log::error!("cmd-agent client init failed after retries");
+}
+
+/// Best-effort capture of the VM's CPU architecture once the cmd-agent
+/// executor is up, so LSP downloads are keyed to the VM platform rather than
+/// the device's. Runs on a background thread; if it fails (e.g. the VM is
+/// still being deployed), `vm_platform()` stays `None` and callers fall back
+/// to the device architecture.
+#[cfg(target_env = "ohos")]
+fn capture_vm_arch() {
+    std::thread::spawn(|| {
+        let arch = smol::block_on(async {
+            util::command::new_command("uname")
+                .arg("-m")
+                .output()
+                .await
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| {
+                    let arch = String::from_utf8(output.stdout).ok()?.trim().to_string();
+                    if arch.is_empty() {
+                        None
+                    } else {
+                        Some(arch)
+                    }
+                })
+        });
+        match arch {
+            Some(arch) => {
+                log::info!("capture_vm_arch: captured VM arch: {arch}");
+                gpui_ohos_linker::set_vm_arch(arch);
+            }
+            None => log::warn!(
+                "capture_vm_arch: failed to query VM arch; downloads fall back to device arch"
+            ),
+        }
+    });
 }
 
 #[cfg(not(target_env = "ohos"))]

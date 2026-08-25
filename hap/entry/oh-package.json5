@@ -11,6 +11,7 @@
     "@ohos-rs/ability-plugin-files": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/files",
     "@ohos-rs/ability-plugin-pinch": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/pinch",
     "@ohos-rs/ability-plugin-filedrop": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/filedrop",
+    "@ohos-rs/ability-plugin-openwith": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/openwith",
     "libzcoder.so": "file:./src/main/cpp/types/libzcoder"
   }
 }

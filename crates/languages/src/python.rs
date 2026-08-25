@@ -301,9 +301,18 @@ impl TyLspAdapter {
     }
 
     fn build_asset_name() -> Result<(String, String)> {
-        let arch = match consts::ARCH {
-            "x86" => "i686",
-            _ => consts::ARCH,
+        // On OHOS the binary must run on the VM, so the download is keyed to
+        // the VM's architecture (queried from the VM), not the device's.
+        #[cfg(target_env = "ohos")]
+        let arch = gpui_platform::vm_platform()
+            .map(|platform| platform.arch)
+            .unwrap_or_else(|| consts::ARCH.to_string());
+        #[cfg(not(target_env = "ohos"))]
+        let arch = consts::ARCH.to_string();
+        let arch = if arch == "x86" {
+            "i686".to_string()
+        } else {
+            arch
         };
         let os = Self::ARCH_SERVER_NAME;
         let suffix = match consts::OS {

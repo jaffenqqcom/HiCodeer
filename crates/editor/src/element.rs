@@ -10698,22 +10698,15 @@ fn compute_auto_height_layout(
     let font_id = window.text_system().resolve_font(&style.text.font());
     let font_size = style.text.font_size.to_pixels(window.rem_size());
     let line_height = style.text.line_height_in_pixels(window.rem_size());
-    let em_width = window.text_system().em_width(font_id, font_size).unwrap();
-
-    let mut snapshot = editor.snapshot(window, cx);
+    let snapshot = editor.snapshot(window, cx);
     let gutter_dimensions = snapshot.gutter_dimensions(font_id, font_size, style, window, cx);
 
     editor.gutter_dimensions = gutter_dimensions;
-    let text_width = width - gutter_dimensions.width;
-    let overscroll = size(em_width, px(0.));
 
-    let editor_width = text_width - gutter_dimensions.margin - overscroll.width - em_width;
-    let wrap_width = calculate_wrap_width(editor.soft_wrap_mode(cx), editor_width, em_width)
-        .map(|width| width.min(editor_width));
-    if wrap_width.is_some() && editor.set_wrap_width(wrap_width, cx) {
-        snapshot = editor.snapshot(window, cx);
-    }
-
+    // The measure callback must stay side-effect free: wrap width is committed
+    // once per frame by EditorElement::prepaint, so calling set_wrap_width here
+    // would mutate editor state on every taffy measure pass, triggering a rewrap
+    // and a layout-invalidation feedback loop.
     let scroll_height = (snapshot.max_point().row().next_row().0 as f32) * line_height;
 
     let min_height = line_height * min_lines as f32;

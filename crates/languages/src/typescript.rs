@@ -664,6 +664,27 @@ pub struct TypeScriptVersions {
 impl LspInstaller for TypeScriptLspAdapter {
     type BinaryVersion = TypeScriptVersions;
 
+    // On OHOS the device sandbox cannot run or hold LSP binaries, so a
+    // globally npm-installed `typescript-language-server` on the VM is used
+    // through `which` instead of a device-side npm install into the sandbox.
+    // Desktop keeps its historical behavior of always managing the server
+    // (the trait default returns None).
+    #[cfg(target_env = "ohos")]
+    async fn check_if_user_installed(
+        &self,
+        delegate: &Arc<dyn LspAdapterDelegate>,
+        _: Option<Toolchain>,
+        _: &AsyncApp,
+    ) -> Option<LanguageServerBinary> {
+        let env = delegate.shell_env().await;
+        let path = delegate.which(Self::SERVER_NAME.as_ref()).await?;
+        Some(LanguageServerBinary {
+            path: path.clone(),
+            arguments: typescript_server_binary_arguments(&path),
+            env: Some(env),
+        })
+    }
+
     async fn fetch_latest_server_version(
         &self,
         _: &Arc<dyn LspAdapterDelegate>,

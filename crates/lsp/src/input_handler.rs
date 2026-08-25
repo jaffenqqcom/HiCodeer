@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::str;
 use std::sync::Arc;
 
@@ -98,18 +99,29 @@ impl LspStdoutHandler {
             buffer.resize(message_len, 0);
             stdout.read_exact(&mut buffer).await?;
 
-            if let Ok(message) = str::from_utf8(&buffer) {
+            // OHOS: the language server runs on the VM, so URIs it sends are
+            // VM paths; map them back to device paths so buffers and
+            // diagnostics resolve to the device-side worktree.
+            #[cfg(target_env = "ohos")]
+            let parsed_buffer = Cow::Owned(
+                crate::map_uri_vm_to_device(str::from_utf8(&buffer).unwrap_or_default())
+                    .into_bytes(),
+            );
+            #[cfg(not(target_env = "ohos"))]
+            let parsed_buffer = Cow::Borrowed(&buffer[..]);
+
+            if let Ok(message) = str::from_utf8(&parsed_buffer) {
                 log::trace!("incoming message: {message}");
                 for handler in io_handlers.lock().values_mut() {
                     handler(IoKind::StdOut, message);
                 }
             }
 
-            if let Ok(msg) = serde_json::from_slice::<NotificationOrRequest>(&buffer) {
+            if let Ok(msg) = serde_json::from_slice::<NotificationOrRequest>(&parsed_buffer) {
                 notifications_sender.send(msg).await?;
             } else if let Ok(AnyResponse {
                 id, error, result, ..
-            }) = serde_json::from_slice(&buffer)
+            }) = serde_json::from_slice(&parsed_buffer)
             {
                 let handler = {
                     response_handlers

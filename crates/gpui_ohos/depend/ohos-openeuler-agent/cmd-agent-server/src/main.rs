@@ -8,6 +8,9 @@
 //! server's lifetime to its client.
 
 mod error;
+// Kept compiled but uncalled: installs are now driven by zcoder's own
+// download/install commands, not by `which` misses.
+#[allow(dead_code)]
 mod install;
 mod spawn;
 
@@ -551,15 +554,9 @@ async fn run_spawn(
     log::info!(
         "session {session_id} done, exit_code={exit_code:?}, timed_out={timed_out}"
     );
-    // A `which <program>` that exits non-zero means the queried program is
-    // missing, and the caller intends to use it. Queue a background install
-    // (dnf on the OpenEuler VM) so a later `which` finds it. The install is
-    // asynchronous, so this session still reports the miss to the caller.
-    if exit_code.map_or(false, |code| code != 0) {
-        if let Some(program) = which_program(&spec) {
-            install::ensure_program_installed(&program);
-        }
-    }
+    // Installs are driven by zcoder's own download/install commands (which
+    // now run on the VM), not by a `which` miss, so no install is triggered
+    // from here.
     Ok(())
 }
 
@@ -575,33 +572,4 @@ fn kind_of(message: &ClientMessage) -> &'static str {
         ClientMessage::Query => "query",
         ClientMessage::Shutdown => "shutdown",
     }
-}
-
-/// Extracts the queried program from a `which <program>` spawn: either a
-/// direct `which <program>` (binary == "which") or a shell one-liner such as
-/// `bash -l -c "which rust-analyzer"`. Returns None for non-which commands so
-/// an unrelated failing command never triggers an install.
-fn which_program(spec: &ExecSpec) -> Option<String> {
-    if spec.binary == "which" {
-        return spec.args.first().cloned();
-    }
-    let shell_like = spec.binary == "bash"
-        || spec.binary == "sh"
-        || spec.binary.ends_with("/bash")
-        || spec.binary.ends_with("/sh");
-    if !shell_like {
-        return None;
-    }
-    for arg in &spec.args {
-        let trimmed = arg.trim();
-        if let Some(rest) = trimmed.strip_prefix("which") {
-            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
-                let program = rest.trim();
-                if !program.is_empty() {
-                    return Some(program.to_string());
-                }
-            }
-        }
-    }
-    None
 }

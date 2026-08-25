@@ -2,8 +2,15 @@
 //!
 //! When a `which <program>` spawn exits non-zero (the program is not
 //! installed), the caller is about to use that program. This module queues a
-//! background install with the VM's package manager (dnf on OpenEuler) so a
-//! later `which` finds it. The install never blocks the caller's `which`.
+//! background install — the system package manager (dnf) first, with a global
+//! npm install as a fallback when dnf has no such package — so a later
+//! `which` finds it. The install never blocks the caller's `which`.
+//!
+//! Languages and their language servers are too many to enumerate, so the
+//! strategy is general rather than keyed to a fixed list: any program is
+//! tried with dnf by name, and only a definitive dnf "No match for argument"
+//! triggers the npm fallback (a transient repo/network error must not install
+//! an unrelated same-named npm package).
 //!
 //! Install requests funnel through a single background worker thread that
 //! processes the queue serially: dnf holds an exclusive lock on its package
@@ -12,6 +19,7 @@
 //! retried on a later `which` miss, up to `MAX_INSTALL_ATTEMPTS`.
 
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
@@ -23,15 +31,40 @@ use log::{error, info, warn};
 /// run on every `which` miss.
 const MAX_INSTALL_ATTEMPTS: u32 = 3;
 
-/// Programs whose dnf package name differs from the program name. Names not
-/// listed here default to the same name (most tools ship under their own
-/// name). Mappings are kept minimal; unknown programs are tried by name and
-/// failures are logged.
-fn package_name(program: &str) -> &str {
+/// dnf package name for a program; most tools ship under their own name, only
+/// a few are renamed (nodejs is packaged as nodejs, npm ships with it).
+fn dnf_package<'a>(program: &'a str) -> &'a str {
     match program {
-        "node" => "nodejs",
+        "node" | "npm" => "nodejs",
         _ => program,
     }
+}
+
+/// npm package name for a program. Defaults to the program name itself; only
+/// the cases where the npm package ships under a different name than the
+/// executable are listed.
+fn npm_package<'a>(program: &'a str) -> &'a str {
+    match program {
+        // vscode-langservers-extracted provides css/json language servers.
+        "vscode-css-language-server" | "vscode-json-language-server" => {
+            "vscode-langservers-extracted"
+        }
+        "vtsls" => "@vtsls/language-server",
+        "tailwindcss-language-server" => "@tailwindcss/language-server",
+        "pyright-langserver" => "pyright",
+        _ => program,
+    }
+}
+
+/// True when dnf reports the package is absent from every enabled repo (its
+/// `No match for argument` error, on stdout; `Unable to find a match` on
+/// stderr). This is the only condition under which the npm fallback is safe.
+fn dnf_reported_no_match(output: &std::process::Output) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stdout.contains("No match for argument")
+        || stderr.contains("No match for argument")
+        || stderr.contains("Unable to find a match")
 }
 
 /// Programs whose install is queued or already succeeded. A program is kept
@@ -45,10 +78,10 @@ static FAILURES: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 /// Pending install requests fed to the single installer worker thread.
 static QUEUE: Mutex<Option<std::sync::mpsc::Sender<String>>> = Mutex::new(None);
 
-/// Queues a background dnf install for `program` (at most one pending install
-/// per program). Returns immediately; the caller's `which` still reports the
+/// Queues a background install for `program` (at most one pending install per
+/// program). Returns immediately; the caller's `which` still reports the
 /// program missing for this query. The install finishes asynchronously, so a
-/// subsequent `which` finds the program once dnf has installed it.
+/// subsequent `which` finds the program once it has been installed.
 pub fn ensure_program_installed(program: &str) {
     // A queried program may carry a path (e.g. /usr/bin/foo); dnf only knows
     // package names, so keep the basename.
@@ -122,38 +155,72 @@ fn install_worker(rx: std::sync::mpsc::Receiver<String>) {
     info!("install: installer worker stopped");
 }
 
-/// Runs the dnf install for one program to completion. Blocking by design; the
-/// caller runs this on the dedicated installer worker.
+/// Runs the install for one program to completion: dnf first, npm fallback on
+/// a definitive dnf "No match". Blocking by design; the caller runs this on
+/// the dedicated installer worker.
 fn run_install(program: &str) {
-    let pkg = package_name(program);
-    // OpenEuler's package manager is dnf. The server may run as a non-root
-    // user (deployed over SSH), so use passwordless sudo when not root; if the
-    // user lacks sudo rights the install fails and is logged.
+    let dnf_output = run_install_command(program, dnf_package(program), "dnf", &["install", "-y"]);
+    let Ok(dnf_output) = dnf_output else {
+        record_failure(program);
+        return;
+    };
+    if dnf_output.status.success() {
+        info!("install: {program} installed successfully (dnf)");
+        clear_failures(program);
+        return;
+    }
+    if !dnf_reported_no_match(&dnf_output) {
+        record_failure(program);
+        return;
+    }
+    info!("install: {program} not in dnf repos, falling back to npm");
+    let npm_output = run_install_command(program, npm_package(program), "npm", &["install", "-g"]);
+    let Ok(npm_output) = npm_output else {
+        record_failure(program);
+        return;
+    };
+    if npm_output.status.success() {
+        info!("install: {program} installed successfully (npm)");
+        clear_failures(program);
+    } else {
+        record_failure(program);
+    }
+}
+
+/// Runs `[sudo -n] <tool> <args...> <pkg>` and returns its output. The server
+/// may run as a non-root user (deployed over SSH), so use passwordless sudo
+/// when not root; if the user lacks sudo rights the install fails and is
+/// logged. npm global installs land under the system node's prefix, so the
+/// installed binary shows up on the same PATH `which` uses.
+fn run_install_command(
+    program: &str,
+    pkg: &str,
+    tool: &str,
+    args: &[&str],
+) -> io::Result<std::process::Output> {
     let mut install = if unsafe { libc::getuid() } == 0 {
-        Command::new("dnf")
+        Command::new(tool)
     } else {
         let mut sudo = Command::new("sudo");
         sudo.arg("-n");
-        sudo.arg("dnf");
+        sudo.arg(tool);
         sudo
     };
-    install.args(["install", "-y", pkg]);
-    info!("install: installing {program} (pkg={pkg})");
-    match install.output() {
-        Ok(output) if output.status.success() => {
-            info!("install: {program} installed successfully");
-            clear_failures(program);
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("install: {program} install failed: {}", stderr.trim());
-            record_failure(program);
-        }
+    install.args(args);
+    install.arg(pkg);
+    info!("install: installing {program} via {tool} (pkg={pkg})");
+    let output = match install.output() {
+        Ok(output) => output,
         Err(err) => {
-            error!("install: {program} install could not start: {err}");
-            record_failure(program);
+            error!("install: {program} install via {tool} could not start: {err}");
+            return Err(err);
         }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("install: {program} install via {tool} failed: {}", stderr.trim());
     }
+    Ok(output)
 }
 
 /// Marks an install failure: allow a retry (remove from the requested set) and

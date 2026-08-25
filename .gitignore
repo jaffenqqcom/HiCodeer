@@ -63,3 +63,6 @@ hap/entry/libs
 .nixos-test-history
 
 .local*
+
+# WorkBuddy workspace data
+**/.workbuddy

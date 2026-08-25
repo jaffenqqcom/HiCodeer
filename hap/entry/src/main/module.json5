@@ -18,7 +18,7 @@
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:startIcon",
+        "startWindowIcon": "$media:foreground",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "metadata": [
@@ -34,6 +34,88 @@
             ],
             "actions": [
               "ohos.want.action.home"
+            ]
+          },
+          {
+            "entities": [
+              "entity.system.default"
+            ],
+            "actions": [
+              "ohos.want.action.viewData",
+              "ohos.want.action.sendData",
+              "ohos.want.action.sendMultipleData"
+            ],
+            "uris": [
+              {
+                "scheme": "file",
+                "type": "general.plain-text",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.text",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.source-code",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.markdown",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.json",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.xml",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.html",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.css",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.type-script",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.java-script",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.python-script",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.shell-script",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "type": "general.comma-separated-values-text",
+                "linkFeature": "FileOpen"
+              },
+              {
+                "scheme": "file",
+                "pathRegex": ".*\\.(rs|markdown|md|txt|toml|json5|jsonc|json|ets|yml|yaml|css|scss|jsx|mjs|cjs|js|tsx|mts|cts|ts|c|h|cc|cpp|hpp|pyi|py|mod|go|work|lock|patch|diff|gitcommit|log|csv|xml|html|sh|bash)$",
+                "linkFeature": "FileOpen"
+              }
             ]
           }
         ]

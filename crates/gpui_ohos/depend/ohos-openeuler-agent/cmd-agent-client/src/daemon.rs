@@ -159,7 +159,7 @@ pub fn parse_args_from(
     let mut ssh_port: u16 = 22;
     let mut ssh_user: Option<String> = None;
     let mut ssh_pass: Option<String> = None;
-    let mut remote_dir = "~/cmd-agent".to_string();
+    let mut remote_dir = "/home/user/cmd-agent".to_string();
     let mut server_binary: Option<PathBuf> = None;
     let mut agent_port: u16 = DEFAULT_AGENT_PORT;
 

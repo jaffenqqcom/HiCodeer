@@ -22,9 +22,12 @@ const CHILD_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// How long to keep reaping after a kill before giving up on the child.
 const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Device-side application-sandbox file root; the VM mirrors it at the login
-/// home (`~`), so `<this>/...` becomes `$HOME/...`.
+/// Device-side application-sandbox file root; the VM mirrors it under the
+/// cmd-agent data directory, so `<this>/...` becomes `$VM_AGENT_ROOT/...`.
 const DEVICE_APP_FILES_ROOT: &str = "/data/storage/el2/base/haps/entry/files";
+/// VM-side root that mirrors the device sandbox files (LSP installs, npm
+/// cache, formatter packages all live under `<this>/zed/...`).
+const VM_AGENT_ROOT: &str = "/home/user/cmd-agent";
 /// Device-side IDE workspace root; the VM shares it at the workspace mount.
 const DEVICE_IDE_ROOT: &str = "/storage/Users/currentUser";
 const VM_SHARED_ROOT: &str = "/mnt/linux_share";
@@ -32,16 +35,30 @@ const VM_SHARED_ROOT: &str = "/mnt/linux_share";
 /// Maps an OHOS-side path to the VM-side path using the fixed rules below.
 /// Every argument may carry a path, so callers apply this to each one.
 ///
-/// Rule A: `<DEVICE_APP_FILES_ROOT>/...` -> `$HOME/...`
+/// Rule A: `<DEVICE_APP_FILES_ROOT>/...` -> `<VM_AGENT_ROOT>/...`
 /// Rule B: `<DEVICE_IDE_ROOT>/...` -> `<VM_SHARED_ROOT>/...`
 ///
 /// The prefix match is component-bounded: a path like `<root>X/...` whose next
 /// segment merely shares a prefix with the root is left untouched.
 pub fn map_path(path: &str) -> String {
+    // Some args embed a path after a flag (e.g. `--cache=<path>`); map the
+    // value part so the device path is rewritten to the VM's. Only flag-like
+    // args are split, so plain paths and script contents pass through whole.
+    if path.starts_with('-') {
+        if let Some((flag, value)) = path.split_once('=') {
+            if !value.is_empty() && value.starts_with('/') {
+                return format!("{flag}={}", map_path_value(value));
+            }
+        }
+    }
+    map_path_value(path)
+}
+
+/// Maps a bare path argument under the fixed rules.
+fn map_path_value(path: &str) -> String {
     if let Some(rest) = path.strip_prefix(DEVICE_APP_FILES_ROOT) {
         if rest.is_empty() || rest.starts_with('/') {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
-            return format!("{}{}", home, rest);
+            return format!("{VM_AGENT_ROOT}{rest}");
         }
     }
     if let Some(rest) = path.strip_prefix(DEVICE_IDE_ROOT) {
@@ -145,6 +162,17 @@ pub fn spawn_direct(
         .envs(&spec.env)
         .process_group(0);
     if let Some(cwd) = &cwd {
+        // The device client creates its working directory before issuing a
+        // command, but the VM-side mirror path may not exist yet (e.g. an npm
+        // install dir under $HOME). Create it so spawn succeeds; a failure
+        // here is non-fatal because the child may create the directory itself
+        // (e.g. npm --prefix).
+        if !Path::new(cwd).exists() {
+            log::info!("spawn: creating mapped cwd {cwd:?}");
+            if let Err(err) = std::fs::create_dir_all(cwd) {
+                log::warn!("spawn: failed to create mapped cwd {cwd:?}: {err}");
+            }
+        }
         command.current_dir(cwd);
     }
 

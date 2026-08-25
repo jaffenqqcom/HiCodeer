@@ -91,7 +91,7 @@ pub async fn move_folder_files_to_folder<P: AsRef<Path>>(
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_env = "ohos")))]
 /// Set the permissions for the given path so that the file becomes executable.
 /// This is a noop for non-unix platforms.
 pub async fn make_file_executable(path: &Path) -> std::io::Result<()> {
@@ -100,6 +100,29 @@ pub async fn make_file_executable(path: &Path) -> std::io::Result<()> {
         <fs::Permissions as fs::unix::PermissionsExt>::from_mode(0o755),
     )
     .await
+}
+
+#[cfg(target_env = "ohos")]
+/// Set the permissions for the given path so that the file becomes executable.
+/// On OHOS the file lives on the VM (commands run there), so the chmod is
+/// executed on the VM through the cmd-agent.
+pub async fn make_file_executable(path: &Path) -> std::io::Result<()> {
+    let output = crate::command::new_command("chmod")
+        .arg("+x")
+        .arg(path)
+        .output()
+        .await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "chmod +x failed on the VM: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ))
+    }
 }
 
 #[cfg(not(unix))]

@@ -24,7 +24,12 @@ impl WgpuContext {
             }
         };
 
-        let default_backends = wgpu::Backends::GL;
+        // Use Vulkan by default: the local patched wgpu (see [patch.crates-io]
+        // in the workspace root) ships OHOS Vulkan surface support
+        // (VK_OHOS_surface). A/B test showed lower CPU usage than GLES (about
+        // 7% less while scrolling, 16-30% less while idle). Override with the
+        // WGPU_BACKEND env var (e.g. WGPU_BACKEND=gles) to fall back to GLES.
+        let default_backends = wgpu::Backends::VULKAN;
         let backends = match wgpu::Backends::from_env() {
             Some(configured_backends) if configured_backends.is_empty() => {
                 log::warn!(

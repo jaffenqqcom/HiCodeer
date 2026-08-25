@@ -17,8 +17,10 @@ openharmony-ability = { path = "../openharmony-ability/crates/ability" }
 openharmony-ability-derive = { path = "../openharmony-ability/crates/derive" }
 cmd-agent-client = { path = "../ohos-openeuler-agent/cmd-agent-client" }
 cmd-agent-linker = { path = "../ohos-openeuler-agent/cmd-agent-linker" }
+gpui_ohos_linker.workspace = true
 util = { path = "../../../util" }
 log = "0.4"
+smol.workspace = true
 napi-ohos = "1.1.6"
 napi-derive-ohos = "1.1.6"
 

@@ -3,6 +3,39 @@ mod input_handler;
 pub use lsp_types::request::*;
 pub use lsp_types::*;
 
+/// Maps LSP file URIs from device paths to the VM paths they share (the IDE
+/// workspace mounts `/storage/Users/currentUser` at `/mnt/linux_share` on the
+/// VM), so the language server (which runs on the VM) sees paths it can open.
+/// Applied to outbound messages; a no-op on non-OHOS platforms.
+#[cfg(target_env = "ohos")]
+pub(crate) fn map_uri_device_to_vm(message: &str) -> String {
+    message.replace(
+        "file:///storage/Users/currentUser/",
+        "file:///mnt/linux_share/",
+    )
+}
+
+/// Reverse of [`map_uri_device_to_vm`]: maps VM paths back to device paths so
+/// buffers and diagnostics resolve to the device-side worktree. Applied to
+/// inbound messages; a no-op on non-OHOS platforms.
+#[cfg(target_env = "ohos")]
+pub(crate) fn map_uri_vm_to_device(message: &str) -> String {
+    message.replace(
+        "file:///mnt/linux_share/",
+        "file:///storage/Users/currentUser/",
+    )
+}
+
+#[cfg(not(target_env = "ohos"))]
+pub(crate) fn map_uri_device_to_vm(message: &str) -> String {
+    message.to_string()
+}
+
+#[cfg(not(target_env = "ohos"))]
+pub(crate) fn map_uri_vm_to_device(message: &str) -> String {
+    message.to_string()
+}
+
 use anyhow::{Context as _, Result, anyhow};
 use collections::{BTreeMap, HashMap};
 use futures::{
@@ -725,6 +758,11 @@ impl LanguageServer {
 
             if let Ok(message) = std::str::from_utf8(&buffer) {
                 log::trace!("incoming stderr message:{message}");
+                // [diag] OHOS: surface every LSP stderr line at info level so
+                // a failing language server (e.g. vtsls exiting with code 1)
+                // leaves a trace in hilog instead of only in the startup path.
+                #[cfg(target_env = "ohos")]
+                log::info!("[diag] lsp stderr: {message}");
                 for handler in io_handlers.lock().values_mut() {
                     handler(IoKind::StdErr, message);
                 }
@@ -758,6 +796,9 @@ impl LanguageServer {
         });
         let mut content_len_buffer = Vec::new();
         while let Ok(message) = outbound_rx.recv().await {
+            // OHOS: the language server runs on the VM, so URIs it receives
+            // must be VM paths (the shared workspace is mounted there).
+            let message = map_uri_device_to_vm(&message);
             log::trace!("outgoing message:{}", message);
             for handler in io_handlers.lock().values_mut() {
                 handler(IoKind::StdIn, &message);
@@ -795,6 +836,14 @@ impl LanguageServer {
 
         #[allow(deprecated)]
         InitializeParams {
+            // OHOS: the language server runs on the VM while this process runs
+            // on the device, so a device PID is meaningless there. vscode-languageserver's
+            // watchdog polls `process.kill(processId, 0)` and would see the device PID as
+            // dead on the VM, killing the server ~3s after initialize. Sending no PID
+            // disables that watchdog.
+            #[cfg(target_env = "ohos")]
+            process_id: None,
+            #[cfg(not(target_env = "ohos"))]
             process_id: Some(std::process::id()),
             root_path: Some(
                 self.root_uri

@@ -856,7 +856,13 @@ pub struct SystemNodeRuntime {
 }
 
 impl SystemNodeRuntime {
+    // Desktop Zed needs node >= 22. OHOS lowers the bar to node >= 18 because
+    // the VM's distro ships node 20 (dnf `nodejs` on OpenEuler 2403), which is
+    // plenty for running LSP servers via npm.
+    #[cfg(not(target_env = "ohos"))]
     const MIN_VERSION: semver::Version = Version::new(22, 0, 0);
+    #[cfg(target_env = "ohos")]
+    const MIN_VERSION: semver::Version = Version::new(18, 0, 0);
     async fn new(node: PathBuf, npm: PathBuf) -> Result<Self> {
         let output = util::command::new_command(&node)
             .arg("--version")
@@ -893,11 +899,59 @@ impl SystemNodeRuntime {
         })
     }
 
+    // Resolve node/npm on the VM, where commands actually run: the device PATH
+    // holds no node, and the crates.io `which` (a local FS lookup) can never
+    // find one there. Query the VM's own PATH through cmd-agent, retrying a
+    // bounded window so an in-flight dnf install of `nodejs` can finish.
+    #[cfg(target_env = "ohos")]
+    async fn detect() -> std::result::Result<Self, DetectError> {
+        let node = which_on_vm("node")
+            .await
+            .ok_or(DetectError::NotInPath(which::Error::CannotFindBinaryPath))?;
+        let npm = which_on_vm("npm")
+            .await
+            .ok_or(DetectError::NotInPath(which::Error::CannotFindBinaryPath))?;
+        Self::new(node, npm).await.map_err(DetectError::Other)
+    }
+
+    #[cfg(not(target_env = "ohos"))]
     async fn detect() -> std::result::Result<Self, DetectError> {
         let node = which::which("node").map_err(DetectError::NotInPath)?;
         let npm = which::which("npm").map_err(DetectError::NotInPath)?;
         Self::new(node, npm).await.map_err(DetectError::Other)
     }
+}
+
+/// Queries a binary on the VM via cmd-agent, retrying a bounded window so an
+/// in-flight install (dnf/npm on the VM) can finish. Only used on OHOS, where
+/// the device sandbox holds no executables.
+#[cfg(target_env = "ohos")]
+async fn which_on_vm(command: &str) -> Option<PathBuf> {
+    const WHICH_RETRY_ATTEMPTS: u32 = 20;
+    const WHICH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+    for attempt in 0..WHICH_RETRY_ATTEMPTS {
+        let output = match util::command::new_command("which")
+            .arg(command)
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(err) => {
+                log::debug!("which {command:?} attempt {} failed: {err}", attempt + 1);
+                smol::Timer::after(WHICH_RETRY_INTERVAL).await;
+                continue;
+            }
+        };
+        if output.status.success() {
+            let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+        smol::Timer::after(WHICH_RETRY_INTERVAL).await;
+    }
+    None
 }
 
 enum DetectError {

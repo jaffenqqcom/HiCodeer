@@ -86,6 +86,10 @@
     {
       "name": "plugin_filedrop",
       "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/filedrop"
+    },
+    {
+      "name": "plugin_openwith",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/openwith"
     }
   ]
 }

@@ -2,7 +2,7 @@ use log::warn;
 
 use std::{
     cell::{Cell, RefCell},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -16,6 +16,7 @@ use openharmony_ability_plugin_files::{
 };
 use openharmony_ability_plugin_pinch::PinchBridgePlugin;
 use openharmony_ability_plugin_filedrop::FileDropBridgePlugin;
+use openharmony_ability_plugin_openwith::OpenWithBridgePlugin;
 
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
@@ -46,6 +47,14 @@ pub(crate) struct OhosPlatform {
     /// title bar's `ApplicationMenu` (OHOS has no native system menu bar to
     /// host them, unlike macOS).
     menus: Rc<RefCell<Vec<OwnedMenu>>>,
+    /// Paths requested via the system "open with" action before any window existed.
+    /// Flushed into the first window that gets created (cold start from a file tap).
+    pending_open_with: Rc<RefCell<Vec<PathBuf>>>,
+    /// Callback registered by gpui (`App::on_open_urls`) that forwards URLs to Zed's
+    /// open-listener. The open-with flow delivers resolved file paths here so they are
+    /// opened through Zed's normal workspace path rather than the drag-and-drop state
+    /// machine (which requires an element drop target under the pointer).
+    open_urls_callback: Rc<RefCell<Option<Box<dyn FnMut(Vec<String>)>>>>,
 }
 
 impl OhosPlatform {
@@ -68,6 +77,8 @@ impl OhosPlatform {
             windows: Rc::new(RefCell::new(Vec::new())),
             last_cursor_style: Cell::new(None),
             menus: Rc::new(RefCell::new(Vec::new())),
+            pending_open_with: Rc::new(RefCell::new(Vec::new())),
+            open_urls_callback: Rc::new(RefCell::new(None)),
         };
         // The ArkTS host provides the OpenHarmonyApp on the main thread before this
         // platform is constructed; own it from creation, mirroring how MacPlatform /
@@ -84,6 +95,7 @@ impl OhosPlatform {
         *self.primary_display.borrow_mut() = Some(OhosDisplay::new(app.clone()));
         self.dispatcher.set_waker(app.create_waker());
         self.register_plugins(&app);
+        self.register_openwith_handler();
     }
 
     /// Registers every OHOS bridge plugin used by this platform layer.
@@ -111,6 +123,128 @@ impl OhosPlatform {
                 "register_plugins: register_plugin(FileDropBridgePlugin) failed: {error}"
             );
         }
+        if let Err(error) = app.register_plugin(OpenWithBridgePlugin) {
+            log::error!(
+                "register_plugins: register_plugin(OpenWithBridgePlugin) failed: {error}"
+            );
+        }
+    }
+
+    /// Registers the open-with handler. The ArkTS `OpenWithPlugin` forwards file URIs
+    /// received from the system "open with" action; we resolve them to paths and deliver
+    /// them to Zed through gpui's `on_open_urls` callback (the same path macOS uses for
+    /// "open with"), or buffer them until that callback is registered (cold start).
+    fn register_openwith_handler(&self) {
+        let open_urls_callback = self.open_urls_callback.clone();
+        let pending = self.pending_open_with.clone();
+        openharmony_ability_plugin_openwith::set_openwith_callback(Box::new(
+            move |uris: Vec<String>| {
+                let mut paths: Vec<PathBuf> = Vec::new();
+                for uri in &uris {
+                    match path_from_uri(uri) {
+                        Some(path) => paths.push(path),
+                        None => log::warn!("open-with: failed to resolve URI '{uri}'"),
+                    }
+                }
+                if paths.is_empty() {
+                    return;
+                }
+                let mut callback = open_urls_callback.borrow_mut();
+                match callback.as_mut() {
+                    Some(callback) => {
+                        let urls: Vec<String> = paths
+                            .iter()
+                            .map(|path| OhosPlatform::file_url_from_path(path))
+                            .collect();
+                        log::info!(
+                            "open-with: delivering {} url(s) through on_open_urls",
+                            urls.len()
+                        );
+                        callback(urls);
+                    }
+                    None => {
+                        // gpui has not registered its on_open_urls callback yet (the app is
+                        // still booting). Buffer until it does; `on_open_urls` flushes these.
+                        log::info!(
+                            "open-with: no on_open_urls callback yet, buffering {} path(s)",
+                            paths.len()
+                        );
+                        pending.borrow_mut().extend(paths);
+                    }
+                }
+            },
+        ));
+    }
+
+    /// Delivers any open-with paths buffered before `on_open_urls` was registered.
+    fn flush_pending_open_with_urls(&self) {
+        let pending = self
+            .pending_open_with
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            return;
+        }
+        let mut callback = self.open_urls_callback.borrow_mut();
+        match callback.as_mut() {
+            Some(callback) => {
+                let urls: Vec<String> = pending
+                    .iter()
+                    .map(|path| OhosPlatform::file_url_from_path(path))
+                    .collect();
+                log::info!(
+                    "open-with: flushing {} buffered path(s) through on_open_urls",
+                    urls.len()
+                );
+                callback(urls);
+            }
+            None => self.pending_open_with.borrow_mut().extend(pending),
+        }
+    }
+
+    /// Opens any paths queued by `register_openwith_handler` before a window existed.
+    /// Kept as a fallback for the case where `on_open_urls` was registered after the
+    /// first window was created; the primary delivery path is `on_open_urls`.
+    fn flush_pending_open_with(&self, window: &Rc<RefCell<OhosWindow>>) {
+        let pending = self
+            .pending_open_with
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        if !pending.is_empty() {
+            log::info!(
+                "open-with: flushing {} buffered path(s) through window fallback",
+                pending.len()
+            );
+            window.borrow().open_external_paths(pending);
+        }
+    }
+
+    /// Converts a local path into a `file://` URL that Zed's `OpenRequest::parse`
+    /// understands (it strips the `file://` prefix and url-decodes the remainder).
+    /// ASCII path-safe bytes are kept verbatim; everything else (spaces, non-ASCII,
+    /// reserved characters) is percent-encoded while `/` stays a separator.
+    fn file_url_from_path(path: &Path) -> String {
+        let mut url = String::from("file://");
+        for byte in path.to_string_lossy().bytes() {
+            match byte {
+                b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'/'
+                | b'-'
+                | b'_'
+                | b'.'
+                | b'~' => url.push(byte as char),
+                _ => {
+                    url.push('%');
+                    url.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
+                    url.push(char::from_digit((byte & 0x0F) as u32, 16).unwrap().to_ascii_uppercase());
+                }
+            }
+        }
+        url
     }
 
     fn run_foreground_tasks(&self) {
@@ -183,6 +317,8 @@ impl Clone for OhosPlatform {
             windows: self.windows.clone(),
             last_cursor_style: self.last_cursor_style.clone(),
             menus: self.menus.clone(),
+            pending_open_with: self.pending_open_with.clone(),
+            open_urls_callback: self.open_urls_callback.clone(),
         }
     }
 }
@@ -389,6 +525,7 @@ impl Platform for OhosPlatform {
 
             let window = Rc::new(RefCell::new(window));
             self.windows.borrow_mut().push(Rc::downgrade(&window));
+            self.flush_pending_open_with(&window);
             Ok(Box::new(super::window::OhosWindowHandle::new(window)))
         } else {
             Err(anyhow::anyhow!("OpenHarmonyApp not set"))
@@ -404,8 +541,9 @@ impl Platform for OhosPlatform {
         warn!("open_url not supported on OHOS: {}", url);
     }
 
-    fn on_open_urls(&self, _callback: Box<dyn FnMut(Vec<String>)>) {
-        // Not supported on OHOS
+    fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
+        *self.open_urls_callback.borrow_mut() = Some(callback);
+        self.flush_pending_open_with_urls();
     }
 
     fn register_url_scheme(&self, _url: &str) -> Task<Result<()>> {

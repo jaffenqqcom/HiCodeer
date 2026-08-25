@@ -1,6 +1,6 @@
 name = "TypeScript"
 grammar = "typescript"
-path_suffixes = ["ts", "cts", "mts"]
+path_suffixes = ["ts", "cts", "mts", "ets"]
 modeline_aliases = ["ts"]
 first_line_pattern = '^#!.*\b(?:deno run|ts-node|bun|tsx|[/ ]node)\b'
 line_comments = ["// "]

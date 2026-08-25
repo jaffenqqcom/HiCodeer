@@ -234,9 +234,9 @@ impl ClickTracker {
 
 // Key auto-repeat timing. OHOS key events carry no repeat action (KeyAction has only
 // Down/Up), so repeats are synthesized here. Values approximate common desktop defaults
-// (Wayland RepeatInfo / X11 autorepeat): 500 ms initial delay, then ~30 cps.
+// (Wayland RepeatInfo / X11 autorepeat): 500 ms initial delay, then ~10 cps.
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
-const KEY_REPEAT_INTERVAL: Duration = Duration::from_millis(33);
+const KEY_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A pinch must accumulate at least this much scale change before one zoom step
 /// is emitted, keeping the pinch zoom rate gentle (0.15 == 15% scale change).
@@ -2038,6 +2038,22 @@ impl OhosWindow {
         Self::dispatch_input_with_callbacks(callbacks, PlatformInput::FileDrop(entered));
         let submit = FileDropEvent::Submit { position };
         Self::dispatch_input_with_callbacks(callbacks, PlatformInput::FileDrop(submit));
+    }
+
+    /// Opens the given paths in this window by replaying the same entered+submit drag
+    /// sequence that the file-drop path uses. Used by the open-with (file
+    /// association) flow as a fallback when no `on_open_urls` callback exists yet;
+    /// note that drop handling needs an element drop target under the pointer, so the
+    /// primary open-with path delivers through gpui's `on_open_urls` instead.
+    pub(crate) fn open_external_paths(&self, paths: Vec<PathBuf>) {
+        let position = point(px(0.0), px(0.0));
+        let entered = FileDropEvent::Entered {
+            position,
+            paths: ExternalPaths(paths.into()),
+        };
+        Self::dispatch_input_with_callbacks(&self.callbacks, PlatformInput::FileDrop(entered));
+        let submit = FileDropEvent::Submit { position };
+        Self::dispatch_input_with_callbacks(&self.callbacks, PlatformInput::FileDrop(submit));
     }
 
     fn device_position(&self, x: f32, y: f32) -> Point<Pixels> {
