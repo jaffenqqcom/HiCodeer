@@ -32,7 +32,6 @@ pub struct GithubReleaseAsset {
     pub digest: Option<String>,
 }
 
-#[cfg(not(target_env = "ohos"))]
 pub async fn latest_github_release(
     repo_name_with_owner: &str,
     require_assets: bool,
@@ -91,55 +90,6 @@ pub async fn latest_github_release(
     Ok(release)
 }
 
-/// OHOS: the device has no reliable GitHub access (requests time out), so the
-/// release list is fetched on the VM through a curl command routed by the
-/// cmd-agent, then parsed identically.
-#[cfg(target_env = "ohos")]
-pub async fn latest_github_release(
-    repo_name_with_owner: &str,
-    require_assets: bool,
-    pre_release: bool,
-    _http: Arc<dyn HttpClient>,
-) -> anyhow::Result<GithubRelease> {
-    let url = format!("{GITHUB_API_URL}/repos/{repo_name_with_owner}/releases");
-    let output = util::command::new_command("curl")
-        .args(["-sS", "--max-time", "15"])
-        .arg(&url)
-        .output()
-        .await
-        .context("curl failed to start on the VM")?;
-    if !output.status.success() {
-        bail!(
-            "curl to {url} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let releases = match serde_json::from_slice::<Vec<GithubRelease>>(&output.stdout) {
-        Ok(releases) => releases,
-        Err(err) => {
-            log::error!("Error deserializing GitHub releases: {err:?}");
-            log::error!(
-                "GitHub API response text: {:?}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            anyhow::bail!("error deserializing latest release: {err:?}");
-        }
-    };
-
-    let mut release = releases
-        .into_iter()
-        .filter(|release| !require_assets || !release.assets.is_empty())
-        .find(|release| release.pre_release == pre_release)
-        .context("finding a prerelease")?;
-    release.assets.iter_mut().for_each(|asset| {
-        if let Some(digest) = &mut asset.digest
-            && let Some(stripped) = digest.strip_prefix("sha256:")
-        {
-            *digest = stripped.to_owned();
-        }
-    });
-    Ok(release)
-}
 
 pub async fn get_release_by_tag_name(
     repo_name_with_owner: &str,

@@ -989,6 +989,11 @@ notify = { git = "https://github.com/zed-industries/notify", rev = "0890bbb8ca40
 notify-types = { git = "https://github.com/zed-industries/notify", rev = "0890bbb8ca40a4b5d1f67031698dd7918b37d991" }
 webrtc-sys = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev = "d0e27be0cdad89eadab3e36207cda0a2b6e359ee" }
 nix = { path = "patches/nix" }
+# Local patched cap-primitives 3.4.4: on OpenHarmony `openat2` (syscall 437) is
+# blocked by the seccomp sandbox, so we skip it and fall back to the userspace
+# `manually::open` resolver (which uses `openat`). The OHOS-specific change is
+# guarded by `#[cfg(target_env = "ohos")]`, so other platforms are unchanged.
+cap-primitives = { path = "patches/cap-primitives" }
 ohos-xcomponent-binding = { path = "crates/gpui_ohos/depend/ohos-xcomponent-binding" }
 ohos-xcomponent-sys = { path = "crates/gpui_ohos/depend/ohos-xcomponent-sys" }
 # Local patched wgpu tree (copied from warp-ohos), which adds OHOS Vulkan

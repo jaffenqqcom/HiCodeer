@@ -4,10 +4,10 @@
       {
         "name": "default",
         "material": {
-          "storePassword": "000000200E1E39CACC6662E9BDAC98460D4A47EDB7F6348BEF53C9566C7B2888041BE99985BEDBC47D8CBDF145C0BFC0",
+          "storePassword": "00000020FE2DA6FC55F4ED805DF903819BD63CEBC5EA366BF570A2F311813E74B2F332288B6341020AE049BBE06CF171",
           "certpath": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
           "keyAlias": "debugKey",
-          "keyPassword": "000000200E1E39CACC6662E9BDAC98460D4A47EDB7F6348BEF53C9566C7B2888041BE99985BEDBC47D8CBDF145C0BFC0",
+          "keyPassword": "00000020FE2DA6FC55F4ED805DF903819BD63CEBC5EA366BF570A2F311813E74B2F332288B6341020AE049BBE06CF171",
           "profile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
           "signAlg": "SHA256withECDSA",
           "storeFile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"

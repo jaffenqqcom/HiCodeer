@@ -15,6 +15,10 @@
     {
       "name": "perm_auth_reason",
       "value": "persist read/write access to files and folders selected by the user"
+    },
+    {
+      "name": "perm_writable_code_memory_reason",
+      "value": "allocate writable and executable memory for the wasmtime JIT compiler to run editor plugins"
     }
   ]
 }

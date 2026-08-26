@@ -134,6 +134,16 @@
       },
       {
         "name": "ohos.permission.INTERNET"
+      },
+      {
+        "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY",
+        "reason": "$string:perm_writable_code_memory_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ]
   }
