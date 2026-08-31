@@ -1,12 +1,9 @@
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_compression::futures::bufread::GzipDecoder;
-#[cfg(not(target_env = "ohos"))]
 use async_tar::Archive;
 use chrono::{DateTime, Utc};
 use futures::{AsyncReadExt, FutureExt as _, channel::oneshot, future::Shared};
 use http_client::{Host, HttpClient, Url};
-#[cfg(target_env = "ohos")]
-use http_client::github_download::unpack_tar_archive_with_link_copy;
 use log::Level;
 use semver::{Version, VersionReq};
 use serde::Deserialize;
@@ -712,22 +709,8 @@ impl ManagedNodeRuntime {
             match archive_type {
                 ArchiveType::TarGz => {
                     let decompressed_bytes = GzipDecoder::new(BufReader::new(response.body_mut()));
-                    // The OHOS sandbox forbids third-party apps from creating symlinks,
-                    // and the Node.js tarballs ship `bin/npm`, `bin/npx` and `bin/corepack`
-                    // as symlinks, so a plain unpack fails there with Permission denied.
-                    // Unpack those entries as copies of their targets instead.
-                    #[cfg(target_env = "ohos")]
-                    unpack_tar_archive_with_link_copy(
-                        &node_containing_dir,
-                        &url,
-                        decompressed_bytes,
-                    )
-                    .await?;
-                    #[cfg(not(target_env = "ohos"))]
-                    {
-                        let archive = Archive::new(decompressed_bytes);
-                        archive.unpack(&node_containing_dir).await?;
-                    }
+                    let archive = Archive::new(decompressed_bytes);
+                    archive.unpack(&node_containing_dir).await?;
                 }
                 ArchiveType::Zip => extract_zip(&node_containing_dir, body).await?,
             }

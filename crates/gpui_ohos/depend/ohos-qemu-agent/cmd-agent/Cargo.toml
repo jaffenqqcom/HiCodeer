@@ -1,0 +1,25 @@
+[package]
+name = "qemu-cmd-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "In-process QEMU runner and remote-command executor for HarmonyOS NEXT: dlopen libqemu-system-aarch64.so, boot a Linux guest with virtio-9p shared folders, and serve util::command over the virtio-serial port pool"
+
+[features]
+# Debug-only diagnostics: forward QEMU stderr (engine errors) and stdout (guest
+# serial console) into hilog. bundle-ohos enables this for debug builds and
+# omits it for release builds.
+qemu_debug_assertions = []
+
+[lib]
+name = "qemu_cmd_agent"
+path = "src/lib.rs"
+
+[dependencies]
+async-io = "2"
+libc = "0.2"
+log = "0.4"
+qemu-cmd-agent-linker = { path = "../cmd-agent-linker" }
+qemu-cmd-agent-protocol = { path = "../cmd-agent-protocol" }
+serde_json = "1"
+smol = "2"

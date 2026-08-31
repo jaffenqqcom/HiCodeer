@@ -17,6 +17,7 @@ use openharmony_ability_plugin_files::{
 use openharmony_ability_plugin_pinch::PinchBridgePlugin;
 use openharmony_ability_plugin_filedrop::FileDropBridgePlugin;
 use openharmony_ability_plugin_openwith::OpenWithBridgePlugin;
+use openharmony_ability_plugin_ime::ImeBridgePlugin;
 
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
@@ -126,6 +127,11 @@ impl OhosPlatform {
         if let Err(error) = app.register_plugin(OpenWithBridgePlugin) {
             log::error!(
                 "register_plugins: register_plugin(OpenWithBridgePlugin) failed: {error}"
+            );
+        }
+        if let Err(error) = app.register_plugin(ImeBridgePlugin) {
+            log::error!(
+                "register_plugins: register_plugin(ImeBridgePlugin) failed: {error}"
             );
         }
     }
@@ -576,13 +582,20 @@ impl Platform for OhosPlatform {
         self.foreground_executor.spawn(async move {
             match app.show_file_dialog(dialog_options).await {
                 Ok(response) => {
-                    // path_from_uri persists each URI authorization internally.
-                    let paths = response
-                        .files
-                        .iter()
-                        .filter_map(|uri| path_from_uri(uri))
-                        .collect::<Vec<_>>();
-                    tx.send(Ok(Some(paths))).ok();
+                    // gpui contract: a cancelled dialog (empty selection)
+                    // relays None, not an empty vec, so callers distinguish
+                    // "cancel" from "chose nothing".
+                    if response.files.is_empty() {
+                        tx.send(Ok(None)).ok();
+                    } else {
+                        // path_from_uri persists each URI authorization internally.
+                        let paths = response
+                            .files
+                            .iter()
+                            .filter_map(|uri| path_from_uri(uri))
+                            .collect::<Vec<_>>();
+                        tx.send(Ok(Some(paths))).ok();
+                    }
                 }
                 Err(error) => {
                     tx.send(Err(anyhow::anyhow!("file dialog failed: {error}"))).ok();

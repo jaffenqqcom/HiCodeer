@@ -103,6 +103,10 @@ members = [
     "crates/gpui_ohos/depend/gpui_ohos_linker",
     "crates/gpui_ohos/depend/launch-zed",
     "crates/gpui_ohos/depend/ohos-file-geturi",
+    "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent",
+    "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker",
+    "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-protocol",
+    "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd",
     "crates/gpui_platform",
     "crates/gpui_tokio",
     "crates/gpui_util",
@@ -1005,6 +1009,14 @@ wgpu-core = { path = "patches/wgpu/wgpu-core" }
 wgpu-hal = { path = "patches/wgpu/wgpu-hal" }
 wgpu-types = { path = "patches/wgpu/wgpu-types" }
 naga = { path = "patches/wgpu/naga" }
+# Local patched wasmtime 36.0.12: on OHOS the sandbox rejects the
+# `mmap(PROT_NONE)` -> `mprotect(RW)` sequence used to configure the
+# sigaltstack (returns ENOMEM), so the stack region is allocated RW directly;
+# and `Stack::drop` now disables the sigaltstack (SS_DISABLE) before munmap
+# to avoid a dangling kernel registration (wasmtime#13857). Both changes are
+# guarded by #[cfg(target_env = "ohos")], so other platforms compile the same
+# code as upstream 36.0.12.
+wasmtime = { path = "patches/wasmtime" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

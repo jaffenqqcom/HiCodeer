@@ -705,7 +705,13 @@ pub struct BridgeCallOptions {
 
 impl BridgeCallOptions {
     pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
-        self.timeout_ms = timeout_ms.clamp(1, MAX_TIMEOUT_MS);
+        // 0 means "no timeout" (user-driven dialogs such as file pickers);
+        // anything else is clamped to the bridge maximum.
+        self.timeout_ms = if timeout_ms == 0 {
+            0
+        } else {
+            timeout_ms.clamp(1, MAX_TIMEOUT_MS)
+        };
         self
     }
 

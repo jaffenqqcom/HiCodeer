@@ -163,7 +163,10 @@ impl FilesExt for OpenHarmonyApp {
                 .call_async::<FilesBridgePlugin, FileDialogOptions, FileDialogResponse>(
                     "file-dialog",
                     options,
-                    BridgeCallOptions::default().with_timeout_ms(60_000),
+                    // File dialogs are user-driven and may stay open while the
+                    // user decides; 0 disables the bridge timeout so a later
+                    // selection or an explicit cancel still reaches the caller.
+                    BridgeCallOptions::default().with_timeout_ms(0),
                 )
                 .await
         })

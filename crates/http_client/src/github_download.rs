@@ -6,9 +6,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use async_compression::futures::bufread::{BzDecoder, GzipDecoder};
-use futures::{
-    AsyncRead, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, StreamExt, io::BufReader,
-};
+use futures::{AsyncRead, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, io::BufReader};
+#[cfg(target_env = "ohos")]
+use futures::{AsyncReadExt, StreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::{HttpClient, github::AssetKind};
@@ -65,45 +65,13 @@ pub async fn download_server_binary(
         cleanup_staging_path(&staging_path, asset_kind).await;
         return Err(err);
     }
-    // [diag] record the extracted tree for sync cross-checking: the sync
-    // engine watches destination_path and should mirror exactly these files.
-    let (extracted_files, extracted_bytes) = count_files(&staging_path);
-    log::info!(
-        "[diag] github_download: extracted {url} -> staging {staging_path:?} ({extracted_files} files, {extracted_bytes} bytes)"
-    );
 
     if let Err(err) = finalize_download(&staging_path, destination_path).await {
         cleanup_staging_path(&staging_path, asset_kind).await;
         return Err(err);
     }
-    // [diag] record the final rename so the sync engine's watch can be compared.
-    log::info!(
-        "[diag] github_download: finalized {staging_path:?} -> {destination_path:?}"
-    );
 
     Ok(())
-}
-
-/// Recursively counts files and total bytes under `path` (a file or directory),
-/// for the sync cross-check log. Returns (file_count, total_bytes).
-fn count_files(path: &Path) -> (usize, u64) {
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(_) => return (0, 0),
-    };
-    if meta.is_file() {
-        return (1, meta.len());
-    }
-    let mut count = 0usize;
-    let mut bytes = 0u64;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let (c, b) = count_files(&entry.path());
-            count += c;
-            bytes += b;
-        }
-    }
-    (count, bytes)
 }
 
 
@@ -161,10 +129,6 @@ pub async fn download_server_raw_binary(
         }
         return Err(err);
     }
-    // [diag] record the raw-binary finalize for sync cross-checking.
-    log::info!(
-        "[diag] github_download: raw binary finalized {staging_path:?} -> {destination_path:?}"
-    );
 
     Ok(())
 }
@@ -177,165 +141,43 @@ async fn extract_to_staging(
     staging_path: &Path,
     asset_kind: AssetKind,
 ) -> Result<()> {
-    // Buffer the archive into a temporary file before unpacking. The response
-    // body is a single-use stream, so buffering is what allows a failed unpack
-    // to be retried below without re-downloading.
-    let temp_asset_file = tempfile::NamedTempFile::new()
-        .with_context(|| format!("creating a temporary file for {url}"))?;
-    let (temp_asset_file, _temp_guard) = temp_asset_file.into_parts();
-    let mut writer = HashingWriter {
-        writer: async_fs::File::from(temp_asset_file),
-        hasher: Sha256::new(),
-    };
-    futures::io::copy(&mut BufReader::new(body), &mut writer)
-        .await
-        .with_context(|| format!("saving archive contents into the temporary file for {url}"))?;
-    let asset_sha_256 = format!("{:x}", writer.hasher.finalize());
-
-    if let Some(expected_sha_256) = digest {
-        anyhow::ensure!(
-            sha256_matches(&asset_sha_256, expected_sha_256),
-            "{url} asset got SHA-256 mismatch. Expected: {expected_sha_256}, Got: {asset_sha_256}",
-        );
-    }
-    writer
-        .writer
-        .seek(std::io::SeekFrom::Start(0))
-        .await
-        .with_context(|| format!("seeking temporary file for {url}"))?;
-
-    if let Err(first_err) =
-        stream_file_archive(&mut writer.writer, url, staging_path, asset_kind).await
-    {
-        // The OHOS sandbox forbids third-party apps from creating symlinks
-        // (symlink() -> EACCES), so archives that contain symlinks (e.g.
-        // vscode-eslint) fail the standard unpack with Permission denied. Retry
-        // once, materializing symlink/hardlink entries as real copies of their
-        // targets; any other kind of failure is returned as-is.
-        #[cfg(target_env = "ohos")]
-        if is_permission_denied(&first_err) {
-            log::warn!(
-                "github_download: standard unpack of {url} failed with permission denied \
-                 ({first_err:#}); retrying with link-copy unpacker"
-            );
-            cleanup_staging_path(staging_path, asset_kind).await;
-            async_fs::create_dir_all(staging_path)
+    match digest {
+        Some(expected_sha_256) => {
+            let temp_asset_file = tempfile::NamedTempFile::new()
+                .with_context(|| format!("creating a temporary file for {url}"))?;
+            let (temp_asset_file, _temp_guard) = temp_asset_file.into_parts();
+            let mut writer = HashingWriter {
+                writer: async_fs::File::from(temp_asset_file),
+                hasher: Sha256::new(),
+            };
+            futures::io::copy(&mut BufReader::new(body), &mut writer)
                 .await
-                .with_context(|| format!("recreating staging directory {staging_path:?}"))?;
+                .with_context(|| {
+                    format!("saving archive contents into the temporary file for {url}")
+                })?;
+            let asset_sha_256 = format!("{:x}", writer.hasher.finalize());
+
+            anyhow::ensure!(
+                sha256_matches(&asset_sha_256, expected_sha_256),
+                "{url} asset got SHA-256 mismatch. Expected: {expected_sha_256}, Got: {asset_sha_256}",
+            );
             writer
                 .writer
                 .seek(std::io::SeekFrom::Start(0))
                 .await
-                .with_context(|| format!("seeking temporary file for {url} for retry"))?;
-            return stream_file_archive_with_link_copy(
-                &mut writer.writer,
-                url,
-                staging_path,
-                asset_kind,
-            )
-            .await
-            .with_context(|| {
-                format!("extracting downloaded asset for {url} into {staging_path:?}")
-            });
+                .with_context(|| format!("seeking temporary file for {url}"))?;
+            stream_file_archive(&mut writer.writer, url, staging_path, asset_kind)
+                .await
+                .with_context(|| {
+                    format!("extracting downloaded asset for {url} into {staging_path:?}")
+                })?;
         }
-        return Err(first_err);
-    }
-    Ok(())
-}
-
-/// True when any cause in the error chain is an io::Error with kind
-/// PermissionDenied — the errno the OHOS sandbox reports for symlink().
-#[cfg(target_env = "ohos")]
-fn is_permission_denied(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        cause
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::PermissionDenied)
-    })
-}
-
-/// Unpacks a tar archive entry by entry, replacing symlink/hardlink entries
-/// with recursive copies of their link targets. Used on OHOS wherever the
-/// standard unpack would hit Permission denied, because the sandbox forbids
-/// creating symlinks. The result is content-equivalent to the archive.
-///
-/// Also used by the Node.js runtime download: the official tarballs ship
-/// `bin/npm` and friends as symlinks, so they cannot be unpacked as-is here.
-#[cfg(target_env = "ohos")]
-pub async fn unpack_tar_archive_with_link_copy(
-    destination_path: &Path,
-    url: &str,
-    archive_bytes: impl AsyncRead + Unpin,
-) -> Result<(), anyhow::Error> {
-    let archive = async_tar::ArchiveBuilder::new(archive_bytes)
-        .set_preserve_mtime(false)
-        .build();
-    let mut entries = archive.entries()?;
-
-    // Deferred link entries: (archive-relative dst, link name, is_hard_link).
-    let mut deferred: Vec<(PathBuf, Option<PathBuf>, bool)> = Vec::new();
-    while let Some(entry) = entries.next().await {
-        let mut entry = entry?;
-        let kind = entry.header().entry_type();
-        if kind.is_symlink() || kind.is_hard_link() {
-            // async_tar's entry paths are async_std types; normalize to
-            // std::path::PathBuf for the deferred list.
-            let dst = PathBuf::from(entry.path()?.as_os_str());
-            let link = entry.link_name()?.map(|name| PathBuf::from(name.as_os_str()));
-            deferred.push((dst, link, kind.is_hard_link()));
-        } else {
-            entry.unpack_in(destination_path).await?;
-        }
-    }
-
-    for (dst_rel, link, is_hard_link) in deferred {
-        let Some(link) = link else {
-            continue;
-        };
-        let dst_full = destination_path.join(&dst_rel);
-        // tar semantics: hard-link names are relative to the archive root,
-        // symlink names are relative to the directory containing the link.
-        let src = if is_hard_link {
-            destination_path.join(&link)
-        } else {
-            dst_full.parent().unwrap_or(destination_path).join(&link)
-        };
-        if src.exists() {
-            copy_path(&src, &dst_full).await?;
-        } else {
-            log::warn!(
-                "github_download: link target {src:?} for {dst_rel:?} missing in {url}; skipped"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Recursively copies a file or directory from `src` to `dst`, replacing a
-/// symlink that the OHOS sandbox forbids creating with a real copy of its
-/// target. Existing destination files are overwritten.
-///
-/// Implemented as an iterative DFS so a deep tree cannot overflow the async
-/// recursion size limit (a recursive async fn would need boxing).
-#[cfg(target_env = "ohos")]
-async fn copy_path(src: &Path, dst: &Path) -> Result<()> {
-    let mut stack: Vec<(PathBuf, PathBuf)> = vec![(src.to_path_buf(), dst.to_path_buf())];
-    while let Some((src, dst)) = stack.pop() {
-        if src.is_dir() {
-            async_fs::create_dir_all(&dst).await?;
-            let mut entries = async_fs::read_dir(&src).await?;
-            while let Some(entry) = entries.next().await {
-                let entry = entry?;
-                // async_fs entry paths are async_std types; normalize to std.
-                let child_src = PathBuf::from(entry.path().as_os_str());
-                let child_dst = dst.join(entry.file_name());
-                stack.push((child_src, child_dst));
-            }
-        } else {
-            if let Some(parent) = dst.parent() {
-                async_fs::create_dir_all(parent).await?;
-            }
-            async_fs::copy(&src, &dst).await?;
+        None => {
+            stream_response_archive(body, url, staging_path, asset_kind)
+                .await
+                .with_context(|| {
+                    format!("extracting response for asset {url} into {staging_path:?}")
+                })?;
         }
     }
     Ok(())
@@ -437,52 +279,6 @@ async fn extract_tar_gz(
     Ok(())
 }
 
-/// Streams an archive with the link-copy unpacker (OHOS fallback). Only tar
-/// archives can contain symlinks; gz is a single decompressed file and zip has
-/// its own link handling, so those fall back to the standard unpacker.
-#[cfg(target_env = "ohos")]
-async fn stream_file_archive_with_link_copy(
-    file_archive: impl AsyncRead + AsyncSeek + Unpin,
-    url: &str,
-    destination_path: &Path,
-    asset_kind: AssetKind,
-) -> Result<()> {
-    match asset_kind {
-        AssetKind::TarGz => {
-            extract_tar_gz_with_link_copy(destination_path, url, file_archive).await?
-        }
-        AssetKind::TarBz2 => {
-            extract_tar_bz2_with_link_copy(destination_path, url, file_archive).await?
-        }
-        _ => stream_file_archive(file_archive, url, destination_path, asset_kind).await?,
-    }
-    Ok(())
-}
-
-/// OHOS link-copy variant of `extract_tar_gz`.
-#[cfg(target_env = "ohos")]
-async fn extract_tar_gz_with_link_copy(
-    destination_path: &Path,
-    url: &str,
-    from: impl AsyncRead + Unpin,
-) -> Result<(), anyhow::Error> {
-    let decompressed_bytes = GzipDecoder::new(BufReader::new(from));
-    unpack_tar_archive_with_link_copy(destination_path, url, decompressed_bytes).await?;
-    Ok(())
-}
-
-/// OHOS link-copy variant of `extract_tar_bz2`.
-#[cfg(target_env = "ohos")]
-async fn extract_tar_bz2_with_link_copy(
-    destination_path: &Path,
-    url: &str,
-    from: impl AsyncRead + Unpin,
-) -> Result<(), anyhow::Error> {
-    let decompressed_bytes = BzDecoder::new(BufReader::new(from));
-    unpack_tar_archive_with_link_copy(destination_path, url, decompressed_bytes).await?;
-    Ok(())
-}
-
 async fn extract_tar_bz2(
     destination_path: &Path,
     url: &str,
@@ -504,10 +300,213 @@ async fn unpack_tar_archive(
     let archive = async_tar::ArchiveBuilder::new(archive_bytes)
         .set_preserve_mtime(false)
         .build();
-    archive
-        .unpack(&destination_path)
-        .await
-        .with_context(|| format!("extracting {url} to {destination_path:?}"))?;
+
+    // The OHOS app sandbox denies symlink(2) and hard_link(2), so async-tar's
+    // default unpack aborts as soon as a tar contains a link entry. On OHOS,
+    // recover those links in the unpack error path and materialize them as
+    // real copies (see unpack_tar_archive_ohos).
+    #[cfg(target_env = "ohos")]
+    return unpack_tar_archive_ohos(archive, destination_path, url).await;
+
+    #[cfg(not(target_env = "ohos"))]
+    {
+        archive
+            .unpack(destination_path)
+            .await
+            .with_context(|| format!("extracting {url} to {destination_path:?}"))?;
+        Ok(())
+    }
+}
+
+#[cfg(target_env = "ohos")]
+async fn unpack_tar_archive_ohos<R>(
+    archive: async_tar::Archive<R>,
+    destination_path: &Path,
+    url: &str,
+) -> Result<(), anyhow::Error>
+where
+    R: AsyncRead + Unpin,
+{
+    log::info!("unpack_tar_archive_ohos: extracting {url} into {destination_path:?}");
+    let mut entries = archive
+        .entries()
+        .with_context(|| format!("opening archive from {url}"))?;
+
+    // Link entries whose creation the sandbox denied. They are materialized
+    // as real copies after the rest of the archive has been unpacked, because
+    // a link's target may appear later in the tar.
+    let mut links = Vec::new();
+    // Directories are deferred to the end, mirroring Archive::unpack, so that
+    // directory permissions do not interfere with descendant extraction.
+    let mut directories = Vec::new();
+
+    while let Some(entry) = entries.next().await {
+        let mut entry = entry.with_context(|| format!("iterating archive from {url}"))?;
+        let entry_type = entry.header().entry_type();
+
+        if entry_type.is_dir() {
+            directories.push(entry);
+            continue;
+        }
+
+        // Let async-tar unpack this entry. On OHOS the only expected failure
+        // is a link whose creation the sandbox denied; intercept it here and
+        // materialize it afterwards.
+        match entry.unpack_in(destination_path).await {
+            Ok(_) => {}
+            Err(err) if entry_type.is_symlink() || entry_type.is_hard_link() => {
+                // async-tar yields async_std paths here; convert them to std
+                // paths for the materialization helpers below.
+                let link_path =
+                    std::path::PathBuf::from(entry.path().context("reading link path")?.as_os_str());
+                let link_target = entry
+                    .link_name()
+                    .context("reading link target")?
+                    .map(|target| std::path::PathBuf::from(target.as_os_str()));
+                // Link entries carry no payload; consume any remaining bytes
+                // so the entry stream advances to the next header.
+                entry
+                    .read_to_end(&mut Vec::new())
+                    .await
+                    .context("skipping link payload")?;
+                log::debug!(
+                    "unpack_tar_archive_ohos: denied link {link_path:?} -> {link_target:?}: {err}"
+                );
+                links.push((entry_type, link_path, link_target));
+                continue;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("extracting {url} to {destination_path:?}"));
+            }
+        }
+    }
+
+    for mut directory in directories {
+        directory
+            .unpack_in(destination_path)
+            .await
+            .with_context(|| format!("extracting {url} to {destination_path:?}"))?;
+    }
+
+    if !links.is_empty() {
+        log::info!(
+            "unpack_tar_archive_ohos: materializing {} link(s) from {url}",
+            links.len()
+        );
+    }
+    for (entry_type, link_path, link_target) in links {
+        materialize_link(destination_path, entry_type, &link_path, link_target.as_deref())
+            .await
+            .with_context(|| {
+                format!("materializing link {link_path:?} while extracting {url}")
+            })?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_env = "ohos")]
+async fn materialize_link(
+    destination_path: &Path,
+    entry_type: async_tar::EntryType,
+    link_path: &Path,
+    link_target: Option<&Path>,
+) -> Result<()> {
+    let Some(link_target) = link_target else {
+        log::warn!("materialize_link: link {link_path:?} has no target, skipping");
+        return Ok(());
+    };
+
+    // Build the link destination from the entry path, dropping any `..`
+    // components the same way async-tar's unpack_in does.
+    let mut dest = destination_path.to_path_buf();
+    for part in link_path.components() {
+        match part {
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                log::warn!(
+                    "materialize_link: skipping link {link_path:?} escaping the extraction root"
+                );
+                return Ok(());
+            }
+            std::path::Component::Normal(part) => dest.push(part),
+        }
+    }
+    if dest == destination_path {
+        log::warn!("materialize_link: skipping link {link_path:?} with empty destination");
+        return Ok(());
+    }
+
+    // Symlink targets are relative to the link's parent directory, while
+    // hard-link targets are relative to the archive root.
+    let target_path = if entry_type.is_hard_link() {
+        destination_path.join(link_target)
+    } else {
+        dest.parent().unwrap_or(destination_path).join(link_target)
+    };
+
+    let root_canon = match async_fs::canonicalize(destination_path).await {
+        Ok(path) => path,
+        Err(err) => {
+            log::warn!("materialize_link: cannot canonicalize {destination_path:?}: {err}");
+            return Ok(());
+        }
+    };
+    let target_canon = match async_fs::canonicalize(&target_path).await {
+        Ok(path) => path,
+        // A dangling link is harmless: the original archive would have left a
+        // symlink whose target does not exist either.
+        Err(err) => {
+            log::warn!(
+                "materialize_link: link target {target_path:?} does not exist ({err}), skipping {link_path:?}"
+            );
+            return Ok(());
+        }
+    };
+    if !target_canon.starts_with(&root_canon) {
+        log::warn!(
+            "materialize_link: link target {target_path:?} escapes the extraction root, skipping {link_path:?}"
+        );
+        return Ok(());
+    }
+
+    copy_recursively(&target_canon, &dest).await
+}
+
+#[cfg(target_env = "ohos")]
+async fn copy_recursively(src: &Path, dst: &Path) -> Result<()> {
+    // Iterative traversal: a recursive async fn would need boxing, and an
+    // explicit stack is just as clear.
+    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+    while let Some((src, dst)) = stack.pop() {
+        let metadata = async_fs::metadata(&src)
+            .await
+            .with_context(|| format!("reading metadata of {src:?}"))?;
+        if metadata.is_dir() {
+            async_fs::create_dir_all(&dst)
+                .await
+                .with_context(|| format!("creating directory {dst:?}"))?;
+            let mut entries = async_fs::read_dir(&src)
+                .await
+                .with_context(|| format!("reading directory {src:?}"))?;
+            while let Some(entry) = entries.next().await {
+                let entry = entry.with_context(|| format!("reading entry in {src:?}"))?;
+                stack.push((entry.path(), dst.join(entry.file_name())));
+            }
+        } else {
+            if let Some(parent) = dst.parent() {
+                async_fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("creating parent directory {parent:?}"))?;
+            }
+            async_fs::copy(&src, &dst)
+                .await
+                .with_context(|| format!("copying {src:?} to {dst:?}"))?;
+        }
+    }
     Ok(())
 }
 

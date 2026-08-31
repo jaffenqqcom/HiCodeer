@@ -9,9 +9,7 @@ use ohos_xcomponent_binding::{KeyEventData, TouchEventData};
 // consuming device-routed input events.
 pub use ohos_xcomponent_binding::{MouseAction, MouseButton, MouseEventData};
 
-mod ime;
 mod text_input;
-pub use ime::*;
 pub use text_input::*;
 
 /// Scroll phase of a device scroll gesture.

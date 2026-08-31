@@ -72,6 +72,10 @@ util.workspace = true
 uuid.workspace = true
 zed_actions.workspace = true
 
+[target.'cfg(target_env = "ohos")'.dependencies]
+qemu-cmd-agent-linker = { path = "../gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker" }
+ohos-file-geturi = { path = "../gpui_ohos/depend/ohos-file-geturi" }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows.workspace = true
 

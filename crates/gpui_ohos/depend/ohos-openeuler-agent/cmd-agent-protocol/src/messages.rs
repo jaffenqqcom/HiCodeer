@@ -126,6 +126,43 @@ pub enum ClientMessage {
         session_id: u64,
         signal: Signal,
     },
+    /// Begin a file-sync session on a dedicated connection. File sync mirrors
+    /// device-sandbox downloads onto the VM: control commands travel as frames,
+    /// file content as a raw byte stream (see `FileBegin`). No per-op
+    /// confirmation is sent; TCP reliability and connection-close errors are
+    /// the failure channel.
+    FileSyncStart {
+        sync_id: u64,
+    },
+    /// Declare the start of `path`'s content stream: the next `len` raw bytes
+    /// (NOT framed, NOT base64) are appended to `path.ing` on the server.
+    FileBegin {
+        sync_id: u64,
+        path: String,
+        len: u64,
+    },
+    /// Atomically rename `path.ing` -> `path` on the server. Also serves as the
+    /// content-stream terminator: it is sent right after the last byte of a
+    /// `FileBegin` body, so the server knows the stream for `path` is complete.
+    FileRename {
+        sync_id: u64,
+        path: String,
+    },
+    /// Delete `path` (file or directory, recursive) on the server. The server
+    /// only honors deletes under the sync-mirrored directories (`is_sync_path`).
+    FileDelete {
+        sync_id: u64,
+        path: String,
+    },
+    /// Create a directory (and parents) on the server.
+    FileCreateDir {
+        sync_id: u64,
+        path: String,
+    },
+    /// End of the file-sync session; the connection closes after this.
+    FileSyncEnd {
+        sync_id: u64,
+    },
     Query,
     Shutdown,
 }

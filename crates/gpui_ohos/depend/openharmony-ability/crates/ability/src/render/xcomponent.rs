@@ -1,9 +1,7 @@
-use napi_ohos::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking;
 use napi_ohos::{Env, Error, Result};
 use ohos_arkui_binding::component::attribute::ArkUICommonAttribute;
 use ohos_arkui_binding::{ArkUIHandle, RootNode, XComponent};
 use ohos_arkui_input_binding::{ArkUIInputEvent, UIInputEvent};
-use ohos_ime_binding::IME;
 use ohos_xcomponent_binding::TouchPointTool;
 
 use crate::{input, Event, InputEvent, OpenHarmonyApp, Rect, Size};
@@ -37,14 +35,6 @@ pub fn render(
 
     let on_surface_created_app = app.clone();
     let on_surface_created_owner = render_owner.clone();
-    let insert_text_app = app.clone();
-
-    let (
-        insert_text_callback_tsfn,
-        on_ime_hide_callback_tsfn,
-        on_backspace_callback_tsfn,
-        on_ime_enter_callback_tsfn,
-    ) = input::ime_ts_fn(env, app.clone(), render_owner.clone())?;
 
     xcomponent.on_surface_created(move |xc_raw, win| {
         let size = xc_raw.size(win).unwrap();
@@ -63,30 +53,8 @@ pub fn render(
             return Ok(());
         }
 
-        // We need to create IME instance when app is focused.
-        let ime = IME::new(Default::default());
-        *on_surface_created_app.ime.borrow_mut() = Some(ime);
-
-        if let Some(b_ime) = insert_text_app.ime.borrow().as_ref() {
-            // // run in other thread
-            b_ime.insert_text(|s| {
-                insert_text_callback_tsfn.call(s, NonBlocking);
-            });
-            b_ime.on_status_change(|s| {
-                on_ime_hide_callback_tsfn.call(s.into(), NonBlocking);
-            });
-            b_ime.on_backspace(|len| {
-                on_backspace_callback_tsfn.call(len, NonBlocking);
-            });
-            b_ime.on_enter(|key| {
-                on_ime_enter_callback_tsfn.call(key as i32, NonBlocking);
-            });
-        }
-
-        {
-            if let Some(ref mut h) = *on_surface_created_app.event_loop.borrow_mut() {
-                h(Event::SurfaceCreate)
-            }
+        if let Some(ref mut h) = *on_surface_created_app.event_loop.borrow_mut() {
+            h(Event::SurfaceCreate)
         }
 
         Ok(())

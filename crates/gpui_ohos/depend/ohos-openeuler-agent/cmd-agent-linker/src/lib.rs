@@ -1,11 +1,11 @@
 //! Stable interface for remote command execution, decoupling `util` from the
-//! concrete cmd-agent-client. The zcoder workspace depends on this crate
-//! (via `util`) instead of cmd-agent-client directly, so changes to the
+//! concrete cmd-agent. The zcoder workspace depends on this crate
+//! (via `util`) instead of cmd-agent directly, so changes to the
 //! client's internals (daemon, deploy, ssh) do not force a rebuild of every
-//! crate that depends on `util`. The implementor (cmd-agent-client) is
+//! crate that depends on `util`. The implementor (cmd-agent) is
 //! registered at startup by launch-zed.
 //!
-//! The interface mirrors the subset of `cmd_agent_client::client::Client`
+//! The interface mirrors the subset of `cmd_agent::client::Client`
 //! that `util::command` actually uses: spawn, signal, try_exit, wait_exit.
 
 use std::future::Future;
@@ -17,7 +17,7 @@ use cmd_agent_protocol::{ExecSpec, Signal};
 use smol::io::{AsyncRead, AsyncWrite};
 
 /// A spawned remote process: session id plus the three stdio streams. The
-/// streams mirror `cmd_agent_client::client::Session`, so the implementor can
+/// streams mirror `cmd_agent::client::Session`, so the implementor can
 /// map them directly.
 pub struct RemoteChild {
     pub session_id: u64,

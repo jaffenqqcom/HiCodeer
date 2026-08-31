@@ -1,0 +1,15 @@
+[package]
+name = "qemu-cmd-agent-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Wire protocol for the QEMU cmd-agent channel: a self-contained copy of cmd-agent-protocol plus the QEMU extensions (ExecResultAck, MountFolder2QEMU / UnmountFolder2QEMU)"
+
+[lib]
+name = "qemu_cmd_agent_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

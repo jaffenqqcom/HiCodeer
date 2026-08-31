@@ -13,10 +13,10 @@ use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use cmd_agent_linker::RemoteCommandExecutor;
-use cmd_agent_protocol::{ExecSpec, FdMode, RootMap, Signal};
+use qemu_cmd_agent_linker::RemoteCommandExecutor;
+use qemu_cmd_agent_protocol::messages::{ExecSpec, FdMode, RootMap, Signal};
 use smol::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 /// How a child's standard descriptor is wired.
@@ -45,30 +45,25 @@ impl Stdio {
     }
 }
 
-/// Path-root mapping used to flag absolute-path arguments for VM-side mapping.
-static ROOT_MAP: OnceLock<RootMap> = OnceLock::new();
-
 /// Initializes the global cmd-agent client. The host calls this once after
 /// spawning the daemon and before any command runs.
-pub fn init(_socket_path: &str, root_map: Option<RootMap>) -> io::Result<()> {
-    // The executor itself is registered by launch-zed once the daemon is up;
-    // this hook verifies the registration and records the path-root mapping
-    // used to flag absolute-path arguments for VM-side mapping.
-    if cmd_agent_linker::executor().is_none() {
+pub fn init(_socket_path: &str, _root_map: Option<RootMap>) -> io::Result<()> {
+    // The executor itself is registered by launch-zed once the QEMU guest is
+    // up; this hook verifies the registration. Path mapping now lives in the
+    // guest cmd-agentd (maintained by MountFolder2QEMU), so the root map
+    // parameter is accepted for call compatibility and ignored.
+    if qemu_cmd_agent_linker::executor().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "cmd-agent executor not registered",
         ));
-    }
-    if let Some(map) = root_map {
-        let _ = ROOT_MAP.set(map);
     }
     log::info!("util::command::init: executor ready");
     Ok(())
 }
 
 fn executor() -> io::Result<Arc<dyn RemoteCommandExecutor>> {
-    cmd_agent_linker::executor().ok_or_else(|| {
+    qemu_cmd_agent_linker::executor().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "cmd-agent executor not initialized",
@@ -248,18 +243,6 @@ impl Command {
         spec.stdin_mode = fd_mode(self.stdin_cfg);
         spec.stdout_mode = fd_mode(self.stdout_cfg);
         spec.stderr_mode = fd_mode(self.stderr_cfg);
-        // Flag absolute-path arguments that live under the OHOS root so the
-        // server maps them to the VM root.
-        if let Some(root) = ROOT_MAP.get() {
-            for (index, arg) in self.args.iter().enumerate() {
-                let value = arg.to_string_lossy();
-                if let Some(rest) = value.strip_prefix(&root.ohos_root) {
-                    if rest.is_empty() || rest.starts_with('/') {
-                        spec.path_arg_indices.push(index);
-                    }
-                }
-            }
-        }
         spec
     }
 }
@@ -341,11 +324,16 @@ impl Child {
             stderr.read_to_end(&mut stderr_buf).await?;
         }
         let exit_code = self.executor.wait_exit_async(self.session_id).await?;
+        // [diag] surface the remote command's stderr so a fatal message (e.g.
+        // git's) is visible in hilog, bounded to a readable prefix.
+        let stderr_brief: String = String::from_utf8_lossy(&stderr_buf)
+            .chars()
+            .take(300)
+            .collect();
         log::info!(
-            "util::command::Child::output: session_id={} exit_code={exit_code:?}, stdout_bytes={}, stderr_bytes={}",
+            "util::command::Child::output: session_id={} exit_code={exit_code:?}, stdout_bytes={}, stderr={stderr_brief}",
             self.session_id,
-            stdout_buf.len(),
-            stderr_buf.len()
+            stdout_buf.len()
         );
         Ok(Output {
             status: status_from_code(exit_code),

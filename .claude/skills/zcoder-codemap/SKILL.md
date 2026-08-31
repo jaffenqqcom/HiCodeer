@@ -677,6 +677,58 @@ git_store::spawn_local_git_worker() 在 crates/project/src/git_store.rs 到 send
 Git 到 util::command::Command::spawn() 在 crates/util/src/command/ohos.rs 到 [ExecSpec + SpawnReply] 到 cmd-agent daemon 在 crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-client/src/client.rs  [OHOS 沙箱禁 exec，git 在 OpenEuler VM 远程执行；spawn 是同步阻塞握手（rx.recv_timeout，超时上限 20s）——前台 git 写操作因此卡 UI 最多 20s]
 ```
 
+### QEMU 命令后端模块（ohos-qemu-agent，替代 OpenEuler VM）
+
+> 当前默认后端（`script/bundle-ohos` QEMU_MODE=true）：沙箱禁 exec，git/LSP/终端命令经 **in-process QEMU guest** 执行。四 crate：`cmd-agent`（zcoder 进程内 host 侧）、`cmd-agentd`（QEMU 内 guest 侧二进制）、`cmd-agent-protocol`（长度前缀 JSON 协议）、`cmd-agent-linker`（trait 薄接口，`util` 与 `workspace` 只依赖它）。virtio-serial 端口池：`zcoder.mgmt` + `zcoder.cmd.0..13` + `zcoder.err.0..13`（PORT_POOL_SIZE=14，2N+1 端口）。
+
+模块入口：
+```
+QEMU 到 start() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/lib.rs  [由 launch_app::start_qemu 在应用启动时调用；dlopen libqemu-system-aarch64.so + dlsym("main")，QEMU 线程跑机器]
+QEMU 到 QemuCommandExecutor::new() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 start_qemu 在 QEMU 启动后调用；建端口池状态 + 启 qemu-cmd-mgmt 线程 + 传 sandbox_root（启动时经 MountFolder2QEMU 挂沙箱根 → /sandbox）]
+QEMU 到 init_executor() / init_mounter() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker/src/lib.rs  [由 start_qemu 注册 RemoteCommandExecutor 与 FolderMounter 全局单例]
+命令 到 Command::spawn() 在 crates/util/src/command/ohos.rs  [由业务代码（git/LSP/终端）经 util::command 发起；build_spec 构造 ExecSpec（原始 zcoder 路径）→ executor.spawn]
+QEMU 到 spawn() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 util::command spawn 触发；alloc 端口对 → unix socket 握手（Hello→HelloOk→Spawn→SpawnOk），失败释放端口]
+QEMU 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 QemuCommandExecutor::new 启动的常驻线程；维持 mgmt 长连接，读 ExecResult，每 100ms 刷 MgmtCommand 队列（Signal/Mount/Unmount）]
+QEMU 到 signal() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 util::command Child::kill 触发；经 MgmtCommand::Signal 由 mgmt_loop 代发（mgmt socket 单连接不能新建）]
+QEMU 到 mount_folder() / unmount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 workspace open_paths 挂接（cfg ohos）经 linker mounter() 调用；QMP fsdev-add+device_add → MgmtCommand::Mount → 等 MountOk；幂等（已挂载集合）]
+QMP 到 create_workdir_fsdev() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/qmp.rs  [由 mount_folder 调用；一次性 QMP 会话（connect→qmp_capabilities→fsdev-add→device_add→断开）]
+cmd-agentd 到 main() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [由 guest init 开机启动（rootfs S42cmd-agentd 从 /sandbox find 二进制）；扫描 /dev/virtio-ports 按端口分线程]
+cmd-agentd 到 data_port_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [每数据端口一线程；循环 open_port 服务命令，host 断开后 REOPEN_DELAY 重开]
+cmd-agentd 到 handle_data_connection() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [由 data_port_loop 在 host 连上后调用；Hello→Spawn→stdio 双向流→等 stderr 排空→发 ExecResult→等 ExecResultAck(2s) 回收端口]
+cmd-agentd 到 err_port_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [每 stderr 端口一线程；SpawnStderr 后转发 child stderr 到 err 端口]
+cmd-agentd 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [管理端口线程；读 ClientMessage（Signal/Mount/Unmount/ExecResultAck）+ 写 ServerMessage（HelloOk/ExecResult/MountOk）]
+cmd-agentd 到 mount_folder() / unmount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [由 mgmt_loop 收到 MountFolder2QEMU/UnmountFolder2QEMU 时调用；mount -t 9p <tag> <guest_path> + 登记/撤销 path_map；不真 umount]
+cmd-agentd 到 build_command() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/exec.rs  [由 handle_data_connection 构造命令时调用；path_map.map_path 替换 binary/args/cwd 为 guest 路径]
+```
+
+跨文件跳转：
+```
+launch_app::start_qemu() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs 到 qemu_cmd_agent::start() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/lib.rs  [启动 QEMU 线程]
+launch_app::start_qemu() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs 到 QemuCommandExecutor::new() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [建 executor 并注册 linker]
+QemuCommandExecutor::new() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [常驻线程]
+QemuCommandExecutor::mount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs 到 create_workdir_fsdev() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/qmp.rs  [QMP 建 fsdev+device]
+workspace::mount_opened_dirs() 在 crates/workspace/src/workspace.rs 到 mounter().mount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker/src/lib.rs  [cfg(ohos) 挂接；fire-and-forget 不阻塞打开流程]
+util::command::Command::spawn() 在 crates/util/src/command/ohos.rs 到 executor.spawn()（linker trait）在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker/src/lib.rs  [经 RemoteCommandExecutor 薄接口]
+```
+
+跨运行时跳转（virtio-serial 端口 / QMP / 协议消息）：
+```
+cmd-agent spawn 到 [Hello/Spawn] 经 cmd.<n>.sock 到 handle_data_connection() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [数据端口；SpawnOk 后连接变原始字节流（stdin/stdout）]
+cmd-agent spawn 到 [SpawnStderr] 经 err.<n>.sock 到 handle_err_connection() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [stderr 端口；转发 child stderr]
+cmd-agentd 到 [ExecResult] 经 zcoder.mgmt 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [host 回 ExecResultAck 触发 cmd-agentd 2s 内回收端口]
+cmd-agent signal 到 [Signal] 经 zcoder.mgmt 到 signal_session() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [kill(-pid) 整进程组]
+cmd-agent mount_folder 到 [MountFolder2QEMU] 经 zcoder.mgmt 到 mount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [回 MountOk；登记 host_root→guest_root]
+cmd-agent unmount_folder 到 [UnmountFolder2QEMU] 经 zcoder.mgmt 到 unmount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [只撤销映射不 umount]
+cmd-agent mount_folder 到 [QMP fsdev-add/device_add] 经 qmp.sock 到 QEMU fsdev 动态创建  [一次性会话；security-model=passthrough]
+cmd-agentd 命令 到 [mount -t 9p <ztag{n}> /ws/{n}] 在 guest 内  [fsdev path=zcoder 真实路径；9p 以真实路径 open]
+```
+
+补充要点（实现决策，非追踪细节）：
+- **路径映射**：只在 cmd-agentd（path_map.rs）。host_root（zcoder 路径段前缀）→ guest_root（/ws/{n}）替换 binary/args/cwd；未命中透传；`--flag=<path>` 只映射 `/` 开头 value。cmd-agent 不维护映射。
+- **端口回收**：ExecResult + ExecResultAck 两段握手 + 2s 强制回收（cmd-agentd sessions.rs ACK_TIMEOUT）；ExecResult 在 stdout/stderr 都 EOF 后才发。
+- **动态挂载编号**：fsdev{n}（fsdev0 静态 sandbox）/ virtio9p{n} / ztag{n} / /ws/{n}；已挂载集合幂等；不主动 umount、fsdev 累积不删。
+- **mount/unmount 对称接口**：cmd-agent 侧 mount_folder/unmount_folder（对外，含 QMP），cmd-agentd 侧同名协议处理（执行 mount/unmount + 映射维护），register_mapping/unregister_mapping 为登记辅助对。
+
 ### 关键配置与产物
 
 - `hap/entry/src/main/ets/entryability/EntryAbility.ets`：`moduleName = "zcoder"`。

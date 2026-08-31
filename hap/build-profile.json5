@@ -4,10 +4,10 @@
       {
         "name": "default",
         "material": {
-          "storePassword": "00000020FE2DA6FC55F4ED805DF903819BD63CEBC5EA366BF570A2F311813E74B2F332288B6341020AE049BBE06CF171",
+          "storePassword": "00000020273C60FD725083607A4B723E51C179FAF729C946EF0580C5D7A6ED856D917A2FF43D06A3D95150AB602E5332",
           "certpath": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
           "keyAlias": "debugKey",
-          "keyPassword": "00000020FE2DA6FC55F4ED805DF903819BD63CEBC5EA366BF570A2F311813E74B2F332288B6341020AE049BBE06CF171",
+          "keyPassword": "00000020273C60FD725083607A4B723E51C179FAF729C946EF0580C5D7A6ED856D917A2FF43D06A3D95150AB602E5332",
           "profile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
           "signAlg": "SHA256withECDSA",
           "storeFile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"
@@ -23,6 +23,9 @@
         "compatibleSdkVersion": "6.1.0(23)",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
+          "packOptions": {
+            "enableSourceCodeCheck": false
+          },
           "nativeLib": {
             "collectAllLibs": true
           },
@@ -90,6 +93,10 @@
     {
       "name": "plugin_openwith",
       "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/openwith"
+    },
+    {
+      "name": "plugin_ime",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/ime"
     }
   ]
 }

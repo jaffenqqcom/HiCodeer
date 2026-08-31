@@ -113,6 +113,11 @@ pub struct GitStore {
     buffer_ids_by_index_text_buffer_id: HashMap<BufferId, BufferId>,
     shared_diffs: HashMap<proto::PeerId, HashMap<BufferId, SharedDiffs>>,
     _subscriptions: Vec<Subscription>,
+    /// [ohos] Repository `.git/config` paths already being watched, so a
+    /// `git config --local safe.directory` write flips `git_access` back to
+    /// `None` and re-runs `check_access`. Deduplicated per repository path.
+    #[cfg(target_env = "ohos")]
+    ohos_repo_config_watches: HashSet<PathBuf>,
 }
 
 const MIN_PARKED_REPOSITORY_DEPTH: usize = 2;
@@ -806,6 +811,8 @@ impl GitStore {
             worktree_ids: HashMap::default(),
             active_repo_id: None,
             _subscriptions,
+            #[cfg(target_env = "ohos")]
+            ohos_repo_config_watches: HashSet::default(),
             loading_diffs: HashMap::default(),
             shared_diffs: HashMap::default(),
             diffs: HashMap::default(),
@@ -2616,6 +2623,10 @@ impl GitStore {
             .map(|downstream| downstream.updates_tx.clone());
         let project_environment = project_environment.downgrade();
         let fs = fs.clone();
+        // [ohos] Keep a separate fs handle for the per-repository .git/config
+        // watcher; the primary `fs` is moved into the repository below.
+        #[cfg(target_env = "ohos")]
+        let ohos_watch_fs = fs.clone();
         let is_trusted = TrustedWorktrees::try_get_global(cx)
             .map(|trusted_worktrees| {
                 trusted_worktrees.update(cx, |trusted_worktrees, cx| {
@@ -2654,6 +2665,11 @@ impl GitStore {
             .push(cx.subscribe(&repo, Self::on_jobs_updated));
         self.repositories.insert(id, repo);
         self.worktree_ids.insert(id, worktree_ids);
+        // [ohos] Watch this repository's .git/config so a safe.directory write
+        // (git config --local) triggers GlobalConfigurationUpdated and re-runs
+        // check_access. The HashSet dedupes re-opens of the same directory.
+        #[cfg(target_env = "ohos")]
+        self.watch_repo_config_ohos(&repository.repository_dir_abs_path, ohos_watch_fs, cx);
         cx.emit(GitStoreEvent::RepositoryAdded);
         self.refresh_diff_base_for_repo(id, cx);
         self.active_repo_id.get_or_insert_with(|| {
@@ -2661,6 +2677,38 @@ impl GitStore {
             id
         });
         self.activate_parked_repositories_under(&repository.work_directory_abs_path, cx);
+    }
+
+    /// [ohos] Watches a local repository's `.git/config` and re-emits
+    /// `GlobalConfigurationUpdated` on change, so a `git config --local
+    /// safe.directory` write (git_panel's Trust Directory action) resets
+    /// `git_access` and re-runs `check_access`. OHOS-only: the work-directory
+    /// `.git/config` is the only writable git config there (the user-home
+    /// `.gitconfig` watcher fails with Permission denied in the sandbox, and
+    /// the global config lives inside the QEMU guest, invisible to this watch).
+    #[cfg(target_env = "ohos")]
+    fn watch_repo_config_ohos(
+        &mut self,
+        dot_git: &Arc<Path>,
+        fs: Arc<dyn Fs>,
+        cx: &mut Context<Self>,
+    ) {
+        let config_path = dot_git.join("config");
+        if !self.ohos_repo_config_watches.insert(config_path.clone()) {
+            return;
+        }
+        log::info!("[diag] git_store: watching {config_path:?} for safe.directory changes");
+        cx.spawn(async move |this, cx| {
+            let watcher = fs.watch(&config_path, Duration::from_millis(100));
+            let (mut watcher, _) = watcher.await;
+            while let Some(_) = watcher.next().await {
+                let _ = this.update(cx, |_, cx| {
+                    log::info!("[diag] git_store: {config_path:?} changed, re-running git access check");
+                    cx.emit(GitStoreEvent::GlobalConfigurationUpdated);
+                });
+            }
+        })
+        .detach();
     }
 
     fn activate_parked_repositories_under(

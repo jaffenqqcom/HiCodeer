@@ -12,13 +12,12 @@ use napi_derive_ohos::napi;
 use napi_ohos::{bindgen_prelude::Object, Env, Error, Result};
 use ohos_arkui_binding::XComponent;
 use ohos_display_binding::default_display_scaled_density;
-use ohos_ime_binding::IME;
 use ohos_xcomponent_binding::RawWindow;
 
 use crate::{
     bridge::MainThreadBridgeEndpoint, AvoidArea, AvoidAreaType, BridgeMainThread,
     BridgeMainThreadEvent, BridgePlugin, BridgePluginDeclaration, BridgePluginRegistry,
-    BridgeRuntime, Configuration, Event, MainThreadScheduler, OpenHarmonyWaker,
+    BridgeRuntime, Configuration, Event, InputEvent, MainThreadScheduler, OpenHarmonyWaker,
     PluginLifecycleEvent, Rect, WAKER,
 };
 
@@ -66,7 +65,7 @@ unsafe extern "C" {
 }
 
 /// Returns the resfile directory of the given module through the native
-/// application-context API. The packaged cmd-agent-server binary lives there
+/// application-context API. The packaged cmd-agentd binary lives there
 /// as a plain read-only file, readable by any process with this app's uid.
 pub fn application_resource_dir(module_name: &str) -> Result<String> {
     let module_name_c = std::ffi::CString::new(module_name)
@@ -310,7 +309,6 @@ pub struct OpenHarmonyApp {
     pub(crate) inner: Arc<RwLock<OpenHarmonyAppInner>>,
     pub(crate) event_loop: EventLoop,
     pub(crate) back_press_interceptor: BackPressInterceptor,
-    pub(crate) ime: Arc<RefCell<Option<IME>>>,
     bridge_session: Arc<RwLock<Option<ActiveBridgeSession>>>,
     bridge_plugins: Arc<BridgePluginRegistry>,
     is_keyboard_show: Arc<Mutex<bool>>,
@@ -378,11 +376,22 @@ impl OpenHarmonyApp {
             event_loop: Arc::new(RefCell::new(None)),
             #[allow(clippy::arc_with_non_send_sync)]
             back_press_interceptor: Arc::new(RefCell::new(None)),
-            #[allow(clippy::arc_with_non_send_sync)]
-            ime: Arc::new(RefCell::new(None)),
             bridge_session: Arc::new(RwLock::new(None)),
             bridge_plugins: Arc::new(BridgePluginRegistry::default()),
             is_keyboard_show: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Pushes an IME input event into the registered event-loop handler.
+    ///
+    /// Called by the IME bridge plugin on the main thread when an ArkTS
+    /// `InputMethodController` callback arrives; this keeps the same
+    /// `Event::Input(InputEvent::ImeEvent(..))` stream the previous NDK path
+    /// produced, so the GPUI consumer (`OhosWindow::handle_input_event`) is
+    /// unchanged.
+    pub fn dispatch_input_event(&self, event: InputEvent) {
+        if let Some(ref mut handler) = *self.event_loop.borrow_mut() {
+            handler(Event::Input(event));
         }
     }
 
@@ -531,9 +540,6 @@ impl OpenHarmonyApp {
             .write()
             .map(|mut inner| inner.deactivate_surface(owner))
             .unwrap_or(false);
-        if deactivated {
-            self.ime.borrow_mut().take();
-        }
         deactivated
     }
 
@@ -549,7 +555,6 @@ impl OpenHarmonyApp {
         let Some(surface_was_active) = surface_was_active else {
             return;
         };
-        self.ime.borrow_mut().take();
         if surface_was_active {
             self.dispatch_surface_destroy();
         }
@@ -696,16 +701,6 @@ impl OpenHarmonyApp {
         }
     }
 
-    pub fn show_keyboard(&self) {
-        // IME show_keyboard disabled (product decision): OH_InputMethodProxy_ShowKeyboard can
-        // fail when the IME session has ended, triggering an assert panic that aborts the app.
-        // Keep this a no-op so every caller (OhosWindow, IME callbacks) is disabled transitively.
-    }
-    pub fn hide_keyboard(&self) {
-        // IME hide_keyboard disabled (product decision): OH_InputMethodProxy_HideKeyboard can
-        // fail when the IME session has ended, triggering an assert panic that aborts the app.
-        // Keep this a no-op so every caller (OhosWindow, IME callbacks) is disabled transitively.
-    }
     pub fn create_waker(&self) -> OpenHarmonyWaker {
         self.inner.read().unwrap().create_waker()
     }

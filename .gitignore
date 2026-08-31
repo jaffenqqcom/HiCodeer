@@ -66,3 +66,5 @@ hap/entry/libs
 
 # WorkBuddy workspace data
 **/.workbuddy
+crates/gpui_ohos/depend/ohos-qemu-agent/images/tools/lib64/libLLVM-17.so
+hap/entry/src/main/resources/resfile/

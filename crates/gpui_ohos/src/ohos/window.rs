@@ -18,6 +18,7 @@ use openharmony_ability::{
     MouseAction, MouseEventData, MouseButton as DeviceMouseButton, OpenHarmonyApp, ScrollPhase,
     xcomponent::{Action, KeyCode, KeyEventData, TouchEvent, TouchEventData},
 };
+use openharmony_ability_plugin_ime::ImeExt;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use super::display::OhosDisplay;
@@ -59,6 +60,15 @@ pub(crate) struct OhosWindow {
     window_alive: Rc<Cell<bool>>,
     pinch_accumulator: Rc<Cell<f32>>,
     keyboard_visible: Rc<Cell<bool>>,
+    /// Whether the ArkTS IME session is actually bound. Tracked separately from
+    /// `keyboard_visible` (which only drives layout) so a failed attach — the
+    /// edit box had not taken focus yet — can be retried instead of being
+    /// permanently suppressed.
+    ime_attached: Rc<Cell<bool>>,
+    /// Guards against overlapping attach attempts. ArkTS retries internally for
+    /// about a second, so a concurrent second request adds nothing but load.
+    ime_attach_in_flight: Rc<Cell<bool>>,
+    last_ime_cursor_rect: RefCell<Option<Bounds<Pixels>>>,
     pending_touch_scroll: RefCell<Option<PendingTouchScroll>>,
     last_dispatched_touch_position: RefCell<Option<Point<Pixels>>>,
     touch_state: Cell<TouchState>,
@@ -528,6 +538,9 @@ impl OhosWindow {
             window_alive: Rc::new(Cell::new(true)),
             pinch_accumulator: Rc::new(Cell::new(0.0)),
             keyboard_visible: Rc::new(Cell::new(false)),
+            ime_attached: Rc::new(Cell::new(false)),
+            ime_attach_in_flight: Rc::new(Cell::new(false)),
+            last_ime_cursor_rect: RefCell::new(None),
             pending_touch_scroll: RefCell::new(None),
             last_dispatched_touch_position: RefCell::new(None),
             touch_state: Cell::new(TouchState::Idle),
@@ -975,20 +988,60 @@ impl OhosWindow {
         self.begin_scroll_animation(position, modifiers, initial_velocity, friction);
     }
 
+    /// Binds the ArkTS IME session, retrying from Rust until it succeeds.
+    ///
+    /// The first attempt typically runs while the edit box has not taken focus
+    /// yet, so `attachWithUIContext` rejects it. ArkTS retries internally and
+    /// reports the real outcome here, which lets the next focus or caret event
+    /// issue a fresh attempt instead of assuming success.
     fn show_keyboard_if_needed(&self) {
-        if !self.keyboard_visible.get() {
-            if let Some(app) = self.app.borrow().as_ref() {
-                app.show_keyboard();
-                self.keyboard_visible.set(true);
-            }
+        if self.ime_attached.get() || self.ime_attach_in_flight.get() {
+            return;
         }
+        let Some(app) = self.app.borrow().clone() else {
+            return;
+        };
+        self.ime_attach_in_flight.set(true);
+        let ime_attached = self.ime_attached.clone();
+        let ime_attach_in_flight = self.ime_attach_in_flight.clone();
+        let executor = self.foreground_executor.clone();
+        executor
+            .spawn(async move {
+                let attached = match app.ime() {
+                    Ok(client) => match client.attach().await {
+                        Ok(ack) => ack.accepted,
+                        Err(error) => {
+                            log::warn!("show_keyboard_if_needed: ime attach failed: {error}");
+                            false
+                        }
+                    },
+                    Err(error) => {
+                        log::warn!("show_keyboard_if_needed: ime client unavailable: {error}");
+                        false
+                    }
+                };
+                ime_attached.set(attached);
+                ime_attach_in_flight.set(false);
+            })
+            .detach();
     }
 
     fn hide_keyboard_if_needed(&self) {
-        if self.keyboard_visible.replace(false) {
-            if let Some(app) = self.app.borrow().as_ref() {
-                app.hide_keyboard();
-            }
+        if !self.ime_attached.replace(false) {
+            return;
+        }
+        if let Some(app) = self.app.borrow().as_ref() {
+            let app = app.clone();
+            let executor = self.foreground_executor.clone();
+            executor
+                .spawn(async move {
+                    if let Ok(client) = app.ime() {
+                        if let Err(error) = client.detach().await {
+                            log::warn!("hide_keyboard_if_needed: ime detach failed: {error}");
+                        }
+                    }
+                })
+                .detach();
         }
     }
 
@@ -1382,6 +1435,9 @@ impl OhosWindow {
                     self.emit_resize_callback();
                 }
                 self.request_frame(true);
+                // The XComponent is the edit surface; attach the system IME so it
+                // can receive input once the surface gains focus.
+                self.show_keyboard_if_needed();
             }
             Event::WindowResize(ohos_size) => {
                 let scale = *self.scale.borrow();
@@ -1403,11 +1459,13 @@ impl OhosWindow {
                     self.emit_resize_callback();
                     self.request_frame(true);
                 }
+                self.refresh_ime_cursor();
             }
             Event::ContentRectChange(..) => {
                 if self.refresh_keyboard_overlap_device_px() {
                     self.emit_resize_callback();
                 }
+                self.refresh_ime_cursor();
             }
             Event::AvoidAreaChange(info) => {
                 if matches!(
@@ -1420,6 +1478,7 @@ impl OhosWindow {
                 {
                     self.emit_resize_callback();
                 }
+                self.refresh_ime_cursor();
             }
             Event::WindowRedraw(info) => {
                 self.flush_pending_scroll();
@@ -1459,6 +1518,10 @@ impl OhosWindow {
                         app.enable_frame_callback();
                     }
                 }
+                // Re-attach the IME when the window regains focus (e.g. after the
+                // app was minimized and restored); the previous NDK path crashed
+                // here because its IME instance was dropped and never re-created.
+                self.show_keyboard_if_needed();
             }
             Event::LostFocus => {
                 self.cancel_momentum();
@@ -1505,6 +1568,7 @@ impl OhosWindow {
                     self.emit_resize_callback();
                     self.request_frame(true);
                 }
+                self.refresh_ime_cursor();
             }
             Event::WindowDestroy => {
                 self.cancel_momentum();
@@ -2788,7 +2852,66 @@ impl PlatformWindow for OhosWindow {
         false
     }
 
-    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
-        // There is no such thing on Windows.
+    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+        *self.last_ime_cursor_rect.borrow_mut() = Some(bounds);
+        // A caret position exists only while the edit box holds the focus, which
+        // makes this the earliest reliable moment to bind the IME. The attempt
+        // fired on surface creation runs well before focus hand-off completes
+        // and is rejected, so without this the keyboard stays dead until the
+        // window is minimized and restored.
+        self.show_keyboard_if_needed();
+        self.push_ime_cursor_rect(bounds);
+    }
+
+}
+
+impl OhosWindow {
+    /// Re-sends the cached IME cursor rectangle to ArkTS after a window
+    /// geometry change (resize / move / keyboard avoidance). GPUI does not
+    /// re-push the cursor on those transitions, so the candidate box must be
+    /// repositioned from the cache, mirroring warp-ohos `refreshCursorWithLatest`.
+    fn refresh_ime_cursor(&self) {
+        if let Some(bounds) = *self.last_ime_cursor_rect.borrow() {
+            self.push_ime_cursor_rect(bounds);
+        }
+    }
+
+    /// Converts a cursor rectangle (logical px, relative to the XComponent
+    /// surface) into **window-relative** physical px and asks the ArkTS IME
+    /// plugin to move the candidate box there.
+    ///
+    /// `content_rect` is the XComponent's own offset inside the window, reported
+    /// by the system (see the `offset` read in `on_surface_created` /
+    /// `on_surface_changed`). It covers the status bar / safe-area insets that
+    /// sit *within* the window, but NOT the system title bar, which lives above
+    /// the XComponent's content area. The title bar offset is added on the ArkTS
+    /// side (`ImePlugin.titleBarHeightPx`), which is also where the window's own
+    /// screen position (`windowRect`) is added.
+    fn push_ime_cursor_rect(&self, bounds: Bounds<Pixels>) {
+        let scale = f64::from(*self.scale.borrow());
+        let (offset_left, offset_top) = self
+            .app
+            .borrow()
+            .as_ref()
+            .map(|app| {
+                let rect = app.content_rect();
+                (f64::from(rect.left), f64::from(rect.top))
+            })
+            .unwrap_or((0.0, 0.0));
+        let x = f64::from(bounds.origin.x) * scale + offset_left;
+        let y = f64::from(bounds.origin.y) * scale + offset_top;
+        let width = f64::from(bounds.size.width) * scale;
+        let height = f64::from(bounds.size.height) * scale;
+        if let Some(app) = self.app.borrow().as_ref() {
+            let app = app.clone();
+            let executor = self.foreground_executor.clone();
+            executor
+                .spawn(async move {
+                    if let Ok(client) = app.ime() {
+                        let _ = client.update_cursor(x, y, width, height).await;
+                    }
+                })
+                .detach();
+        }
     }
 }

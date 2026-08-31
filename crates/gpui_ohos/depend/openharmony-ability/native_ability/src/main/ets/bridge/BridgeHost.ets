@@ -208,7 +208,12 @@ function clampTimeout(timeoutMs: number): number {
   if (!Number.isFinite(timeoutMs)) {
     return MAX_TIMEOUT_MS;
   }
-  return Math.max(1, Math.min(Math.floor(timeoutMs), MAX_TIMEOUT_MS));
+  if (timeoutMs <= 0) {
+    // 0 disables the timeout: user-driven dialogs (file pickers) stay open
+    // while the user decides and only settle through the operation itself.
+    return 0;
+  }
+  return Math.min(Math.floor(timeoutMs), MAX_TIMEOUT_MS);
 }
 
 function normalizedRequirements(requires?: BridgeContextRequirement[]): BridgeContextRequirement[] {
@@ -1692,6 +1697,11 @@ class BridgeHost {
     action: string,
     onTimeout: (reason: Error) => void,
   ): Promise<BridgeTypedValue> {
+    if (timeoutMs <= 0) {
+      // No timeout: await the operation directly. Cancellation (e.g. ability
+      // destruction) still flows through the operation promise.
+      return await operation;
+    }
     let timer = 0;
     const timeout = new Promise<BridgeTypedValue>((_resolve, reject) => {
       timer = setTimeout(() => {

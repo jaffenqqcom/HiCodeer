@@ -4007,6 +4007,15 @@ impl GitPanel {
         if let Some(path_str) = path.to_str() {
             let path_arg = String::from(path_str);
             let args = vec![
+                // [ohos] Write to the repository-local config (.git/config):
+                // the global config lives under the QEMU guest's HOME, and zed's
+                // config watcher watches the host user home, so a --global write
+                // never reaches it nor triggers a re-check. The per-repo
+                // .git/config is watched by GitStore::watch_repo_config_ohos and
+                // flips git_access back to None for a re-run of check_access.
+                #[cfg(target_env = "ohos")]
+                String::from("--local"),
+                #[cfg(not(target_env = "ohos"))]
                 String::from("--global"),
                 String::from("--add"),
                 String::from("safe.directory"),
@@ -6983,6 +6992,9 @@ impl GitPanel {
                             .layer(ElevationIndex::ModalSurface)
                             .style(ButtonStyle::Filled)
                             .tooltip(Tooltip::text(
+                                #[cfg(target_env = "ohos")]
+                                format!("git config --local --add safe.directory {}", directory.display()),
+                                #[cfg(not(target_env = "ohos"))]
                                 format!("git config --global --add safe.directory {}", directory.display())
                             ))
                             .on_click(

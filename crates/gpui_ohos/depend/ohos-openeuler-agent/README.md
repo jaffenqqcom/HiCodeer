@@ -26,10 +26,10 @@ OHOS 应用沙箱禁止**执行外部程序**（`exec`），业务进程（如 z
 
 ```
 ┌─ OHOS 设备 ──────────────────────────────┐        ┌─ VM (arm64 openEuler) ───────────────┐
-│  业务进程 (zcoder)                        │        │  cmd-agent-server                    │
+│  业务进程 (zcoder)                        │        │  cmd-agentd                    │
 │    │ 通过 unix socket 与 client 通信      │        │   │ accept / 握手 / spawn / waitpid  │
 │    ▼                                     │        │   │  (不碰数据)                        │
-│  client (cmd-agent-client daemon 进程)    │        │   ▼  dup2(socket_fd, 0/1/2)          │
+│  client (cmd-agent daemon 进程)    │        │   ▼  dup2(socket_fd, 0/1/2)          │
 │    ├─ 管理连接（常驻）──心跳/退出码/信号──┼──TCP──►│  子进程 (git / rust-analyzer / bash)  │
 │    └─ 数据连接（每条指令一条）─纯字节透传──┼──TCP──►└─────────────────────────────────────┘
 └──────────────────────────────────────────┘
@@ -55,12 +55,12 @@ OHOS 应用沙箱禁止**执行外部程序**（`exec`），业务进程（如 z
 
 ## 3. Server 运行方式及功能
 
-server 是部署在 VM 上的独立可执行程序 `cmd-agent-server`。
+server 是部署在 VM 上的独立可执行程序 `cmd-agentd`。
 
 ### 运行方式
 
 ```
-cmd-agent-server [--listen ADDR]
+cmd-agentd [--listen ADDR]
 ```
 
 - `--listen ADDR`：监听地址，默认 `0.0.0.0:4040`。
@@ -80,12 +80,12 @@ server 使用 `env_logger`，默认 info 级。可通过 `RUST_LOG=debug` 开详
 
 ## 4. Client 运行方式及功能
 
-client 是运行在 OHOS 设备上的独立进程 `cmd-agent-client`（daemon），由业务进程 spawn 并作为其子进程。
+client 是运行在 OHOS 设备上的独立进程 `cmd-agent`（daemon），由业务进程 spawn 并作为其子进程。
 
 ### 运行方式
 
 ```
-cmd-agent-client \
+cmd-agent \
     --unix-socket /data/<app>/cmd-agent.sock \
     --vm-addr <vm-ip>:4040 \
     [--ssh-host <vm-ip> --ssh-user <user> --ssh-pass <pass> --remote-dir ~/cmd-agent] \
@@ -105,7 +105,7 @@ cmd-agent-client \
 - **数据连接透传**：连上 VM server 对应数据连接，握手后把 unix socket 与 VM TCP 之间做**双向字节拷贝**（不解析、不缓存）。任一侧 EOF 即关闭另一侧写方向。
 - **管理连接中继**：VM 的 `SpawnOk`/`ExecResult`/`Error` 转发给业务；业务的 `Signal` 下发给 VM。`SpawnOk` 按 session 路由，避免与子进程输出竞态。
 - **心跳维持**：每 10s 向 VM server 管理连接发心跳。
-- **自动恢复**：检测 VM server 不可达 → 先重连，失败且配了 SSH 时自动部署：`pkill -x cmd-agent-server` 按名杀旧进程 → 分块上传二进制 → `setsid nohup` 拉起 → TCP 探活。
+- **自动恢复**：检测 VM server 不可达 → 先重连，失败且配了 SSH 时自动部署：`pkill -x cmd-agentd` 按名杀旧进程 → 分块上传二进制 → `setsid nohup` 拉起 → TCP 探活。
 - **父进程存活检测**：启动时记录父进程 PID 并设置 `PR_SET_PDEATHSIG`，周期检查 `getppid()`；父进程（业务）死亡或管理连接断开 → client 自动退出。client 退出 → VM server 管理连接断 → server 也退出。
 
 ### 日志
@@ -147,7 +147,7 @@ client 使用 `env_logger`，默认 info 级。日志写自身 stderr（由业�
 
 ### 集成流程（业务侧）
 
-1. **启动 daemon**：业务进程用 OHOS 的进程创建接口 spawn `cmd-agent-client`，并传入 unix socket 路径与 VM 地址。
+1. **启动 daemon**：业务进程用 OHOS 的进程创建接口 spawn `cmd-agent`，并传入 unix socket 路径与 VM 地址。
 2. **建立管理连接**：连接 unix socket，发 `Hello` + `Manage`。此后 daemon 会持续把 `SpawnOk`/`ExecResult`/`Error` 推过来，业务按 `session_id` 匹配。
 3. **执行一条指令**：
    - 新建一条连接，发 `Hello`，再发 `Spawn { session_id, spec }`。
@@ -158,13 +158,13 @@ client 使用 `env_logger`，默认 info 级。日志写自身 stderr（由业�
 
 ### 代码形态
 
-- **daemon 可执行**：`cmd-agent-client` 二进制，业务 spawn 它。
-- **client crate**：`cmd-agent-client` 库提供了 `deploy`（SSH 部署）、`daemon`（代理主逻辑）等模块；业务也可直接链接该 crate 复用协议与部署代码。
+- **daemon 可执行**：`cmd-agent` 二进制，业务 spawn 它。
+- **client crate**：`cmd-agent` 库提供了 `deploy`（SSH 部署）、`daemon`（代理主逻辑）等模块；业务也可直接链接该 crate 复用协议与部署代码。
 - **protocol crate**：`cmd-agent-protocol` 提供消息结构体与帧编解码（`frame::write_message`/`read_message`），两端共享。
 
 ## 6. 代码编译
 
-三个 crate：`cmd-agent-protocol`、`cmd-agent-server`、`cmd-agent-client`，同属一个 Cargo workspace。
+三个 crate：`cmd-agent-protocol`、`cmd-agentd`、`cmd-agent`，同属一个 Cargo workspace。
 
 ### Client（daemon）：与业务代码一起编译
 
@@ -172,10 +172,10 @@ client 运行在 OHOS 设备上，与业务进程（zcoder）使用同一套 OHO
 
 ```
 # 在 zcoder 主工程（或 OHOS SDK 环境）中
-cargo build -p cmd-agent-client --target aarch64-unknown-linux-ohos --release
+cargo build -p cmd-agent --target aarch64-unknown-linux-ohos --release
 ```
 
-产物 `cmd-agent-client` 可执行文件随应用打包，业务启动时 spawn。
+产物 `cmd-agent` 可执行文件随应用打包，业务启动时 spawn。
 
 > 说明：client 依赖 `russh`（SSH 部署）、`smol`（异步运行时）、`libc`。若目标工具链对某些依赖编译有差异，按实际工具链适配。
 
@@ -185,18 +185,18 @@ server 运行在 VM（arm64 openEuler）上，用 host 工具链（本机 aarch6
 
 ```
 # 在 zcoder 主工程中执行 bundle-ohos：
-#   OHOS 段编译后，用 host 工具链编译 server，产物拷贝到 hap/entry/src/main/resfile/cmd-agent-server
+#   OHOS 段编译后，用 host 工具链编译 server，产物拷贝到 hap/entry/src/main/resfile/cmd-agentd
 # 单独编译亦可：
-cargo build -p cmd-agent-server --release
+cargo build -p cmd-agentd --release
 ```
 
-产物 `cmd-agent-server` 是独立的可执行文件，运行时经 SSH 部署到 VM，无需额外运行库。
+产物 `cmd-agentd` 是独立的可执行文件，运行时经 SSH 部署到 VM，无需额外运行库。
 
 > 提示：server 只依赖 `std`、`libc`、`smol`、`serde`，无 OHOS 特有依赖，可在普通 aarch64 Linux 环境交叉/本地编译。
 
 ## 7. Server 安装方式
 
-server 二进制作为**资源文件**放进 HAP 的 resfile 目录（`hap/entry/src/main/resfile/cmd-agent-server`）。resfile 随安装**解压**到应用沙箱，有真实只读路径；业务侧经 native API 拿到路径，daemon 直接按路径读取部署——无 resourceManager、无 ArkTS。
+server 二进制作为**资源文件**放进 HAP 的 resfile 目录（`hap/entry/src/main/resfile/cmd-agentd`）。resfile 随安装**解压**到应用沙箱，有真实只读路径；业务侧经 native API 拿到路径，daemon 直接按路径读取部署——无 resourceManager、无 ArkTS。
 
 **为什么 resfile 可行**
 
@@ -204,18 +204,18 @@ rawfile 打包后**不解压**，运行时无物理路径，只能经 resourceMa
 
 **路径获取（native，不经 ArkTS）**
 
-1. `zcoder/script/bundle-ohos` 用 host 工具链（本机 aarch64-linux，环境变量显式声明）编译 server，拷贝到 `hap/entry/src/main/resfile/cmd-agent-server`（拷贝目标路径为脚本环境变量）。
+1. `zcoder/script/bundle-ohos` 用 host 工具链（本机 aarch64-linux，环境变量显式声明）编译 server，拷贝到 `hap/entry/src/main/resfile/cmd-agentd`（拷贝目标路径为脚本环境变量）。
 2. 业务侧（Rust）调 `OH_AbilityRuntime_ApplicationContextGetResourceDir(module_name, ...)`（libability_runtime.so，API 20+，zcoder 目标 API 23 满足）拿 resfile 只读路径——封装为 `openharmony_ability::application_resource_dir(module_name)`。
-3. 拼出 `<resourceDir>/cmd-agent-server`，经 daemon 的 `--server-binary` 参数传入（不硬编码）。
+3. 拼出 `<resourceDir>/cmd-agentd`，经 daemon 的 `--server-binary` 参数传入（不硬编码）。
 
 **安装步骤（程序启动后自动执行，lazy）**
 
 1. daemon 用 `std::fs::read(server_binary_path)` 读字节，交给部署能力（SSH）：
    - 连接 VM（`--ssh-host/--ssh-user/--ssh-pass`）；
    - 创建远端目录（`--remote-dir`，默认 `~/cmd-agent`）；
-   - `pkill -x cmd-agent-server` 杀掉残留旧进程（不存在则忽略）；
+   - `pkill -x cmd-agentd` 杀掉残留旧进程（不存在则忽略）；
    - 分块上传二进制（SCP 语义，每块 4MB）；
-   - `chmod +x` 使远端文件可执行，并用 `setsid nohup cmd-agent-server --listen 0.0.0.0:<port> &` 拉起；
+   - `chmod +x` 使远端文件可执行，并用 `setsid nohup cmd-agentd --listen 0.0.0.0:<port> &` 拉起；
    - TCP 探活确认 server 可连。
 2. client 建立管理连接，进入正常服务。
 

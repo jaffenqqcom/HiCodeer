@@ -216,7 +216,9 @@ static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 pub fn start_zed_main(base_path: Option<String>) {
     zlog::ohos::direct_hilog_info("zcoder-boot", "[boot] start_zed_main entered");
     if let Some(base_path) = base_path.filter(|path| !path.is_empty()) {
-        let data_dir = PathBuf::from(base_path).join("zed");
+        // Product data dir is `zcoder` (not `zed`): the QEMU guest mounts the
+        // whole sandbox, so downloaded programs live under base_path/zcoder.
+        let data_dir = PathBuf::from(base_path).join("zcoder");
         if let Some(data_dir) = data_dir.to_str() {
             paths::set_custom_data_dir(data_dir);
         }

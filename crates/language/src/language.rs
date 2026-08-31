@@ -133,24 +133,9 @@ where
 {
     let mut parser = PARSERS.lock().pop().unwrap_or_else(|| {
         let mut parser = Parser::new();
-        #[cfg(not(target_env = "ohos"))]
         parser
             .set_wasm_store(WasmStore::new(&WASM_ENGINE).unwrap())
             .unwrap();
-        #[cfg(target_env = "ohos")]
-        {
-            // Creating a Wasmtime store is unsupported in the OHOS sandbox (its
-            // JIT/mmap restrictions reject the engine), so degrade gracefully:
-            // leave the parser without a wasm store so wasm grammars are skipped,
-            // instead of panicking on the unwrap. Native grammars are unaffected.
-            if let Ok(store) = WasmStore::new(&WASM_ENGINE) {
-                if let Err(error) = parser.set_wasm_store(store) {
-                    log::error!("with_parser: failed to set wasm store: {error}");
-                }
-            } else {
-                log::warn!("with_parser: wasmtime store unavailable; wasm grammars disabled");
-            }
-        }
         parser
     });
     // Tree-sitter auto-resets the parser at the end of a successful parse,

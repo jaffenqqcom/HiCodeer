@@ -64,8 +64,8 @@ tendril = "0.4.3"
 windows.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-cmd-agent-linker = { path = "../gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-linker" }
-cmd-agent-protocol = { path = "../gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-protocol" }
+qemu-cmd-agent-linker = { path = "../gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker" }
+qemu-cmd-agent-protocol = { path = "../gpui_ohos/depend/ohos-qemu-agent/cmd-agent-protocol" }
 
 [dev-dependencies]
 rand.workspace = true

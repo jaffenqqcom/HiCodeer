@@ -13,15 +13,22 @@ project's libs directory, and runs hvigor assembleHap.
 
 Options:
   --release      Build in release mode (default: debug)
-  --server-only  Only build cmd-agent-server (host toolchain) and stage resfile
+  --server-only  Only build cmd-agentd (host toolchain) and stage resfile
   --hap-only     Skip Rust builds; only run ohpm install + hvigor assembleHap
   -h, --help     Display this help and exit.
+
+The in-process QEMU guest is the default (and only) command backend: the build
+uses --no-default-features --features qemu and stages the QEMU resources into
+the HAP (libqemu-system-aarch64.so, Image, rootfs.cpio.gz).
 "
 }
 
 # Parse all arguments manually
 IS_RELEASE=false
 MODE="all"
+# The in-process QEMU guest is the default (and only) backend; there is no
+# --qemu flag anymore.
+QEMU_MODE=true
 CARGO_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -161,8 +168,24 @@ if [ "$MODE" != "hap" ]; then
   OHOS_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-ohos-$BUILD_MODE"
   ensure_rust_target "ohos-$BUILD_MODE"
   echo "[zcoder-ohos-build] Cargo build ($PROFILE_DIR, $NPROC CPUs) ..."
+  # --qemu switches the backend feature: build with only the qemu feature
+  # (--no-default-features drops the openeuler-vm default). Extra CARGO_ARGS
+  # still pass through, so e.g. `bundle-ohos --qemu --features` can coexist.
+  QEMU_FEATURES=()
+  if [ "$QEMU_MODE" = true ]; then
+    QEMU_FEATURES+=("--no-default-features" "--features" "qemu")
+    # qemu_debug_assertions is intentionally NOT enabled: it forwards the guest
+    # serial console (qemu-console) and QEMU stderr to hilog through a pipe
+    # thread. The guest cmd-agentd logs heavily (e.g. idle port-poll WARNs),
+    # which saturates that pipe and stalls QEMU's stdout write, freezing the
+    # whole app. Keep the feature defined in Cargo.toml; just do not compile it
+    # in. Re-enable only when diagnosing QEMU boot from hilog.
+    if [ "$IS_RELEASE" = false ]; then
+      QEMU_FEATURES+=("--features" "qemu_debug_assertions")
+    fi
+  fi
   CARGO_TARGET_DIR="$OHOS_TARGET_DIR" \
-    cargo build $($IS_RELEASE && echo --release) --lib -p "$CRATE" --target "$OHOS_TARGET" -j "$NPROC" "${CARGO_ARGS[@]}"
+    cargo build $($IS_RELEASE && echo --release) --lib -p "$CRATE" --target "$OHOS_TARGET" -j "$NPROC" "${QEMU_FEATURES[@]}" "${CARGO_ARGS[@]}"
 
   # ==================== 拷贝 libzcoder.so ====================
   HAP_LIBS_DIR="$HAP_DIR/entry/libs/arm64-v8a"
@@ -172,21 +195,21 @@ if [ "$MODE" != "hap" ]; then
   echo "[zcoder-ohos-build] $OHOS_LIB_NAME staged at $HAP_LIBS_DIR/$OHOS_LIB_NAME"
 fi
 
-# ==================== cmd-agent-server 编译 + 打包 resfile ====================
+# ==================== cmd-agentd 编译 + 打包 resfile ====================
 # server 运行在 VM（arm64 openEuler）上，用 host 工具链（本机 aarch64-linux）编译成
 # 独立可执行文件，随应用一起打进 HAP 的 resfile。resfile 随安装解压到应用沙箱，
 # 业务侧用 OH_AbilityRuntime_ApplicationContextGetResourceDir 拿到其只读路径，
 # daemon 直接按路径读取（无需 resourceManager、无需 ArkTS）。
 # host 工具链变量显式声明（当前为本机工具链），后续换 VM 工具链只需改此处。
-SERVER_CRATE="cmd-agent-server"
+SERVER_CRATE="cmd-agentd"
 # cmd-agent crates are not members of the zcoder workspace; build the server
 # standalone by manifest path (it runs on the VM with the host toolchain).
-SERVER_MANIFEST="$PROJECT_ROOT/crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-server/Cargo.toml"
+SERVER_MANIFEST="$PROJECT_ROOT/crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agentd/Cargo.toml"
 # resfile is packaged by hvigor from src/main/resources/resfile (NOT
 # src/main/resfile); staging the server into the wrong directory silently
 # shipped the stale cached server inside the HAP.
 SERVER_RESFILE_DIR="$HAP_DIR/entry/src/main/resources/resfile"
-SERVER_RESFILE_NAME="cmd-agent-server"
+SERVER_RESFILE_NAME="cmd-agentd"
 
 export CC_aarch64_unknown_linux_gnu=/usr/bin/cc
 export CXX_aarch64_unknown_linux_gnu=/usr/bin/c++
@@ -195,10 +218,11 @@ export RANLIB_aarch64_unknown_linux_gnu=/usr/bin/ranlib
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/cc
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_CXX=/usr/bin/c++
 
-# --hap-only 跳过 server 编译（resfile 里已有现成二进制）
-if [ "$MODE" = "all" ] || [ "$MODE" = "server" ]; then
-  SERVER_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-cmd-agent-server"
-  ensure_rust_target "cmd-agent-server"
+# --hap-only 跳过 server 编译（resfile 里已有现成二进制）；--qemu 时 OpenEuler
+# VM 后端已由 cargo feature 关闭，无需再编译/部署 cmd-agentd。
+if [ "$QEMU_MODE" = false ] && { [ "$MODE" = "all" ] || [ "$MODE" = "server" ]; }; then
+  SERVER_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-cmd-agentd"
+  ensure_rust_target "cmd-agentd"
   echo "[zcoder-ohos-build] Building $SERVER_CRATE (host aarch64-linux) ..."
   CARGO_TARGET_DIR="$SERVER_TARGET_DIR" \
     cargo build --release --manifest-path "$SERVER_MANIFEST"
@@ -208,9 +232,70 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "server" ]; then
   echo "[zcoder-ohos-build] $SERVER_RESFILE_NAME staged at $SERVER_RESFILE_DIR/$SERVER_RESFILE_NAME"
 fi
 
+# ==================== QEMU 资源打包（--qemu） ====================
+# The QEMU engine library goes into the native-libs dir (dlopen by name); the
+# kernel image and initramfs go into the resfile, where launch-zed reads them
+# read-only via application_resource_dir. The engine is a large prebuilt .so,
+# so it is only staged for qemu builds.
+QEMU_RESOURCE_DIR="$PROJECT_ROOT/crates/gpui_ohos/depend/ohos-qemu-agent"
+# Prebuilt guest artifacts (kernel, QEMU engine, initramfs) live in the
+# images/ subdir so a rebuild never mixes versions. bundle-ohos copies them
+# verbatim into the HAP; cmd-agentd is still compiled from the source tree.
+QEMU_IMAGES_DIR="$QEMU_RESOURCE_DIR/images"
+QEMU_LIB_NAME="libqemu-system-aarch64.so"
+if [ "$QEMU_MODE" = true ]; then
+  QEMU_HAP_LIBS_DIR="$HAP_DIR/entry/libs/arm64-v8a"
+  mkdir -p "$QEMU_HAP_LIBS_DIR" "$SERVER_RESFILE_DIR"
+  cp "$QEMU_IMAGES_DIR/$QEMU_LIB_NAME" "$QEMU_HAP_LIBS_DIR/$QEMU_LIB_NAME"
+  echo "[zcoder-ohos-build] $QEMU_LIB_NAME staged at $QEMU_HAP_LIBS_DIR/$QEMU_LIB_NAME"
+  # The rebuilt qemu-ohos library statically links slirp/glib/pixman/zlib; at
+  # dlopen time it only needs libc.so (provided by the OS), so no extra shared
+  # libs are staged into the HAP.
+  cp "$QEMU_IMAGES_DIR/Image" "$SERVER_RESFILE_DIR/Image"
+  # Drop the stale gzip initramfs from earlier builds: the HAP now carries the
+  # zstd one, and the extra ~161MB pushed the resfile over the install-time
+  # unpack budget, which caused the tools/ subdirectory to be dropped on device.
+  rm -f "$SERVER_RESFILE_DIR/rootfs.cpio.gz"
+  cp "$QEMU_IMAGES_DIR/rootfs.cpio.zst" "$SERVER_RESFILE_DIR/rootfs.cpio.zst"
+  echo "[zcoder-ohos-build] QEMU kernel+initramfs staged at $SERVER_RESFILE_DIR"
+  # zcoder tools (clangd, python3, ssh, scp, sftp + C/C++ headers) staged
+  # OUTSIDE the initramfs: they are features, not kernel-required, so they would
+  # bloat the guest image. Flatten them into the resfile root because QEMU
+  # mounts the whole resfile read-only to the guest as /tools: bin/, lib64/,
+  # include/, lib/ sit next to cmd-agentd and the guest PATH points at /tools.
+  # A stale tools/ SUBDIRECTORY from earlier layouts is dropped here so the HAP
+  # does not carry the tool tree twice.
+  # Copying the multi-hundred-MB tool tree on every build is wasteful, so a
+  # `.complete` marker in the resfile records a successful copy and subsequent
+  # builds skip it. Remove the marker to force a fresh copy after updating
+  # $QEMU_IMAGES_DIR/tools.
+  if [[ ! -f "$SERVER_RESFILE_DIR/.complete" ]]; then
+    rm -rf "$SERVER_RESFILE_DIR/tools" "$SERVER_RESFILE_DIR/bin" "$SERVER_RESFILE_DIR/lib64" "$SERVER_RESFILE_DIR/include" "$SERVER_RESFILE_DIR/lib"
+    cp -r "$QEMU_IMAGES_DIR/tools/." "$SERVER_RESFILE_DIR/"
+    find "$SERVER_RESFILE_DIR/bin" "$SERVER_RESFILE_DIR/lib64" -type f -exec chmod +x {} \;
+    touch "$SERVER_RESFILE_DIR/.complete"
+    echo "[zcoder-ohos-build] QEMU tools staged at $SERVER_RESFILE_DIR"
+  else
+    echo "[zcoder-ohos-build] QEMU tools already staged (.complete present), skipping copy"
+  fi
+  # cmd-agentd: guest-side command agent. Built with the host aarch64-linux
+  # toolchain (the guest rootfs is glibc), staged in the resfile, then started
+  # by the guest init script from the 9p-mounted sandbox (/sandbox/cmd-agentd).
+  CMD_AGENTD_MANIFEST="$QEMU_RESOURCE_DIR/cmd-agentd/Cargo.toml"
+  CMD_AGENTD_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-qemu-cmd-agentd"
+  CARGO_TARGET_DIR="$CMD_AGENTD_TARGET_DIR" \
+    cargo build --release --target aarch64-unknown-linux-gnu \
+      --manifest-path "$CMD_AGENTD_MANIFEST" \
+      || { echo "[zcoder-ohos-build] cmd-agentd build failed" >&2; exit 1; }
+  cp "$CMD_AGENTD_TARGET_DIR/aarch64-unknown-linux-gnu/release/cmd-agentd" \
+    "$SERVER_RESFILE_DIR/cmd-agentd"
+  chmod +x "$SERVER_RESFILE_DIR/cmd-agentd"
+  echo "[zcoder-ohos-build] cmd-agentd staged at $SERVER_RESFILE_DIR/cmd-agentd"
+fi
+
 # ==================== cmd-agent daemon（线程运行，无需 cdylib） ====================
 # The cmd-agent daemon now runs as a zcoder thread (spawned in launch-zed's
-# launch_app.rs), so libcmd_agent_client.so is no longer built or packaged.
+# launch_app.rs), so libcmd_agent.so is no longer built or packaged.
 
 # --server-only 跳过 ohpm install 与 hvigor 打包
 if [ "$MODE" != "server" ]; then
@@ -242,7 +327,7 @@ ohpm_links_missing() {
   fi
   # entry 级 @ohos-rs/ability 能力插件链接（新增插件必须在此登记）
   local plugin
-  for plugin in ability-plugin-cursor ability-plugin-files ability-plugin-pinch ability-plugin-filedrop; do
+  for plugin in ability-plugin-cursor ability-plugin-files ability-plugin-pinch ability-plugin-filedrop ability-plugin-ime; do
     if [ ! -L "$HAP_DIR/entry/oh_modules/@ohos-rs/$plugin" ]; then
       return 0
     fi

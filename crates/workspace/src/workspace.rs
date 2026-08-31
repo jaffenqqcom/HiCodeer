@@ -1927,6 +1927,14 @@ impl Workspace {
                 }
             }
 
+            // [ohos] Mount the user-opened folders into the QEMU guest so
+            // git/LSP reach them. new_local is the common funnel for every
+            // local workspace creation (startup restore, open_paths,
+            // find_or_create_local_workspace, open_new), so a single mount here
+            // covers opening, switching and restoring a workspace.
+            #[cfg(target_env = "ohos")]
+            mount_opened_dirs(&paths_to_open, &app_state, cx).await?;
+
             let serialized_workspace = db.workspace_for_roots(paths_to_open.as_slice());
 
             if let Some(paths) = serialized_workspace.as_ref().map(|ws| &ws.paths) {
@@ -10456,6 +10464,61 @@ pub fn open_workspace_by_id(
 }
 
 #[allow(clippy::type_complexity)]
+/// [ohos] Mounts every directory among `abs_paths` into the QEMU guest so
+/// git/LSP reach the user's workspace. Fire-and-forget: opening the workspace
+/// must not wait for the mount; failures only warn. Single files are skipped
+/// (per DESIGN only directories are mounted).
+#[cfg(target_env = "ohos")]
+/// [ohos] Mounts the folders being opened into the QEMU guest. Returns an
+/// error when a mount fails so the workspace is not recorded as open for a
+/// folder the guest cannot reach; reopening it then retries the mount.
+#[cfg(target_env = "ohos")]
+async fn mount_opened_dirs(
+    abs_paths: &[PathBuf],
+    app_state: &AppState,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    log::info!(
+        "[diag] mount_opened_dirs: {} paths: {abs_paths:?}",
+        abs_paths.len()
+    );
+    let Some(mounter) = qemu_cmd_agent_linker::mounter() else {
+        log::warn!("open_paths: no folder mounter registered, skipping work-dir mount");
+        return Ok(());
+    };
+    for path in abs_paths {
+        // Re-activate the picker authorization for user-public paths so the
+        // QEMU fsdev can open the real directory (Operation not permitted
+        // otherwise). Sandbox paths and activation failures return unchanged.
+        let authorized = ohos_file_geturi::ensure_root_authorized(&path.to_string_lossy());
+        log::info!("[diag] mount_opened_dirs: considering {path:?} -> {:?}", authorized);
+        let is_dir = app_state
+            .fs
+            .metadata(&authorized)
+            .await
+            .ok()
+            .flatten()
+            .map(|metadata| metadata.is_dir)
+            .unwrap_or(false);
+        if !is_dir {
+            log::info!("[diag] mount_opened_dirs: {path:?} not a dir, skip");
+            continue;
+        }
+        // Synchronous: the caller (Workspace::new_local) waits for the guest
+        // mount to complete so git/LSP run against a folder that exists in the
+        // guest. Bounded by MOUNT_OK_TIMEOUT in run_mount.
+        let path = authorized.to_string_lossy().into_owned();
+        match mounter.mount_folder(&path) {
+            Ok(()) => log::info!("open_paths: mounted work dir {path}"),
+            Err(err) => {
+                log::error!("open_paths: mount work dir {path}: {err}");
+                return Err(anyhow::anyhow!("mount work dir {path}: {err}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn open_paths(
     abs_paths: &[PathBuf],
     app_state: Arc<AppState>,

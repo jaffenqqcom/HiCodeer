@@ -176,6 +176,13 @@ const WORKSPACE_DIAGNOSTICS_TOKEN_START: &str = "id:";
 const SERVER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_PROMPT_REQUEST_ID: AtomicUsize = AtomicUsize::new(0);
 
+/// `which` retries while the cmd-agent executor is still registering (the QEMU
+/// guest comes up asynchronously). Bounded so a genuinely missing binary still
+/// falls through to the download path instead of retrying forever.
+const WHICH_EXECUTOR_RETRIES: usize = 15;
+/// Delay between `which` retries while waiting for the executor to register.
+const WHICH_EXECUTOR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Refresh messages carry a monotonic id for backwards compatibility only: older peers
 /// use it to order refreshes, while current ones re-mark pending refreshes on arrival.
 /// The envelope's own message id cannot be used, as old peers compare the payload field.
@@ -14778,19 +14785,38 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
     /// local `which` cannot find anything; the VM's own `which` answers.
     #[cfg(target_env = "ohos")]
     async fn which(&self, command: &OsStr) -> Option<PathBuf> {
-        let output = util::command::new_command("which")
-            .arg(command)
-            .output()
-            .await
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
-        if path.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(path))
+        // The cmd-agent executor is registered asynchronously once the QEMU
+        // guest is up. A spawn before registration would fail; retrying briefly
+        // stops a transient not-initialized error from being misread as a
+        // missing binary (which would make the LSP adapter fall through to a
+        // download).
+        let mut attempts = 0;
+        loop {
+            match util::command::new_command("which")
+                .arg(command)
+                .output()
+                .await
+            {
+                Ok(output) => {
+                    if output.status.success() {
+                        let path =
+                            String::from_utf8(output.stdout).ok()?.trim().to_string();
+                        if !path.is_empty() {
+                            return Some(PathBuf::from(path));
+                        }
+                    }
+                    // which ran and answered non-zero/empty: genuinely not installed.
+                    return None;
+                }
+                Err(_) => {
+                    // The executor is not ready yet; back off and retry.
+                    attempts += 1;
+                    if attempts >= WHICH_EXECUTOR_RETRIES {
+                        return None;
+                    }
+                    smol::Timer::after(WHICH_EXECUTOR_RETRY_INTERVAL).await;
+                }
+            }
         }
     }
 

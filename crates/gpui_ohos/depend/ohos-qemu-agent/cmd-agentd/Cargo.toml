@@ -1,0 +1,26 @@
+# cmd-agentd runs inside the QEMU guest (aarch64 Linux), cross-compiled by
+# script/bundle-ohos with the guest toolchain (`cargo build --target
+# aarch64-unknown-linux-musl --manifest-path .../cmd-agentd/Cargo.toml`) and
+# deployed in the HAP resfile. It is a member of the zcoder workspace so the
+# host-side QemuCommandExecutor can reuse its wire protocol types.
+
+[package]
+name = "qemu-cmd-agentd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "qemu_cmd_agentd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cmd-agentd"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+qemu-cmd-agent-protocol = { path = "../cmd-agent-protocol" }
