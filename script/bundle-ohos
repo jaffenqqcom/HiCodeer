@@ -267,11 +267,11 @@ if [ "$QEMU_MODE" = true ]; then
   # does not carry the tool tree twice.
   # Copying the multi-hundred-MB tool tree on every build is wasteful, so a
   # `.complete` marker in the resfile records a successful copy and subsequent
-  # builds skip it. Remove the marker to force a fresh copy after updating
-  # $QEMU_IMAGES_DIR/tools.
+  # builds skip it. Remove the marker to force a fresh copy. The tree is stored
+  # in git as one compressed archive (tools.tar.zst, <100MB) and unpacked here.
   if [[ ! -f "$SERVER_RESFILE_DIR/.complete" ]]; then
     rm -rf "$SERVER_RESFILE_DIR/tools" "$SERVER_RESFILE_DIR/bin" "$SERVER_RESFILE_DIR/lib64" "$SERVER_RESFILE_DIR/include" "$SERVER_RESFILE_DIR/lib"
-    cp -r "$QEMU_IMAGES_DIR/tools/." "$SERVER_RESFILE_DIR/"
+    tar --zstd -xf "$QEMU_IMAGES_DIR/tools.tar.zst" -C "$SERVER_RESFILE_DIR/"
     find "$SERVER_RESFILE_DIR/bin" "$SERVER_RESFILE_DIR/lib64" -type f -exec chmod +x {} \;
     touch "$SERVER_RESFILE_DIR/.complete"
     echo "[zcoder-ohos-build] QEMU tools staged at $SERVER_RESFILE_DIR"

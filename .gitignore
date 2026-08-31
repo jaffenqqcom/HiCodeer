@@ -66,5 +66,8 @@ hap/entry/libs
 
 # WorkBuddy workspace data
 **/.workbuddy
-crates/gpui_ohos/depend/ohos-qemu-agent/images/tools/lib64/libLLVM-17.so
+
+# Guest toolchain shipped as a single compressed archive (tools.tar.zst);
+# the unpacked tree and the HAP resfile (build artifacts) are not tracked.
+crates/gpui_ohos/depend/ohos-qemu-agent/images/tools/
 hap/entry/src/main/resources/resfile/
