@@ -99,15 +99,17 @@ impl LspStdoutHandler {
             buffer.resize(message_len, 0);
             stdout.read_exact(&mut buffer).await?;
 
-            // OHOS: the language server runs on the VM, so URIs it sends are
-            // VM paths; map them back to device paths so buffers and
-            // diagnostics resolve to the device-side worktree.
-            #[cfg(target_env = "ohos")]
+            // OHOS + OpenEuler-VM backend: the language server runs on the VM,
+            // so URIs it sends are VM paths; map them back to device paths so
+            // buffers and diagnostics resolve to the device-side worktree.
+            // Under the QEMU backend the guest emits device paths directly, so
+            // the buffer is used as-is.
+            #[cfg(all(target_env = "ohos", not(feature = "qemu")))]
             let parsed_buffer = Cow::Owned(
                 crate::map_uri_vm_to_device(str::from_utf8(&buffer).unwrap_or_default())
                     .into_bytes(),
             );
-            #[cfg(not(target_env = "ohos"))]
+            #[cfg(not(all(target_env = "ohos", not(feature = "qemu"))))]
             let parsed_buffer = Cow::Borrowed(&buffer[..]);
 
             if let Ok(message) = str::from_utf8(&parsed_buffer) {

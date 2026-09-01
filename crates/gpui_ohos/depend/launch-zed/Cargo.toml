@@ -19,7 +19,7 @@ openeuler-vm = ["dep:cmd-agent"]
 # In-process QEMU backend: dlopen libqemu-system-aarch64.so and boot a Linux
 # guest with virtio-9p shared folders. Build with --no-default-features
 # --features qemu to replace the OpenEuler VM.
-qemu = ["dep:qemu-cmd-agent"]
+qemu = ["dep:qemu-cmd-agent", "zed/qemu"]
 # Debug-only QEMU diagnostics (stderr/stdout -> hilog); forwarded to qemu-cmd-agent.
 qemu_debug_assertions = ["qemu-cmd-agent/qemu_debug_assertions"]
 

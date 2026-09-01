@@ -33,6 +33,13 @@ const WAIT_CHILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 const MOUNT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 /// Delay between mount retry attempts.
 const MOUNT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+/// Persistent guest HOME (the `/sandbox` 9p export mirrors the device app
+/// sandbox under `/data/storage/el2/base`). Pointing HOME here keeps LSP index
+/// caches (clangd, rust-analyzer, ...) and other `~`-based tool state on the
+/// device's persistent storage instead of the initramfs root, which is wiped on
+/// every QEMU restart. The directory is created once by cmd-agentd at startup
+/// (see main), then injected into every spawned command.
+pub(crate) const GUEST_PERSISTENT_HOME: &str = "/sandbox/home";
 
 /// Builds a `Command` from an `ExecSpec`, rewriting `binary`, every argument
 /// and the working directory through the path mapping table. Arguments that
@@ -73,6 +80,10 @@ pub fn build_command(spec: &ExecSpec, path_map: &PathMap) -> Command {
     for (key, value) in &spec.env {
         cmd.env(key, value);
     }
+    // Every guest command gets a persistent HOME under the sandbox mount so
+    // LSP index caches and other ~-based state survive QEMU restarts (the
+    // initramfs root does not). The directory is created once at agent start.
+    cmd.env("HOME", GUEST_PERSISTENT_HOME);
     // The guest mounts work directories with 9p passthrough, so the mounted
     // files keep the host-side owner UID while git runs here as root. git's
     // dubious-ownership guard (CVE-2022-24765) then rejects every work-dir

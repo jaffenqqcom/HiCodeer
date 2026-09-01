@@ -420,6 +420,16 @@ fn main() {
     init_logger();
     log::info!("[diag] cmd-agentd starting");
 
+    // Create the persistent guest HOME once at startup (/sandbox is already
+    // mounted and writable here). Every spawned command inherits this HOME so
+    // LSP index caches and other ~-based state survive QEMU restarts.
+    if !std::path::Path::new(exec::GUEST_PERSISTENT_HOME).exists() {
+        log::info!("[diag] main: creating guest HOME {}", exec::GUEST_PERSISTENT_HOME);
+        if let Err(err) = std::fs::create_dir_all(exec::GUEST_PERSISTENT_HOME) {
+            log::error!("[diag] main: create guest HOME {}: {err}", exec::GUEST_PERSISTENT_HOME);
+        }
+    }
+
     let path_map = Arc::new(Mutex::new(PathMap::new()));
 
     let ports = scan_virtio_ports();

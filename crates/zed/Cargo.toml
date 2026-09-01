@@ -13,6 +13,9 @@ workspace = true
 
 [features]
 tracy = ["ztracing/tracy"]
+# QEMU command backend (OHOS only): forwards to language/qemu so the LSP URI
+# mapping to the OpenEuler-VM mount is skipped when running under the QEMU guest.
+qemu = ["language/qemu"]
 # LEAK_BACKTRACE=1 cargo run --features zed/track-project-leak --profile release-fast
 track-project-leak = ["gpui/leak-detection"]
 test-support = [

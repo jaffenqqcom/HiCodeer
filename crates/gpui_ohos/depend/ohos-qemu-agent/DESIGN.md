@@ -109,7 +109,9 @@
 - **固定条目走 MountFolder2QEMU 登记**：沙箱根挂载成功后登记
   `沙箱根（/data/storage/el2/base）→ /sandbox`，命令里 base_path 下的路径
   由此自动映射到 `/sandbox/haps/entry/files/...`。
-- **动态条目** `URI_i → /xyz_i`：工作目录，MountFolder2QEMU 时登记。
+- **动态条目** `URI_i → URI_i`：工作目录挂载到**设备路径同名**的 guest 挂载点
+  （host 路径与 guest 路径一致，命令路径透传）。理由：`/ws/{n}` 编号每次重启
+  变化，会使 clangd 等 LSP 缓存里保存的路径失效；设备同名保证缓存路径稳定。
 
 ## 7. 挂载触发：MountFolder2QEMU [已定]
 
@@ -138,8 +140,10 @@
 
 ## 8. 9p 路径访问方式 [已确认]
 
-- QEMU 访问 guest 挂载路径（如 /xyz/...）时，9p 用 **fsdev path（zcoder 侧
-  真实路径）+ guest 相对路径** 拼接出 OHOS 真实路径来 open / read / write。
+- QEMU 访问 guest 挂载路径（即工作目录设备路径，如
+  /storage/Users/currentUser/<folder>，见第 6 节动态条目）时，9p 用
+  **fsdev path（zcoder 侧真实路径）+ guest 相对路径** 拼接出 OHOS 真实路径
+  来 open / read / write。
 - **结论：以真实路径访问工作目录必然可行**（授权范围内的目录，路径 open
   可用；QEMU 不会把路径转成 URI，直接以真实路径访问）。此点不再作为风险项，
   无需专门实验。
@@ -173,7 +177,8 @@
     libqemu-system-aarch64.so。
 - **完整流程**：zcoder 经 QMP `fsdev-add`（path=工作目录真实路径）→
   `device-add` virtio-9p-pci（fsdev=<id>, mount_tag=<tag>）→ cmd-agentd 在
-  guest 里 mount -t 9p <tag> <挂载点> → attach 时 open 工作目录真实路径
+  guest 里 `mkdir -p` + mount -t 9p <tag> <挂载点>（挂载点 = 工作目录**设备
+  路径同名**，见第 6 节动态条目）→ attach 时 open 工作目录真实路径
   （第 8 节已确认可行）→ mount 成功回执给 zcoder。
 - 与"不 umount + 单工作目录"叠加：切换工作目录时旧挂载点保留、新目录
   挂新点（fsdev 累积不删）。
@@ -191,7 +196,9 @@
 **mount_folder 内部流程**：
 1. 幂等检查：已挂载集合（`mounted: HashSet<String>`）命中即直接返回。
 2. 分配编号 `sequence`：fsdev_id=`fsdev{n}`（fsdev0 是静态 sandbox）、
-   device_id=`virtio9p{n}`、mount_tag=`ztag{n}`、guest_path=`/ws/{n}`。
+   device_id=`virtio9p{n}`、mount_tag=`ztag{n}`。guest_path 取**设备路径同名**
+   （工作目录 URI 本身），guest 侧 create_dir_all 后 mount 到该路径，guest 内
+   看到与设备完全一致的路径（见第 6 节动态条目）。
 3. QMP 一次性会话（`<port_dir>/qmp.sock`，server=on 单连接，低频 open-folder
    路径每次 连接→命令→断开）：`fsdev-add`（id, path=真实路径,
    security-model=passthrough）→ `device_add`（virtio-9p-pci, fsdev, mount_tag）。
@@ -232,8 +239,9 @@ cmd-agent-linker `mounter()` 调 `mount_folder`；fire-and-forget，不阻塞打
 6. 单文件 URI 授权是否只到文件级 —— 待实测（当前按"单文件不挂载"处理）。
 7. Zed 打开工作区统一触发点 —— open_paths（workspace.rs），对话框/最近项目/
    命令行三个入口都汇聚于此；cfg(ohos) 挂接已实施（第 9.1 节）。
-8. 路径映射表：沙箱根→/sandbox 固定条目 + URI→挂载点动态条目，仅由
-   MountFolder2QEMU / UnmountFolder2QEMU 维护 —— 已定。
+8. 路径映射表：沙箱根→/sandbox 固定条目 + URI→同名挂载点动态条目（工作目录
+   挂到设备路径同名、命令路径透传），仅由 MountFolder2QEMU / UnmountFolder2QEMU
+   维护 —— 已定。
 9. QEMU fsdev_add 补丁（qemu-inhap 源码）—— 已编译 libqemu-system-aarch64.so；
    zcoder 侧 QMP 调用与 mount_folder/unmount_folder 接口已实施（第 9.1 节），
    端到端实测待验证（task #22）。
@@ -256,7 +264,8 @@ cmd-agent-linker `mounter()` 调 `mount_folder`；fire-and-forget，不阻塞打
 - 工作目录挂载：运行时经 QEMU 补丁 fsdev_add 以真实路径挂载（第 8、9 节）。
 - 对外接口：cmd-agent 侧 mount_folder/unmount_folder 封装全部（含 QMP）；
   cmd-agentd 侧同名函数只做协议处理；路径替换只在 cmd-agentd。
-- 幂等与编号：已挂载集合去重；fsdev/device/mount_tag/guest_path 按序号分配。
+- 幂等与编号：已挂载集合去重；fsdev/device/mount_tag 按序号分配；guest_path
+  取设备路径同名（与设备路径一致，保证 LSP 缓存路径稳定）。
 
 ## 12. QEMU 编译与依赖（特性对齐记录）
 

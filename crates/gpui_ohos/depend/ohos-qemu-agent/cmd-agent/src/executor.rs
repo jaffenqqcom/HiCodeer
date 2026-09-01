@@ -43,8 +43,10 @@ const FSDEV_PREFIX: &str = "fsdev";
 const DEVICE_PREFIX: &str = "virtio9p";
 /// Prefix for work-directory mount tags (the guest mounts `mount -t 9p <tag>`).
 const MOUNT_TAG_PREFIX: &str = "ztag";
-/// Prefix for guest mount points of work directories (`/ws/1`, `/ws/2`, ...).
-const GUEST_WS_PREFIX: &str = "/ws/";
+/// Guest mount points of work directories mirror the device path exactly (the
+/// same path is mounted, so the guest sees identical paths). Keeping them
+/// identical means LSP index caches (e.g. clangd) stay valid across restarts:
+/// a numbered mount point would change every boot and invalidate cached paths.
 /// Bound on the spawn handshake read, so a silent cmd-agentd never blocks the
 /// caller's thread forever (LSP `which` runs on the UI thread). The guest event
 /// loop can lag processing a Hello by ~1s (it may be busy with a mount worker
@@ -426,7 +428,7 @@ pub struct QemuCommandExecutor {
     /// Folders already mounted, so re-opening a folder is a no-op. `Arc` so a
     /// background mount thread can update it without borrowing the executor.
     mounted: Arc<Mutex<HashSet<String>>>,
-    /// Mount sequence shared by fsdev id / device id / mount tag / guest path.
+    /// Mount sequence shared by fsdev id / device id / mount tag / hotplug bus.
     mount_counter: Arc<AtomicU64>,
     /// Whether the executor accepts new spawns; cleared while a lost guest is
     /// being restarted, restored when the management connection is back.
@@ -1818,7 +1820,10 @@ fn run_mount(
     let fsdev_id = format!("{FSDEV_PREFIX}{sequence}");
     let device_id = format!("{DEVICE_PREFIX}{sequence}");
     let mount_tag = format!("{MOUNT_TAG_PREFIX}{sequence}");
-    let guest_path = format!("{GUEST_WS_PREFIX}{sequence}");
+    // Mount work directories at the same path they have on the device, so the
+    // guest sees identical paths. The guest side create_dir_all()s the mount
+    // point before mounting.
+    let guest_path = path.to_string();
     // Each pcie-root-port exposes one hotplug slot; pick a distinct root port
     // per mount so multiple work directories can be mounted concurrently.
     let bus = format!("rp{}", sequence % WORKDIR_MOUNT_SLOTS as u64);
