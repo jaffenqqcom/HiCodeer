@@ -1,0 +1,12 @@
+[package]
+name = "capng"
+description = "Rust wrapper for libcap-ng"
+version = "0.2.2"
+authors = ["Sergio Lopez <slp@redhat.com>"]
+edition = "2018"
+repository = "https://github.com/slp/capng"
+license = "Apache-2.0 OR BSD-3-Clause"
+
+[dependencies]
+bitflags = "1.0"
+libc = "0.2.69"

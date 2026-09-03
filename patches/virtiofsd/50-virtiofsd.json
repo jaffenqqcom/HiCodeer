@@ -1,0 +1,11 @@
+{
+  "description": "virtiofsd vhost-user-fs",
+  "type": "fs",
+  "binary": "/usr/libexec/virtiofsd",
+  "features": [
+      "migrate-precopy",
+      "posix-acl-negotiation-mode",
+      "security-label-negotiation-mode",
+      "separate-options"
+  ]
+}

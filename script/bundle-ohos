@@ -248,9 +248,13 @@ if [ "$QEMU_MODE" = true ]; then
   mkdir -p "$QEMU_HAP_LIBS_DIR" "$SERVER_RESFILE_DIR"
   cp "$QEMU_IMAGES_DIR/$QEMU_LIB_NAME" "$QEMU_HAP_LIBS_DIR/$QEMU_LIB_NAME"
   echo "[zcoder-ohos-build] $QEMU_LIB_NAME staged at $QEMU_HAP_LIBS_DIR/$QEMU_LIB_NAME"
-  # The rebuilt qemu-ohos library statically links slirp/glib/pixman/zlib; at
-  # dlopen time it only needs libc.so (provided by the OS), so no extra shared
-  # libs are staged into the HAP.
+  # The rebuilt qemu-ohos library dynamically links slirp/glib/pixman/zlib on
+  # OHOS, so stage those runtime deps (plus their transitive deps) into the HAP
+  # libs; otherwise dlopen of libqemu fails at startup. The deps live in the
+  # images/ dir next to the engine.
+  for lib in libslirp.so.0 libz.so.1 libpixman-1.so.0 libglib-2.0.so.0 libintl.so.8 libpcre2-8.so.0; do
+    cp "$QEMU_IMAGES_DIR/$lib" "$QEMU_HAP_LIBS_DIR/$lib"
+  done
   cp "$QEMU_IMAGES_DIR/Image" "$SERVER_RESFILE_DIR/Image"
   # Drop the stale gzip initramfs from earlier builds: the HAP now carries the
   # zstd one, and the extra ~161MB pushed the resfile over the install-time
@@ -291,6 +295,19 @@ if [ "$QEMU_MODE" = true ]; then
     "$SERVER_RESFILE_DIR/cmd-agentd"
   chmod +x "$SERVER_RESFILE_DIR/cmd-agentd"
   echo "[zcoder-ohos-build] cmd-agentd staged at $SERVER_RESFILE_DIR/cmd-agentd"
+  # ssh-agentd: guest-side SSH agent (embedded russh server). Built exactly like
+  # cmd-agentd (host aarch64-linux toolchain, guest rootfs is glibc), staged in
+  # the resfile, then started by the guest init script from the /tools mount.
+  SSH_AGENTD_MANIFEST="$QEMU_RESOURCE_DIR/ssh-agent/qemu-ssh-agentd/Cargo.toml"
+  SSH_AGENTD_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-qemu-ssh-agentd"
+  CARGO_TARGET_DIR="$SSH_AGENTD_TARGET_DIR" \
+    cargo build --release --target aarch64-unknown-linux-gnu \
+      --manifest-path "$SSH_AGENTD_MANIFEST" \
+      || { echo "[zcoder-ohos-build] ssh-agentd build failed" >&2; exit 1; }
+  cp "$SSH_AGENTD_TARGET_DIR/aarch64-unknown-linux-gnu/release/ssh-agentd" \
+    "$SERVER_RESFILE_DIR/ssh-agentd"
+  chmod +x "$SERVER_RESFILE_DIR/ssh-agentd"
+  echo "[zcoder-ohos-build] ssh-agentd staged at $SERVER_RESFILE_DIR/ssh-agentd"
 fi
 
 # ==================== cmd-agent daemon（线程运行，无需 cdylib） ====================

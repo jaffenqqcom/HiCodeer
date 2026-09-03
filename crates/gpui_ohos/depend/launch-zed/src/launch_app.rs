@@ -249,8 +249,8 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     // sees it via the 9p mount as /sandbox/cmd-agentd. The HAP resfile path
     // returned by application_resource_dir is NOT under base_path, so a plain
     // resfile deploy is invisible to the guest.
-    let resfile_agentd = format!("{resource_dir}/cmd-agentd");
-    let sandbox_agentd = format!("{base_path}/cmd-agentd");
+    let resfile_agentd = format!("{resource_dir}/ssh-agentd");
+    let sandbox_agentd = format!("{base_path}/ssh-agentd");
     if std::fs::metadata(&resfile_agentd).map(|m| m.is_file()).unwrap_or(false) {
         match std::fs::copy(&resfile_agentd, &sandbox_agentd) {
             Ok(_) => {
@@ -259,12 +259,12 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
                     &sandbox_agentd,
                     std::fs::Permissions::from_mode(0o755),
                 );
-                log::info!("start_qemu: staged cmd-agentd -> {sandbox_agentd}");
+                log::info!("start_qemu: staged ssh-agentd -> {sandbox_agentd}");
             }
-            Err(err) => log::error!("start_qemu: stage cmd-agentd {resfile_agentd}: {err}"),
+            Err(err) => log::error!("start_qemu: stage ssh-agentd {resfile_agentd}: {err}"),
         }
     } else {
-        log::warn!("start_qemu: cmd-agentd missing in resfile {resfile_agentd}");
+        log::warn!("start_qemu: ssh-agentd missing in resfile {resfile_agentd}");
     }
     // Mount the whole sandbox root (el2/base) instead of base_path: it exposes
     // the full app data area (files/cache/temp) to the guest under one 9p tag.
@@ -272,7 +272,7 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     // "/haps/" segment. cmd-agentd is staged into base_path by the copy below
     // and stays visible because base_path lives under the sandbox root.
     let sandbox_root = sandbox_root_path(&base_path);
-    let paths = qemu_cmd_agent::QemuPaths {
+    let paths = qemu_ssh_agent::QemuPaths {
         kernel: std::path::PathBuf::from(format!("{resource_dir}/Image")),
         initrd: std::path::PathBuf::from(format!("{resource_dir}/rootfs.cpio.zst")),
         port_dir: std::path::PathBuf::from(&port_dir),
@@ -290,7 +290,7 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     // hilog. Re-emit the key paths from a delayed thread once the redirect is
     // live so the mount/stage layout can be verified from hilog.
     log_qemu_paths_delayed(base_path.clone(), resource_dir, sandbox_root.clone());
-    if !qemu_cmd_agent::start(paths) {
+    if !qemu_ssh_agent::start(paths) {
         log::error!("start_qemu: failed to start QEMU guest");
         return;
     }
@@ -299,7 +299,7 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     // commands issued during guest boot simply queue for the port connection.
     // The sandbox root is passed so the management thread mounts it through
     // MountFolder2QEMU, registering the fixed host-root -> /sandbox mapping.
-    match qemu_cmd_agent::executor::QemuCommandExecutor::new(
+    match qemu_ssh_agent::SshCommandExecutor::new(
         std::path::PathBuf::from(&port_dir),
         Some(sandbox_root),
     ) {
@@ -308,7 +308,7 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
             if qemu_cmd_agent_linker::init_executor(executor.clone()).is_err() {
                 log::warn!("start_qemu: cmd-agent executor already registered");
             } else {
-                log::info!("start_qemu: QemuCommandExecutor registered");
+                log::info!("start_qemu: SshCommandExecutor registered");
             }
             if qemu_cmd_agent_linker::init_mounter(executor).is_err() {
                 log::warn!("start_qemu: folder mounter already registered");
@@ -316,7 +316,7 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
                 log::info!("start_qemu: FolderMounter registered");
             }
         }
-        Err(err) => log::error!("start_qemu: create QemuCommandExecutor: {err}"),
+        Err(err) => log::error!("start_qemu: create SshCommandExecutor: {err}"),
     }
 }
 

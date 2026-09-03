@@ -107,6 +107,8 @@ members = [
     "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker",
     "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-protocol",
     "crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd",
+    "crates/gpui_ohos/depend/ohos-qemu-agent/ssh-agent/qemu-ssh-agent",
+    "crates/gpui_ohos/depend/ohos-qemu-agent/ssh-agent/qemu-ssh-agentd",
     "crates/gpui_platform",
     "crates/gpui_tokio",
     "crates/gpui_util",
@@ -904,6 +906,10 @@ wasmtime = { version = "36", default-features = false, features = [
     "parallel-compilation",
 ] }
 wasmtime-wasi = "36"
+# virtio-fs vhost-user device daemon (embedded in the OHOS QEMU guest runner
+# to replace the 9p work-directory share). default-features off: the seccomp
+# feature is not needed on the OHOS sandbox and would pull in libseccomp.
+virtiofsd = { version = "1.14", default-features = false }
 wax = "0.7"
 which = "6.0.0"
 wasm-bindgen = "0.2.120"
@@ -1017,6 +1023,22 @@ naga = { path = "patches/wgpu/naga" }
 # guarded by #[cfg(target_env = "ohos")], so other platforms compile the same
 # code as upstream 36.0.12.
 wasmtime = { path = "patches/wasmtime" }
+# Local patched vmm-sys-util 0.15.0: on OHOS the bionic libc's msghdr layout
+# (private __pad fields, u32/i32 field types), ioctl request type and missing
+# lseek64 break the crate. The OHOS-specific changes are guarded by
+# #[cfg(target_env = "ohos")], so other platforms compile the same code as
+# upstream 0.15.0.
+vmm-sys-util = { path = "patches/vmm-sys-util" }
+# Local patched capng 0.2.2: on OHOS libcap-ng is not linkable and the
+# capability API is meaningless (sandboxed, non-root). The bindings provide
+# no-op stubs under cfg(target_env = "ohos"); other platforms use the real
+# libcap-ng bindings unchanged.
+capng = { path = "patches/cap-ng" }
+# Local patched virtiofsd 1.14.0: on OHOS the sandbox seccomp policy rejects
+# the openat2() probe in OsFacts::new() with SIGSYS (it kills the process).
+# The probe is skipped under cfg(target_env = "ohos"); other platforms compile
+# the same code as upstream 1.14.0.
+virtiofsd = { path = "patches/virtiofsd" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

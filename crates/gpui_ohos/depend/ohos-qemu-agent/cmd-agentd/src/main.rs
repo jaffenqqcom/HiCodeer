@@ -1453,6 +1453,7 @@ fn spawn_command_worker(
             result_tx,
             cmd_pid_thread,
             stdin_closed_thread,
+            session_id,
         );
     });
     match spawned {

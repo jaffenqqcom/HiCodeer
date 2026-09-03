@@ -8,6 +8,8 @@
 
 pub mod executor;
 pub mod qmp;
+#[cfg(target_env = "ohos")]
+pub mod virtiofs;
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::PathBuf;
@@ -47,6 +49,15 @@ pub(crate) const MOUNT_TAG_SANDBOX: &str = "sandbox";
 /// clangd, python3, ssh, ... plus C/C++ headers). Shared to the guest as /tools
 /// so binaries stay on the device bundle and are never copied into the sandbox.
 pub(crate) const MOUNT_TAG_TOOLS: &str = "tools";
+
+/// virtio-fs backend unix socket names (under the port dir) for the static
+/// tools/sandbox mounts. The in-process virtiofsd listens on these and the QEMU
+/// vhost-user-fs-pci chardev connects to them.
+pub(crate) const FS_SOCKET_TOOLS: &str = "fs_tools.sock";
+pub(crate) const FS_SOCKET_SANDBOX: &str = "fs_sandbox.sock";
+/// Prefix for virtio-fs backend sockets of dynamically mounted work dirs
+/// (fs_work<sequence>.sock under the port dir). One backend per work dir.
+pub(crate) const FS_WORK_PREFIX: &str = "fs_work";
 
 /// Management virtio-serial port name (ExecResult / Signal / mount / ack).
 const MGMT_PORT_NAME: &str = "zcoder.mgmt";
@@ -122,6 +133,11 @@ pub fn start(paths: QemuPaths) -> bool {
         log::info!("[diag] ohos_qemu::start: already running, returning true");
         return true;
     }
+
+    // Start the virtio-fs backends (sandbox/tools) before QEMU so their
+    // listening sockets exist when the vhost-user-fs-pci chardev connects.
+    #[cfg(target_env = "ohos")]
+    virtiofs::start(&paths);
 
     let argv = build_argv(&paths);
 
@@ -332,7 +348,6 @@ fn last_dl_error(fallback: &str) -> String {
 /// spaces, so each QEMU option pair is one vector element.
 fn build_argv(paths: &QemuPaths) -> Vec<CString> {
     let sandbox = CString::new(paths.sandbox_mount.to_string_lossy().as_bytes()).expect("path");
-    let tools = CString::new(paths.tools_mount.to_string_lossy().as_bytes()).expect("path");
     let kernel = CString::new(paths.kernel.to_string_lossy().as_bytes()).expect("path");
     let initrd = CString::new(paths.initrd.to_string_lossy().as_bytes()).expect("path");
     let port_dir = paths.port_dir.to_string_lossy().into_owned();
@@ -343,7 +358,10 @@ fn build_argv(paths: &QemuPaths) -> Vec<CString> {
         CString::new("-nodefaults").expect("static"),
         CString::new("-no-user-config").expect("static"),
         CString::new("-M").expect("static"),
-        CString::new(MACHINE_TYPE).expect("static"),
+        // vhost-user-fs requires the guest RAM to be backed by shared memory
+        // (memfd), so the machine is bound to memory-backend-memfd. On OHOS
+        // this also probes memfd_create availability when the guest starts.
+        CString::new(format!("{MACHINE_TYPE},memory-backend=mem")).expect("format"),
         CString::new("-cpu").expect("static"),
         CString::new(CPU_MODEL).expect("static"),
         CString::new("-smp").expect("static"),
@@ -357,6 +375,8 @@ fn build_argv(paths: &QemuPaths) -> Vec<CString> {
         // multi-threaded work (LSP, compilation).
         CString::new("-accel").expect("static"),
         CString::new("tcg,thread=multi").expect("static"),
+        CString::new("-object").expect("static"),
+        CString::new(format!("memory-backend-memfd,id=mem,size={MEM_SIZE}")).expect("format"),
         CString::new("-m").expect("static"),
         CString::new(MEM_SIZE).expect("static"),
         CString::new("-kernel").expect("static"),
@@ -383,33 +403,34 @@ fn build_argv(paths: &QemuPaths) -> Vec<CString> {
         CString::new("stdio").expect("static"),
         #[cfg(not(feature = "qemu_debug_assertions"))]
         CString::new("null").expect("static"),
-        // Fixed read-only tools mount: the HAP resfile (el1/bundle) holding
-        // prebundled tools (clangd, python3, ssh) and C/C++ headers. Read-only,
-        // so security_model=none is safe and no mapped-file metadata is written;
-        // the guest mounts it first at /tools and PATH points there.
-        CString::new("-fsdev").expect("static"),
+        // Fixed read-only tools mount over virtio-fs: the HAP resfile
+        // (el1/bundle) holding prebundled tools (clangd, python3, ssh) and C/C++
+        // headers. The backend virtiofsd exports it read-only; the guest mounts
+        // /tools and PATH points there. The chardev is a client that connects to
+        // the virtiofsd listening socket, which is created before QEMU starts.
+        CString::new("-chardev").expect("static"),
         CString::new(format!(
-            "local,security_model=none,id=fsdev_tools,path={tools_path},readonly=on",
-            tools_path = tools.to_string_lossy()
+            "socket,path={port_dir}/{FS_SOCKET_TOOLS},id=fs_tools"
         ))
         .expect("format"),
         CString::new("-device").expect("static"),
         CString::new(format!(
-            "virtio-9p-pci,id=fs_tools,fsdev=fsdev_tools,mount_tag={MOUNT_TAG_TOOLS}"
+            "vhost-user-fs-pci,id=fs_tools,chardev=fs_tools,tag={MOUNT_TAG_TOOLS},queue-size=1024"
         ))
         .expect("format"),
-        // Fixed sandbox mount: the app sandbox, where zcoder keeps downloaded
-        // programs and their configs. Open-folder directories are mounted
-        // dynamically by the mount manager crate (QMP device_add), not here.
-        CString::new("-fsdev").expect("static"),
+        // Writable app sandbox over virtio-fs (tag=sandbox): the app sandbox,
+        // where zcoder keeps downloaded programs and their configs. The backend
+        // virtiofsd exports the sandbox root read-write; the guest mounts
+        // /sandbox. Open-folder directories are mounted dynamically by the mount
+        // manager crate (QMP device_add), not here.
+        CString::new("-chardev").expect("static"),
         CString::new(format!(
-            "local,security_model=mapped-file,id=fsdev0,path={sandbox_path}",
-            sandbox_path = sandbox.to_string_lossy()
+            "socket,path={port_dir}/{FS_SOCKET_SANDBOX},id=fs_sandbox"
         ))
         .expect("format"),
         CString::new("-device").expect("static"),
         CString::new(format!(
-            "virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag={MOUNT_TAG_SANDBOX}"
+            "vhost-user-fs-pci,id=fs_sandbox,chardev=fs_sandbox,tag={MOUNT_TAG_SANDBOX},queue-size=1024"
         ))
         .expect("format"),
         CString::new("-device").expect("static"),

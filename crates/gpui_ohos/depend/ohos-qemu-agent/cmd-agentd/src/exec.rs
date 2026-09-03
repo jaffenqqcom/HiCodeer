@@ -14,6 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::time::Instant;
 
 use qemu_cmd_agent_protocol::messages::{ExecSpec, FdMode};
 
@@ -33,6 +34,15 @@ const WAIT_CHILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 const MOUNT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 /// Delay between mount retry attempts.
 const MOUNT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+/// Interval between child-state samples while a command is running. Wall time
+/// alone cannot distinguish "the command is computing slowly" from "the command
+/// is blocked", so the worker samples the child's scheduler state and consumed
+/// CPU time instead of inferring it.
+const CHILD_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Total wall-clock budget for the filesystem micro-benchmark. The benchmark
+/// runs detached from the mount path, so exceeding the budget only truncates
+/// the numbers, never the mount.
+const FS_BENCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 /// Persistent guest HOME (the `/sandbox` 9p export mirrors the device app
 /// sandbox under `/data/storage/el2/base`). Pointing HOME here keeps LSP index
 /// caches (clangd, rust-analyzer, ...) and other `~`-based tool state on the
@@ -59,13 +69,14 @@ pub fn build_command(spec: &ExecSpec, path_map: &PathMap) -> Command {
         let cwd = path_map.map_path(cwd);
         // Mirror the OpenEuler cmd-agentd fix: a mapped cwd may not exist yet
         // on the guest (npm --prefix creates it lazily, but spawn needs it).
+        let cwd_check_start = std::time::Instant::now();
         if !std::path::Path::new(&cwd).exists() {
             log::info!("[diag] exec::build_command: creating cwd {cwd}");
             if let Err(err) = std::fs::create_dir_all(&cwd) {
                 log::warn!("[diag] exec::build_command: create cwd {cwd}: {err}");
             }
         }
-        log::info!("[diag] exec::build_command: cwd={cwd}");
+        log::info!("[diag] exec::build_command: cwd={cwd} exists checked in {:?}", cwd_check_start.elapsed());
         cmd.current_dir(cwd);
     }
     // Dump every env var with its full value: env values are NOT path-mapped,
@@ -125,6 +136,115 @@ pub fn build_command(spec: &ExecSpec, path_map: &PathMap) -> Command {
     cmd
 }
 
+/// State of a running child, read from /proc.
+struct ChildSample {
+    /// Scheduler state character from /proc/<pid>/stat ('R', 'S', 'D', 'Z'...).
+    state: char,
+    /// CPU milliseconds consumed by the child *and its reaped descendants*
+    /// (utime+stime+cutime+cstime). A command that forks helpers therefore does
+    /// not look idle just because the parent is waiting.
+    cpu_millis: u64,
+    threads: u64,
+    /// Kernel wait channel of the main thread: the single most direct answer to
+    /// "what is this process blocked on".
+    wchan: String,
+    /// Per-thread `tid:state:wchan` for up to six threads, so a multi-threaded
+    /// command (git's preload index, for example) shows what its workers do.
+    thread_details: Vec<String>,
+}
+
+fn clock_ticks_per_sec() -> u64 {
+    // SAFETY: sysconf(_SC_CLK_TCK) is infallible for this argument.
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks > 0 {
+        ticks as u64
+    } else {
+        100
+    }
+}
+
+/// Reads one child's /proc snapshot. Returns `None` once the child is gone.
+fn sample_child(pid: i32) -> Option<ChildSample> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` is parenthesized and may itself contain spaces, so index the
+    // remaining fields from the last ')'.
+    let tail = stat.rsplit_once(')')?.1;
+    let fields: Vec<&str> = tail.split_whitespace().collect();
+    let state = fields.first()?.chars().next()?;
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    let cutime: u64 = fields.get(13)?.parse().ok()?;
+    let cstime: u64 = fields.get(14)?.parse().ok()?;
+    let threads: u64 = fields.get(17)?.parse().ok()?;
+    let cpu_millis = (utime + stime + cutime + cstime) * 1000 / clock_ticks_per_sec();
+    let wchan = read_wchan(&format!("/proc/{pid}/wchan"));
+    let mut thread_details = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+        for entry in entries.flatten().take(6) {
+            let tid = entry.file_name().to_string_lossy().into_owned();
+            let state = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat"))
+                .ok()
+                .and_then(|stat| stat.rsplit_once(')').map(|(_, tail)| tail.to_string()))
+                .and_then(|tail| {
+                    tail.split_whitespace()
+                        .next()
+                        .and_then(|field| field.chars().next())
+                })
+                .unwrap_or('?');
+            thread_details.push(format!(
+                "{tid}:{state}:{}",
+                read_wchan(&format!("/proc/{pid}/task/{tid}/wchan"))
+            ));
+        }
+    }
+    Some(ChildSample {
+        state,
+        cpu_millis,
+        threads,
+        wchan,
+        thread_details,
+    })
+}
+
+/// The kernel wait channel, or "-" when the kernel does not expose one.
+fn read_wchan(path: &str) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(value) => {
+            let value = value.trim();
+            if value.is_empty() || value == "0" {
+                "-".to_string()
+            } else {
+                value.to_string()
+            }
+        }
+        Err(_) => "-".to_string(),
+    }
+}
+
+/// Guest-wide load and available memory, so a stalled command can be blamed on
+/// CPU contention or memory pressure instead of guessed at.
+fn guest_load_line() -> String {
+    let load = std::fs::read_to_string("/proc/loadavg")
+        .map(|line| {
+            line.split_whitespace()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|_| "?".to_string());
+    let mem = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|line| line.starts_with("MemAvailable:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .map(|kb| format!("{kb}kB"))
+        })
+        .unwrap_or_else(|| "?".to_string());
+    format!("load={load} memavail={mem}")
+}
+
 /// Worker-process command runner. Runs in the forked worker of a data port:
 /// builds the command, spawns it, forwards stdio over the inherited data/err
 /// port fds and reports the exit code through the result pipe. Never returns.
@@ -137,8 +257,10 @@ pub fn worker_run_command(
     result_tx: i32,
     cmd_pid: Arc<AtomicI32>,
     stdin_closed: Arc<AtomicBool>,
+    session_id: u64,
 ) {
     let mut cmd = build_command(&spec, &path_map);
+    let spawn_start = std::time::Instant::now();
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
@@ -147,6 +269,7 @@ pub fn worker_run_command(
             return;
         }
     };
+    log::info!("[diag] worker_run_command: cmd.spawn took {:?}", spawn_start.elapsed());
     let child_pid = child.id() as i32;
     cmd_pid.store(child_pid, Ordering::SeqCst);
     log::info!("[diag] worker_run_command: pid={child_pid}");
@@ -236,6 +359,18 @@ pub fn worker_run_command(
 
     let mut buf = [0u8; 8192];
     let mut pending_stdin: Vec<u8> = Vec::new();
+    // [diag] Sampling state: how long the command has been running, how much
+    // CPU the child has burned since the previous sample, and how many bytes
+    // crossed each hop (child pipe -> port). Together these separate the three
+    // ways a command can look hung: computing, blocked on the share, or blocked
+    // because the host is not draining the port.
+    let started_at = Instant::now();
+    let mut last_sample_at: Option<Instant> = None;
+    let mut last_cpu_millis: u64 = 0;
+    let mut stdout_read_bytes: u64 = 0;
+    let mut stderr_read_bytes: u64 = 0;
+    let mut stdout_written_bytes: u64 = 0;
+    let mut stderr_written_bytes: u64 = 0;
     // stdout/stderr from the child are buffered here and drained to the host
     // port on POLLOUT. The data/err ports are non-blocking now, so a full QEMU
     // chardev buffer (the host not draining guest stdout) must park this worker
@@ -245,6 +380,8 @@ pub fn worker_run_command(
     let mut stdout_done = stdout_fd.is_none();
     let mut stderr_done = stderr_fd.is_none();
     let mut child_exited = false;
+    let mut exited_at: Option<Instant> = None;
+    let mut last_alive_log: Option<Instant> = None;
     let mut exit_code: Option<i32> = None;
     while !stdout_done
         || !stderr_done
@@ -252,10 +389,57 @@ pub fn worker_run_command(
         || !pending_stdout.is_empty()
         || !pending_stderr.is_empty()
     {
+        // [diag] Periodic child sample. This is the only evidence that can tell
+        // a slow command from a blocked one: a climbing cpu_millis with state R
+        // means the guest is genuinely executing, a flat cpu_millis with state
+        // D/S plus a wchan means the child is parked on something else.
+        if last_sample_at.map_or(true, |at| at.elapsed() >= CHILD_SAMPLE_INTERVAL) {
+            last_sample_at = Some(Instant::now());
+            match sample_child(child_pid) {
+                Some(sample) => {
+                    let delta = sample.cpu_millis.saturating_sub(last_cpu_millis);
+                    last_cpu_millis = sample.cpu_millis;
+                    log::warn!(
+                        "[diag] worker session_id={session_id} alive {}s pid={child_pid} state={} cpu={}ms(+{}ms) threads={} wchan={} | pipe_out={}B pipe_err={}B port_out={}B port_err={}B pend_out={} pend_err={} | exited={} out_done={} err_done={} | {} | threads=[{}]",
+                        started_at.elapsed().as_secs(),
+                        sample.state,
+                        sample.cpu_millis,
+                        delta,
+                        sample.threads,
+                        sample.wchan,
+                        stdout_read_bytes,
+                        stderr_read_bytes,
+                        stdout_written_bytes,
+                        stderr_written_bytes,
+                        pending_stdout.len(),
+                        pending_stderr.len(),
+                        child_exited,
+                        stdout_done,
+                        stderr_done,
+                        guest_load_line(),
+                        sample.thread_details.join(" ")
+                    );
+                }
+                None => {
+                    log::warn!(
+                        "[diag] worker session_id={session_id} alive {}s pid={child_pid} /proc sample unavailable exited={} out_done={} err_done={}",
+                        started_at.elapsed().as_secs(),
+                        child_exited,
+                        stdout_done,
+                        stderr_done
+                    );
+                }
+            }
+        }
         if !child_exited {
             if let Ok(Some(status)) = child.try_wait() {
                 child_exited = true;
                 exit_code = status.code();
+                exited_at = Some(Instant::now());
+                log::warn!(
+                    "[diag] worker session_id={session_id} child exited exit_code={exit_code:?}, worker still looping: pending_stdout={} pending_stderr={} stdout_done={} stderr_done={}",
+                    pending_stdout.len(), pending_stderr.len(), stdout_done, stderr_done
+                );
                 if exit_code.is_none() {
                     use std::os::unix::process::ExitStatusExt;
                     log::warn!(
@@ -272,6 +456,22 @@ pub fn worker_run_command(
             && pending_stderr.is_empty()
         {
             break;
+        }
+        // [diag] child 已退出但 worker 仍在循环（未回传）-> 计时，定位"执行完返回有问题"
+        if child_exited {
+            if let Some(t0) = exited_at {
+                let elapsed = t0.elapsed();
+                if elapsed.as_secs() >= 1
+                    && (last_alive_log.is_none()
+                        || last_alive_log.unwrap().elapsed().as_secs() >= 5)
+                {
+                    log::warn!(
+                        "[diag] worker session_id={session_id} still NOT exited {}s after child exit: pending_stdout={} pending_stderr={} stdout_done={} stderr_done={}",
+                        elapsed.as_secs(), pending_stdout.len(), pending_stderr.len(), stdout_done, stderr_done
+                    );
+                    last_alive_log = Some(Instant::now());
+                }
+            }
         }
         // Dynamic POLLOUT: drain stdout to the port and stderr to the err port
         // only while buffered output remains, so a full chardev buffer parks
@@ -356,6 +556,7 @@ pub fn worker_run_command(
                 if p.revents & libc::POLLOUT != 0 && !pending_stdout.is_empty() {
                     match write_fd(port_fd, &pending_stdout) {
                         Ok(written) => {
+                            stdout_written_bytes += written as u64;
                             log::debug!(
                                 "[diag] worker_run_command: wrote {written} stdout bytes to port"
                             );
@@ -373,7 +574,10 @@ pub fn worker_run_command(
                     match out.read(&mut buf) {
                         Ok(0) => stdout_done = true,
                         Err(_) => stdout_done = true,
-                        Ok(n) => pending_stdout.extend_from_slice(&buf[..n]),
+                        Ok(n) => {
+                            stdout_read_bytes += n as u64;
+                            pending_stdout.extend_from_slice(&buf[..n]);
+                        }
                     }
                 }
             } else if stderr_fd == Some(p.fd) {
@@ -384,7 +588,10 @@ pub fn worker_run_command(
                         // drained, instead of spinning on the EOF'd pipe.
                         Ok(0) => stderr_done = true,
                         Err(_) => stderr_done = true,
-                        Ok(n) => pending_stderr.extend_from_slice(&buf[..n]),
+                        Ok(n) => {
+                            stderr_read_bytes += n as u64;
+                            pending_stderr.extend_from_slice(&buf[..n]);
+                        }
                     }
                 }
             } else if err_fd == Some(p.fd) && p.revents & libc::POLLOUT != 0 {
@@ -393,6 +600,7 @@ pub fn worker_run_command(
                 if !pending_stderr.is_empty() {
                     match write_fd(err_fd.expect("matched Some"), &pending_stderr) {
                         Ok(written) => {
+                            stderr_written_bytes += written as u64;
                             log::debug!(
                                 "[diag] worker_run_command: wrote {written} stderr bytes to err port"
                             );
@@ -513,17 +721,10 @@ pub fn worker_run_mount(mount_tag: &str, guest_path: &str, result_tx: i32) {
     let ok = loop {
         attempts += 1;
         log::info!(
-            "[diag] worker_run_mount: mount -t 9p -o trans=virtio,version=9p2000.L {mount_tag} {guest_path} (attempt {attempts})"
+            "[diag] worker_run_mount: mount -t virtiofs {mount_tag} {guest_path} (attempt {attempts})"
         );
         let output = std::process::Command::new("mount")
-            .args([
-                "-t",
-                "9p",
-                "-o",
-                "trans=virtio,version=9p2000.L",
-                mount_tag,
-                guest_path,
-            ])
+            .args(["-t", "virtiofs", mount_tag, guest_path])
             .output();
         match output {
             Ok(output) if output.status.success() => {
@@ -554,10 +755,146 @@ pub fn worker_run_mount(mount_tag: &str, guest_path: &str, result_tx: i32) {
     };
     if ok {
         log::info!("[diag] worker_run_mount: {mount_tag} mounted at {guest_path}");
+        // [diag] Measure the share in a detached thread. The numbers separate a
+        // slow guest CPU (TCG) from a slow share (9p), which is otherwise
+        // impossible to tell apart from a hanging command. Detached so MountOk
+        // is not delayed: a benchmark line is a log, not the mount result.
+        let bench_path = guest_path.to_string();
+        match std::thread::Builder::new()
+            .name("fs-bench".to_string())
+            .spawn(move || run_fs_benchmark(&bench_path))
+        {
+            Ok(handle) => {
+                // Detach: dropping the JoinHandle detaches the thread, which
+                // keeps running until it returns. The mount worker must not
+                // wait on the benchmark.
+                drop(handle);
+            }
+            Err(err) => log::warn!("[diag] worker_run_mount: fs-bench spawn failed: {err}"),
+        }
     }
     // report_mount closes the result pipe write end, so the event loop sees
     // EOF and reclaims the mount. The thread then returns.
     report_mount(result_tx, ok);
+}
+
+/// Filesystem micro-benchmark comparing the freshly mounted 9p share against
+/// the guest's tmpfs. The same workload runs on both, so the delta is the
+/// share's own cost: a tmpfs number close to the 9p number means the guest CPU
+/// (TCG) is the bottleneck, a large gap means the share is. Bounded by
+/// `FS_BENCH_BUDGET` so it can never stall anything; a truncated run is still a
+/// useful data point. The result is a single `[diag][bench] result` log line.
+fn run_fs_benchmark(guest_path: &str) {
+    let deadline = Instant::now() + FS_BENCH_BUDGET;
+    let mount_line = std::fs::read_to_string("/proc/mounts")
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|line| line.split_whitespace().nth(1) == Some(guest_path))
+                .map(|line| line.to_string())
+        })
+        .unwrap_or_else(|| "not-found".to_string());
+    log::warn!("[diag][bench] start mount-line: {mount_line}");
+    let tmpfs_dir = std::path::PathBuf::from("/tmp/zcoder-fsbench");
+    let share_dir = std::path::Path::new(guest_path).join(".zcoder-fsbench");
+    for dir in [&tmpfs_dir, &share_dir] {
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            log::warn!("[diag][bench] mkdir {dir:?}: {err}");
+        }
+    }
+    let tmpfs = bench_one(&tmpfs_dir, deadline);
+    let share = bench_one(&share_dir, deadline);
+    log::warn!(
+        "[diag][bench] result(ms) | stat_hot tmpfs={} share={} | scan500 tmpfs={} share={} | write1M tmpfs={} share={} | read1M tmpfs={} share={} | share_wrote={}",
+        tmpfs.stat_hot_ms,
+        share.stat_hot_ms,
+        tmpfs.scan_ms,
+        share.scan_ms,
+        tmpfs.write_ms,
+        share.write_ms,
+        tmpfs.read_ms,
+        share.read_ms,
+        share.wrote,
+    );
+    // Remove scratch dirs so the benchmark leaks nothing into the work tree
+    // (the 9p branch writes onto the real device sandbox).
+    let _ = std::fs::remove_dir_all(&tmpfs_dir);
+    let _ = std::fs::remove_dir_all(&share_dir);
+}
+
+/// One directory's worth of the benchmark. Each stage is skipped once `deadline`
+/// passes, yielding a partial but still informative `BenchOne`.
+struct BenchOne {
+    stat_hot_ms: u64,
+    scan_ms: u64,
+    write_ms: u64,
+    read_ms: u64,
+    wrote: bool,
+}
+
+fn bench_one(dir: &std::path::Path, deadline: Instant) -> BenchOne {
+    let mut result = BenchOne {
+        stat_hot_ms: 0,
+        scan_ms: 0,
+        write_ms: 0,
+        read_ms: 0,
+        wrote: false,
+    };
+    let probe = dir.join("probe.bin");
+    // 1) write 1 MiB in 8 KiB chunks -- the default 9p msize is 8 KiB, so this
+    //    directly exposes how many round trips a modest write costs.
+    if Instant::now() < deadline {
+        let chunk = vec![0u8; 8 * 1024];
+        if let Ok(mut file) = std::fs::File::create(&probe) {
+            let start = Instant::now();
+            let mut ok_write = true;
+            for _ in 0..128 {
+                if std::io::Write::write_all(&mut file, &chunk).is_err() {
+                    ok_write = false;
+                    break;
+                }
+            }
+            let _ = file.sync_all();
+            result.write_ms = start.elapsed().as_millis() as u64;
+            result.wrote = ok_write;
+        }
+    }
+    // 2) read 1 MiB in 8 KiB chunks.
+    if Instant::now() < deadline {
+        let mut buf = vec![0u8; 8 * 1024];
+        if let Ok(mut file) = std::fs::File::open(&probe) {
+            let start = Instant::now();
+            while std::io::Read::read(&mut file, &mut buf).map_or(false, |n| n > 0) {}
+            result.read_ms = start.elapsed().as_millis() as u64;
+        }
+    }
+    // 3) stat_hot: stat the same existing file 500 times -- a pure round trip
+    //    with a warm cache, so the number is the per-call 9p/host latency.
+    if Instant::now() < deadline {
+        let start = Instant::now();
+        for _ in 0..500 {
+            let _ = std::fs::metadata(&probe);
+        }
+        result.stat_hot_ms = start.elapsed().as_millis() as u64;
+    }
+    // 4) scan: create+stat 500 distinct files then remove them -- a cold-ish
+    //    directory scan, the closest stand-in for what `git status -uall` does.
+    if Instant::now() < deadline {
+        let start = Instant::now();
+        for i in 0..500u32 {
+            let p = dir.join(format!("scan-{i}"));
+            if std::fs::write(&p, b"x").is_ok() {
+                let _ = std::fs::metadata(&p);
+            }
+        }
+        for i in 0..500u32 {
+            let _ = std::fs::remove_file(dir.join(format!("scan-{i}")));
+        }
+        result.scan_ms = start.elapsed().as_millis() as u64;
+    }
+    let _ = std::fs::remove_file(&probe);
+    result
 }
 
 /// Whether `path` is a mount point listed in /proc/mounts.

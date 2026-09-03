@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
@@ -26,6 +26,8 @@ use qemu_cmd_agent_protocol::messages::{
 use smol::io::{AsyncRead, AsyncWrite};
 
 use crate::qmp;
+#[cfg(target_env = "ohos")]
+use crate::virtiofs;
 use crate::{MOUNT_TAG_SANDBOX, PORT_POOL_SIZE, QMP_SOCKET, WORKDIR_MOUNT_SLOTS};
 
 /// Management socket file name under the port dir.
@@ -36,12 +38,13 @@ const DATA_SOCKET_PREFIX: &str = "cmd.";
 const ERR_SOCKET_PREFIX: &str = "err.";
 /// Guest-side mount point of the sandbox root.
 const GUEST_SANDBOX_PATH: &str = "/sandbox";
-/// Prefix for dynamically created work-directory fsdev ids; fsdev0 is the
-/// static sandbox export created on the QEMU command line.
-const FSDEV_PREFIX: &str = "fsdev";
-/// Prefix for dynamically hotplugged virtio-9p device ids.
-const DEVICE_PREFIX: &str = "virtio9p";
-/// Prefix for work-directory mount tags (the guest mounts `mount -t 9p <tag>`).
+/// Prefix for dynamically hotplugged vhost-user-fs device ids.
+const DEVICE_PREFIX: &str = "virtiofs";
+/// Prefix for the per-work-dir chardev that connects QEMU to the virtiofsd
+/// backend socket (created via QMP chardev-add).
+const CHARDEV_PREFIX: &str = "vfwork";
+/// Prefix for work-directory mount tags (the guest mounts `mount -t virtiofs
+/// <tag>`).
 const MOUNT_TAG_PREFIX: &str = "ztag";
 /// Guest mount points of work directories mirror the device path exactly (the
 /// same path is mounted, so the guest sees identical paths). Keeping them
@@ -920,11 +923,12 @@ impl qemu_cmd_agent_linker::RemoteCommandExecutor for QemuCommandExecutor {
             );
             frame::write_message(&mut data_stream, &ClientMessage::Spawn { session_id, spec })
                 .inspect_err(|err| log::error!("[diag] QemuCommandExecutor::spawn: write Spawn: {err}"))?;
+            let spawnok_read_start = std::time::Instant::now();
             match frame::read_message::<_, ServerMessage>(&mut data_stream)
-                .inspect_err(|err| log::error!("[diag] QemuCommandExecutor::spawn: read SpawnOk: {err}"))?
+                .inspect_err(|err| log::error!("[diag] QemuCommandExecutor::spawn: read SpawnOk: {err} after {:?}", spawnok_read_start.elapsed()))?
             {
                 ServerMessage::SpawnOk { .. } => {
-                    log::info!("[diag] spawn: session_id={session_id} got SpawnOk");
+                    log::info!("[diag] spawn: session_id={session_id} got SpawnOk after {:?}", spawnok_read_start.elapsed());
                 }
                 ServerMessage::Error { message, .. } => {
                     log::error!("[diag] spawn: session_id={session_id} rejected: {message}");
@@ -1817,8 +1821,8 @@ fn run_mount(
         return Ok(());
     }
     let sequence = mount_counter.fetch_add(1, Ordering::SeqCst);
-    let fsdev_id = format!("{FSDEV_PREFIX}{sequence}");
     let device_id = format!("{DEVICE_PREFIX}{sequence}");
+    let chardev_id = format!("{CHARDEV_PREFIX}{sequence}");
     let mount_tag = format!("{MOUNT_TAG_PREFIX}{sequence}");
     // Mount work directories at the same path they have on the device, so the
     // guest sees identical paths. The guest side create_dir_all()s the mount
@@ -1828,10 +1832,30 @@ fn run_mount(
     // per mount so multiple work directories can be mounted concurrently.
     let bus = format!("rp{}", sequence % WORKDIR_MOUNT_SLOTS as u64);
     log::info!(
-        "[diag] run_mount: path={path} sequence={sequence} fsdev={fsdev_id} device={device_id} tag={mount_tag} guest={guest_path} bus={bus}"
+        "[diag] run_mount: path={path} sequence={sequence} device={device_id} chardev={chardev_id} tag={mount_tag} guest={guest_path} bus={bus}"
     );
-    qmp::create_workdir_fsdev(qmp_socket, &fsdev_id, path, &device_id, &mount_tag, &bus)
-        .inspect_err(|err| log::error!("[diag] run_mount: QMP export for {path}: {err}"))?;
+    // Start the in-process virtiofsd backend for this work dir (listens on
+    // fs_work{sequence}.sock), then hotplug a vhost-user-fs device bound to it.
+    let port_dir = Path::new(qmp_socket).parent().unwrap_or(Path::new(""));
+    let backend_socket = {
+        #[cfg(target_env = "ohos")]
+        {
+            virtiofs::spawn_workdir(port_dir, sequence, PathBuf::from(path), mount_tag.clone())
+        }
+        #[cfg(not(target_env = "ohos"))]
+        {
+            PathBuf::new()
+        }
+    };
+    qmp::create_workdir_vhost_fs(
+        qmp_socket,
+        &chardev_id,
+        &backend_socket.to_string_lossy(),
+        &device_id,
+        &mount_tag,
+        &bus,
+    )
+    .inspect_err(|err| log::error!("[diag] run_mount: QMP export for {path}: {err}"))?;
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     cmd_tx
         .send(MgmtCommand::Mount {

@@ -1,11 +1,12 @@
-//! Minimal QMP client for runtime 9p exports.
+//! Minimal QMP client for runtime vhost-user-fs exports.
 //!
-//! Work-directory fsdevs cannot be created at QEMU boot (their paths are only
+//! Work-directory shares cannot be created at QEMU boot (their paths are only
 //! known when the user opens a folder), so the mount path creates them on
-//! demand through QEMU's QMP interface: `fsdev-add`, then `device_add` a
-//! virtio-9p-pci device bound to the new fsdev. The QMP socket is a server=on
-//! chardev that serves one client at a time; these helpers connect, issue the
-//! commands and disconnect, which suits the low-frequency open-folder path.
+//! demand through QEMU's QMP interface: `chardev-add` a client socket to the
+//! in-process virtiofsd backend, then `device_add` a vhost-user-fs-pci device
+//! bound to it. The QMP socket is a server=on chardev that serves one client
+//! at a time; these helpers connect, issue the commands and disconnect, which
+//! suits the low-frequency open-folder path.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -13,14 +14,6 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-
-/// Security model for work-directory exports. `passthrough` keeps the host
-/// files untouched: mapped-file would scatter per-file metadata files through
-/// the user's folder (unacceptable inside a git repository), and the sandbox
-/// root keeps using mapped-file from the QEMU command line. The guest then
-/// sees the host file ownership; git runs as guest root, so cmd-agentd
-/// provisions `safe.directory` so the resulting ownership check is silenced.
-const SECURITY_MODEL: &str = "passthrough";
 
 /// Cap on waiting for the QEMU greeting after connecting.
 const GREETING_TIMEOUT: Duration = Duration::from_secs(10);
@@ -103,27 +96,34 @@ fn command(
     }
 }
 
-/// Creates a work-directory fsdev and hotplugs a virtio-9p device against it
-/// in one QMP session.
-pub fn create_workdir_fsdev(
+/// Hotplugs a vhost-user-fs device for a work directory in one QMP session:
+/// chardev-add a client socket to the virtiofsd backend's listening socket,
+/// then device_add vhost-user-fs-pci bound to it.
+pub fn create_workdir_vhost_fs(
     socket: &str,
-    fsdev_id: &str,
-    path: &str,
+    chardev_id: &str,
+    backend_socket: &str,
     device_id: &str,
     mount_tag: &str,
     bus: &str,
 ) -> std::io::Result<()> {
-    log::info!("[diag] qmp::create_workdir_fsdev: fsdev={fsdev_id} path={path} device={device_id} tag={mount_tag}"
+    log::info!(
+        "[diag] qmp::create_workdir_vhost_fs: chardev={chardev_id} socket={backend_socket} device={device_id} tag={mount_tag} bus={bus}"
     );
     let (mut stream, mut reader) = connect_qmp(socket)?;
     command(
         &mut stream,
         &mut reader,
-        "fsdev-add",
+        "chardev-add",
         json!({
-            "id": fsdev_id,
-            "path": path,
-            "security-model": SECURITY_MODEL,
+            "id": chardev_id,
+            "backend": {
+                "type": "socket",
+                "data": {
+                    "addr": {"type": "unix", "data": {"path": backend_socket}},
+                    "server": false,
+                }
+            }
         }),
     )?;
     command(
@@ -131,19 +131,19 @@ pub fn create_workdir_fsdev(
         &mut reader,
         "device_add",
         json!({
-            "driver": "virtio-9p-pci",
+            "driver": "vhost-user-fs-pci",
             "id": device_id,
-            "fsdev": fsdev_id,
-            "mount_tag": mount_tag,
+            "chardev": chardev_id,
+            "tag": mount_tag,
             // Attach to a pre-created root port (rp<N>): pcie.0 has no hotplug
             // handler, but each root port's secondary bus does, so runtime
-            // hotplug of a virtio-9p device works. Each root port has one slot,
-            // so the caller picks a distinct rp per mounted folder.
+            // hotplug of a vhost-user-fs device works. Each root port has one
+            // slot, so the caller picks a distinct rp per mounted folder.
             "bus": bus,
         }),
     )?;
     let _ = stream.shutdown(Shutdown::Both);
-    log::info!("[diag] qmp::create_workdir_fsdev: done for {fsdev_id}");
+    log::info!("[diag] qmp::create_workdir_vhost_fs: done for {device_id}");
     Ok(())
 }
 
