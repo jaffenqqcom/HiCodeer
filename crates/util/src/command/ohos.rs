@@ -1,11 +1,16 @@
-//! OHOS remote command execution through the local cmd-agent daemon.
+//! OHOS remote command execution.
 //!
-//! HarmonyOS sandbox forbids `exec` of external programs, so binaries like git
+//! HarmonyOS's sandbox forbids `exec` of external programs, so binaries like git
 //! and rust-analyzer run on the VM. This module mirrors the API of the other
 //! platform `Command` wrappers, but `spawn` executes remotely: it hands an
-//! `ExecSpec` to the cmd-agent daemon (via the business-side client) and the
-//! returned `Child` carries raw byte streams wired to the remote process's
-//! stdio. Callers stay unaware that the child lives on another machine.
+//! [`ExecSpec`](command_executor::ExecSpec) to a registered command executor
+//! (provided by the active VM backend — openeuler-agent or qemu-agent) and the
+//! returned `Child` carries raw byte streams wired to the remote process's stdio.
+//! Callers stay unaware that the child lives on another machine.
+//!
+//! This module depends only on the backend-agnostic [`command_executor`] crate.
+//! It never references a concrete agent linker, so the two backends are
+//! interchangeable and can be switched independently at compile time.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -15,8 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 use std::sync::Arc;
 
-use qemu_cmd_agent_linker::RemoteCommandExecutor;
-use qemu_cmd_agent_protocol::messages::{ExecSpec, FdMode, RootMap, Signal};
+use command_executor::{
+    ExitFuture, ExecSpec, FdMode, RemoteChild, RemoteCommandExecutor, Signal,
+};
 use smol::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 /// How a child's standard descriptor is wired.
@@ -45,14 +51,10 @@ impl Stdio {
     }
 }
 
-/// Initializes the global cmd-agent client. The host calls this once after
-/// spawning the daemon and before any command runs.
-pub fn init(_socket_path: &str, _root_map: Option<RootMap>) -> io::Result<()> {
-    // The executor itself is registered by launch-zed once the QEMU guest is
-    // up; this hook verifies the registration. Path mapping now lives in the
-    // guest cmd-agentd (maintained by MountFolder2QEMU), so the root map
-    // parameter is accepted for call compatibility and ignored.
-    if qemu_cmd_agent_linker::executor().is_none() {
+/// Initializes the global remote command executor. The host calls this once
+/// after the active VM backend has registered its executor.
+pub fn init(_socket_path: &str) -> io::Result<()> {
+    if executor().is_err() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "cmd-agent executor not registered",
@@ -63,7 +65,7 @@ pub fn init(_socket_path: &str, _root_map: Option<RootMap>) -> io::Result<()> {
 }
 
 fn executor() -> io::Result<Arc<dyn RemoteCommandExecutor>> {
-    qemu_cmd_agent_linker::executor().ok_or_else(|| {
+    command_executor::executor().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "cmd-agent executor not initialized",
@@ -194,7 +196,10 @@ impl Command {
         );
         let executor = executor()?;
         let child = executor.spawn(self.build_spec())?;
-        log::info!("util::command::spawn: session_id={} started", child.session_id);
+        log::info!(
+            "util::command::spawn: session_id={} started",
+            child.session_id
+        );
         Ok(Child {
             stdin: child.stdin,
             stdout: child.stdout,
@@ -233,10 +238,8 @@ impl Command {
         if !self.env_clear {
             for (key, maybe_val) in &self.envs {
                 if let Some(val) = maybe_val {
-                    spec.env.insert(
-                        key.to_string_lossy().into_owned(),
-                        val.to_string_lossy().into_owned(),
-                    );
+                    spec.env
+                        .insert(key.to_string_lossy().into_owned(), val.to_string_lossy().into_owned());
                 }
             }
         }
@@ -300,15 +303,22 @@ impl Child {
         let executor = self.executor.clone();
         let session_id = self.session_id;
         async move {
-            log::info!("util::command::Child::status: session_id={session_id} waiting for exit");
+            log::info!(
+                "util::command::Child::status: session_id={session_id} waiting for exit"
+            );
             let exit_code = executor.wait_exit_async(session_id).await?;
-            log::info!("util::command::Child::status: session_id={session_id} exit_code={exit_code:?}");
+            log::info!(
+                "util::command::Child::status: session_id={session_id} exit_code={exit_code:?}"
+            );
             Ok(status_from_code(exit_code))
         }
     }
 
     pub async fn output(mut self) -> io::Result<Output> {
-        log::info!("util::command::Child::output: session_id={} reading output", self.session_id);
+        log::info!(
+            "util::command::Child::output: session_id={} reading output",
+            self.session_id
+        );
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         if let Some(mut stdout) = self.stdout.take() {

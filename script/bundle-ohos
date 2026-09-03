@@ -17,18 +17,20 @@ Options:
   --hap-only     Skip Rust builds; only run ohpm install + hvigor assembleHap
   -h, --help     Display this help and exit.
 
-The in-process QEMU guest is the default (and only) command backend: the build
-uses --no-default-features --features qemu and stages the QEMU resources into
-the HAP (libqemu-system-aarch64.so, Image, rootfs.cpio.gz).
+Two command backends are selectable at build time, exactly one at a time:
+  --qemu    build the in-process QEMU guest (qemu-agent) and stage its resources
+            into the HAP (libqemu-system-aarch64.so, Image, rootfs.cpio.zst, tools/)
+  (default) build the OpenEuler VM cmd-agent backend (openeuler-agent); no QEMU
+            resources are staged.
 "
 }
 
 # Parse all arguments manually
 IS_RELEASE=false
 MODE="all"
-# The in-process QEMU guest is the default (and only) backend; there is no
-# --qemu flag anymore.
-QEMU_MODE=true
+# Default backend is the OpenEuler VM cmd-agent (openeuler-agent). Pass --qemu
+# to switch to the in-process QEMU guest (qemu-agent). Exactly one is built.
+QEMU_MODE=false
 CARGO_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -46,6 +48,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --hap-only)
       MODE="hap"
+      shift
+      ;;
+    --qemu)
+      QEMU_MODE=true
       shift
       ;;
     --)
@@ -168,12 +174,12 @@ if [ "$MODE" != "hap" ]; then
   OHOS_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-ohos-$BUILD_MODE"
   ensure_rust_target "ohos-$BUILD_MODE"
   echo "[zcoder-ohos-build] Cargo build ($PROFILE_DIR, $NPROC CPUs) ..."
-  # --qemu switches the backend feature: build with only the qemu feature
-  # (--no-default-features drops the openeuler-vm default). Extra CARGO_ARGS
+  # --qemu switches the backend feature: build with only the qemu-agent feature
+  # (--no-default-features drops the openeuler-agent default). Extra CARGO_ARGS
   # still pass through, so e.g. `bundle-ohos --qemu --features` can coexist.
   QEMU_FEATURES=()
   if [ "$QEMU_MODE" = true ]; then
-    QEMU_FEATURES+=("--no-default-features" "--features" "qemu")
+    QEMU_FEATURES+=("--no-default-features" "--features" "qemu-agent")
     # qemu_debug_assertions is intentionally NOT enabled: it forwards the guest
     # serial console (qemu-console) and QEMU stderr to hilog through a pipe
     # thread. The guest cmd-agentd logs heavily (e.g. idle port-poll WARNs),
@@ -282,19 +288,10 @@ if [ "$QEMU_MODE" = true ]; then
   else
     echo "[zcoder-ohos-build] QEMU tools already staged (.complete present), skipping copy"
   fi
-  # cmd-agentd: guest-side command agent. Built with the host aarch64-linux
-  # toolchain (the guest rootfs is glibc), staged in the resfile, then started
-  # by the guest init script from the 9p-mounted sandbox (/sandbox/cmd-agentd).
-  CMD_AGENTD_MANIFEST="$QEMU_RESOURCE_DIR/cmd-agentd/Cargo.toml"
-  CMD_AGENTD_TARGET_DIR="$RUST_TARGET_ROOT/${PROJECT_HASH}-qemu-cmd-agentd"
-  CARGO_TARGET_DIR="$CMD_AGENTD_TARGET_DIR" \
-    cargo build --release --target aarch64-unknown-linux-gnu \
-      --manifest-path "$CMD_AGENTD_MANIFEST" \
-      || { echo "[zcoder-ohos-build] cmd-agentd build failed" >&2; exit 1; }
-  cp "$CMD_AGENTD_TARGET_DIR/aarch64-unknown-linux-gnu/release/cmd-agentd" \
-    "$SERVER_RESFILE_DIR/cmd-agentd"
-  chmod +x "$SERVER_RESFILE_DIR/cmd-agentd"
-  echo "[zcoder-ohos-build] cmd-agentd staged at $SERVER_RESFILE_DIR/cmd-agentd"
+  # cmd-agentd is no longer the guest agent (ssh-agentd is), so a qemu build
+  # must not ship it. Drop any copy left from a prior build so the HAP resfile
+  # stays clean for the guest.
+  rm -f "$SERVER_RESFILE_DIR/cmd-agentd"
   # ssh-agentd: guest-side SSH agent (embedded russh server). Built exactly like
   # cmd-agentd (host aarch64-linux toolchain, guest rootfs is glibc), staged in
   # the resfile, then started by the guest init script from the /tools mount.
@@ -308,6 +305,30 @@ if [ "$QEMU_MODE" = true ]; then
     "$SERVER_RESFILE_DIR/ssh-agentd"
   chmod +x "$SERVER_RESFILE_DIR/ssh-agentd"
   echo "[zcoder-ohos-build] ssh-agentd staged at $SERVER_RESFILE_DIR/ssh-agentd"
+else
+  # qemu-agent disabled: purge any QEMU-only artifacts left from a previous qemu
+  # build so the HAP does not carry the (large) QEMU engine, guest kernel,
+  # initramfs, tool tree, or guest agents. The OpenEuler backend deploys its own
+  # cmd-agentd (built separately above), so it is intentionally left untouched.
+  QEMU_HAP_LIBS_DIR="$HAP_DIR/entry/libs/arm64-v8a"
+  rm -f "$QEMU_HAP_LIBS_DIR/$QEMU_LIB_NAME" \
+        "$QEMU_HAP_LIBS_DIR/libslirp.so.0" \
+        "$QEMU_HAP_LIBS_DIR/libz.so.1" \
+        "$QEMU_HAP_LIBS_DIR/libpixman-1.so.0" \
+        "$QEMU_HAP_LIBS_DIR/libglib-2.0.so.0" \
+        "$QEMU_HAP_LIBS_DIR/libintl.so.8" \
+        "$QEMU_HAP_LIBS_DIR/libpcre2-8.so.0"
+  rm -f "$SERVER_RESFILE_DIR/Image" \
+        "$SERVER_RESFILE_DIR/rootfs.cpio.zst" \
+        "$SERVER_RESFILE_DIR/rootfs.cpio.gz" \
+        "$SERVER_RESFILE_DIR/ssh-agentd" \
+        "$SERVER_RESFILE_DIR/.complete"
+  rm -rf "$SERVER_RESFILE_DIR/tools" \
+         "$SERVER_RESFILE_DIR/bin" \
+         "$SERVER_RESFILE_DIR/lib64" \
+         "$SERVER_RESFILE_DIR/include" \
+         "$SERVER_RESFILE_DIR/lib"
+  echo "[zcoder-ohos-build] qemu-agent disabled: purged QEMU-only artifacts from HAP"
 fi
 
 # ==================== cmd-agent daemon（线程运行，无需 cdylib） ====================

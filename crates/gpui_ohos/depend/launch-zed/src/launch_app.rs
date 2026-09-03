@@ -4,24 +4,24 @@ use openharmony_ability_derive::ability;
 // is reached over TCP; SSH credentials let the daemon auto-redeploy it. The VM
 // host is resolved dynamically at startup (see compute_vm_host); these are the
 // fallbacks used when the WVMBrEulerOS bridge interface is missing.
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const SSH_HOST: &str = "172.16.100.2";
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const SSH_PORT: u16 = 22;
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const SSH_USER: &str = "user";
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const SSH_PASS: &str = "12345678";
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const REMOTE_DIR: &str = "/home/user/cmd-agent";
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const AGENT_PORT: u16 = 4040;
 /// Number of attempts to initialize the business-side client after the daemon
 /// thread starts (the daemon needs a moment to bind its unix socket).
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const CLIENT_INIT_ATTEMPTS: usize = 10;
 /// Delay between client init attempts.
-#[cfg(feature = "openeuler-vm")]
+#[cfg(feature = "openeuler-agent")]
 const CLIENT_INIT_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 // Replaces the NAPI launch entry that used to live in crates/zed/src/lib.rs.
@@ -37,11 +37,11 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     // Start the QEMU guest and/or the OpenEuler VM cmd-agent path depending on
     // the enabled backend feature, so remote command execution is ready before
     // Zed starts issuing git/LSP commands. The two features can coexist during
-    // the transition: qemu boots the guest while openeuler-vm keeps the
+    // the transition: qemu boots the guest while openeuler-agent keeps the
     // existing command path alive.
-    #[cfg(feature = "qemu")]
+    #[cfg(feature = "qemu-agent")]
     start_qemu(&app);
-    #[cfg(feature = "openeuler-vm")]
+    #[cfg(feature = "openeuler-agent")]
     start_cmd_agent(&app);
     // Launch Zed with only the information it truly needs: the sandbox base path.
     zed::start_zed_main(app.base_path());
@@ -49,7 +49,7 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
 
 /// Starts the cmd-agent daemon (background thread) and initializes the
 /// business-side client so `util::command` can execute remote commands.
-#[cfg(all(feature = "openeuler-vm", target_env = "ohos"))]
+#[cfg(all(feature = "openeuler-agent", target_env = "ohos"))]
 fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
     let Some(base_path) = app.base_path() else {
         log::error!("start_cmd_agent: no base path, cmd-agent not started");
@@ -109,7 +109,7 @@ fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
                 if cmd_agent_linker::init_executor(client).is_err() {
                     log::warn!("cmd-agent executor already registered");
                 }
-                if let Err(err) = util::command::init(&socket_path, None) {
+                if let Err(err) = util::command::init(&socket_path) {
                     log::warn!("cmd-agent util init failed: {err}");
                 }
                 capture_vm_arch();
@@ -130,7 +130,7 @@ fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
 /// the device's. Runs on a background thread; if it fails (e.g. the VM is
 /// still being deployed), `vm_platform()` stays `None` and callers fall back
 /// to the device architecture.
-#[cfg(all(feature = "openeuler-vm", target_env = "ohos"))]
+#[cfg(all(feature = "openeuler-agent", target_env = "ohos"))]
 fn capture_vm_arch() {
     std::thread::spawn(|| {
         let arch = smol::block_on(async {
@@ -166,7 +166,7 @@ fn capture_vm_arch() {
 /// 172.16.105.2). The same scheme as warp-ohos's shell_bridge_process.cpp.
 /// Returns None when the bridge interface is missing or has no IPv4, so
 /// callers fall back to a hardcoded default.
-#[cfg(all(feature = "openeuler-vm", target_env = "ohos"))]
+#[cfg(all(feature = "openeuler-agent", target_env = "ohos"))]
 fn compute_vm_host() -> Option<String> {
     const VM_BRIDGE_IFACE: &str = "WVMBrEulerOS";
     const VM_HOST_IP_OFFSET: u32 = 1;
@@ -209,14 +209,14 @@ fn compute_vm_host() -> Option<String> {
     result
 }
 
-#[cfg(all(feature = "openeuler-vm", not(target_env = "ohos")))]
+#[cfg(all(feature = "openeuler-agent", not(target_env = "ohos")))]
 fn start_cmd_agent(_app: &openharmony_ability::OpenHarmonyApp) {}
 
 /// Starts the in-process QEMU guest as the command backend. Kernel and
 /// initramfs are packaged in the module resfile and read directly (QEMU only
 /// reads them, so no sandbox copy is needed); the sandbox and the user
 /// workspace are exposed to the guest over virtio-9p.
-#[cfg(all(feature = "qemu", target_env = "ohos"))]
+#[cfg(all(feature = "qemu-agent", target_env = "ohos"))]
 fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     let Some(base_path) = app.base_path() else {
         log::error!("start_qemu: no base path, QEMU not started");
@@ -305,12 +305,18 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     ) {
         Ok(executor) => {
             let executor = std::sync::Arc::new(executor);
-            if qemu_cmd_agent_linker::init_executor(executor.clone()).is_err() {
+            if qemu_ssh_agent_linker::init_executor(executor.clone()).is_err() {
                 log::warn!("start_qemu: cmd-agent executor already registered");
             } else {
                 log::info!("start_qemu: SshCommandExecutor registered");
             }
-            if qemu_cmd_agent_linker::init_mounter(executor).is_err() {
+            // Pin the guest wall clock to the host once, after the guest SSH
+            // server is up. The guest has no RTC init (boots at 1970) and
+            // drifts under TCG; a single pin at boot is enough (no periodic
+            // re-sync). `sync_system_time_once` blocks on pool.allocate until
+            // the guest is ready, so it is safe to call right after register.
+            executor.clone().sync_system_time_once();
+            if qemu_ssh_agent_linker::init_mounter(executor).is_err() {
                 log::warn!("start_qemu: folder mounter already registered");
             } else {
                 log::info!("start_qemu: FolderMounter registered");
@@ -320,14 +326,14 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     }
 }
 
-#[cfg(all(feature = "qemu", not(target_env = "ohos")))]
+#[cfg(all(feature = "qemu-agent", not(target_env = "ohos")))]
 fn start_qemu(_app: &openharmony_ability::OpenHarmonyApp) {}
 
 /// Derives the OHOS sandbox root from the app files dir. base_path follows the
 /// fixed layout `<sandbox_root>/haps/<module>/files`, so everything before the
 /// "/haps/" segment is the sandbox root. Falls back to base_path when the
 /// layout does not match.
-#[cfg(feature = "qemu")]
+#[cfg(feature = "qemu-agent")]
 fn sandbox_root_path(base_path: &str) -> String {
     const HAPS_SEGMENT: &str = "/haps/";
     match base_path.rfind(HAPS_SEGMENT) {
@@ -340,7 +346,7 @@ fn sandbox_root_path(base_path: &str) -> String {
 /// zlog->hilog redirect is live, plus whether the staged cmd-agentd copy exists
 /// in both the resfile and the sandbox. start_qemu's own logs are dropped
 /// because they run before the redirect (see start_qemu).
-#[cfg(feature = "qemu")]
+#[cfg(feature = "qemu-agent")]
 fn log_qemu_paths_delayed(base_path: String, resource_dir: String, sandbox_root: String) {
     std::thread::Builder::new()
         .name("qemu-path-diag".to_string())

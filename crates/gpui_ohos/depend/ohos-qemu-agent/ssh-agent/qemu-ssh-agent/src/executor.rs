@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use qemu_cmd_agent_linker::{ExitFuture, RemoteChild};
-use qemu_cmd_agent_protocol::messages::{ExecSpec, Signal};
+use qemu_ssh_agent_linker::{ExitFuture, RemoteChild};
+use command_executor::{ExecSpec, Signal};
 use russh::ChannelMsg;
 use smol::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -122,9 +122,54 @@ impl SshCommandExecutor {
     fn pid_dir_value(&self) -> Option<String> {
         self.pid_dir.lock().unwrap_or_else(|poison| poison.into_inner()).clone()
     }
+
+    /// Synchronizes the guest's `CLOCK_REALTIME` to the host (OHOS device) wall
+    /// clock, over the existing SSH command channel.
+    ///
+    /// The QEMU guest is a BusyBox initramfs (no python, no hwclock-driven RTC
+    /// init), so its system clock starts at epoch (1970) and drifts under TCG.
+    /// This pulls the host time into the guest without any new protocol: it runs
+    /// BusyBox's `date` applet (`date -s @<epoch>`) through the same
+    /// `run_ssh_command` path used for git/LSP. The command runs as root in the
+    /// guest (ssh-agentd), so `date -s` has CAP_SYS_TIME.
+    ///
+    /// Precision: second only. BusyBox exposes no sub-second `clock_settime`
+    /// wrapper, so the guest clock can only be pinned to whole seconds. Call
+    /// `sync_system_time_once` after the executor is registered to pin it once at
+    /// boot; the single pin bounds the TCG drift between boots.
+    /// `@<epoch>` is a TZ-independent absolute timestamp accepted by BusyBox
+    /// >= 1.20; if the BusyBox build predates that, use
+    /// `date -u -s "<YYYY-MM-DD HH:MM:SS>"` (the TZ-independent UTC form) instead.
+    pub async fn sync_system_time(&self) -> std::io::Result<()> {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // BusyBox `date -s @<epoch>` sets CLOCK_REALTIME to the absolute epoch
+        // seconds. Root in the guest satisfies CAP_SYS_TIME. Sub-second precision
+        // is unavailable without a clock_settime wrapper, which BusyBox lacks.
+        let command = format!("date -s @{secs}");
+        let conn = self.pool.allocate()?;
+        run_ssh_command(conn, &command).await
+    }
+
+    /// Pins the guest wall clock to the host exactly once, after the guest has
+    /// booted. `sync_system_time` blocks on `pool.allocate()` (which waits for the
+    /// guest SSH server) the first time, so this is safe to call right after the
+    /// executor is registered, before the guest is up. No periodic re-sync: a
+    /// single pin at boot bounds the TCG drift between boots, which is all Zed
+    /// needs for TLS/cache/make timestamps.
+    pub fn sync_system_time_once(self: Arc<Self>) {
+        let handle = self.pool.runtime().handle().clone();
+        handle.spawn(async move {
+            if let Err(err) = self.sync_system_time().await {
+                log::warn!("ssh executor: initial guest time sync failed: {err}");
+            }
+        });
+    }
 }
 
-impl qemu_cmd_agent_linker::RemoteCommandExecutor for SshCommandExecutor {
+impl qemu_ssh_agent_linker::RemoteCommandExecutor for SshCommandExecutor {
     fn spawn(&self, spec: ExecSpec) -> std::io::Result<RemoteChild> {
         let session_id = self.next_session.fetch_add(1, Ordering::SeqCst);
         let pid_dir = self
@@ -228,7 +273,7 @@ impl qemu_cmd_agent_linker::RemoteCommandExecutor for SshCommandExecutor {
 /// Mount/unmount of a zcoder-opened folder into the guest. Mounts over
 /// virtio-fs: hotplug a vhost-user-fs device via QMP, then `mount -t virtiofs`
 /// through SSH so the guest sees the same path.
-impl qemu_cmd_agent_linker::FolderMounter for SshCommandExecutor {
+impl qemu_ssh_agent_linker::FolderMounter for SshCommandExecutor {
     fn mount_folder(&self, path: &str) -> std::io::Result<()> {
         if self
             .mounted
@@ -311,6 +356,7 @@ impl qemu_cmd_agent_linker::FolderMounter for SshCommandExecutor {
             .remove(path);
         Ok(())
     }
+
 }
 
 /// Runs one short SSH command and waits for its exit status (0 = success).
@@ -495,3 +541,4 @@ async fn pump(
     let _ = stderr_w.shutdown().await;
     log::debug!("ssh pump: pump finished");
 }
+

@@ -104,12 +104,12 @@ impl LspStdoutHandler {
             // buffers and diagnostics resolve to the device-side worktree.
             // Under the QEMU backend the guest emits device paths directly, so
             // the buffer is used as-is.
-            #[cfg(all(target_env = "ohos", not(feature = "qemu")))]
+            #[cfg(all(target_env = "ohos", not(feature = "qemu-agent")))]
             let parsed_buffer = Cow::Owned(
                 crate::map_uri_vm_to_device(str::from_utf8(&buffer).unwrap_or_default())
                     .into_bytes(),
             );
-            #[cfg(not(all(target_env = "ohos", not(feature = "qemu"))))]
+            #[cfg(not(all(target_env = "ohos", not(feature = "qemu-agent"))))]
             let parsed_buffer = Cow::Borrowed(&buffer[..]);
 
             if let Ok(message) = str::from_utf8(&parsed_buffer) {

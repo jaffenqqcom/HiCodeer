@@ -6,7 +6,7 @@
 //! into a pid file so the host can signal the whole group with
 //! `kill -KILL -$(cat <pid_dir>/<session>.pid)`.
 
-use qemu_cmd_agent_protocol::messages::{ExecSpec, FdMode};
+use command_executor::{ExecSpec, FdMode};
 
 /// Guest PATH: /tools/bin (prebundled tools), the sandbox languages tree
 /// (per-language LSP servers downloaded into the app sandbox), then the

@@ -17,6 +17,15 @@ doctest = true
 [features]
 test-support = ["rand", "util_macros", "path/test-support"]
 
+# VM command backend selectors (OHOS only). Exactly one must be enabled; the
+# active backend registers a `command_executor::RemoteCommandExecutor` at startup.
+# These are markers (no util-internal deps): util::command::ohos depends only on
+# the backend-agnostic `command-executor` crate, so the two backends stay
+# interchangeable and independently switchable. The actual `command-executor`
+# dependency is gated by `[target.'cfg(target_env = "ohos")'.dependencies]` below.
+openeuler-agent = []
+qemu-agent = []
+
 [dependencies]
 anyhow.workspace = true
 async_zip.workspace = true
@@ -64,8 +73,7 @@ tendril = "0.4.3"
 windows.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-qemu-cmd-agent-linker = { path = "../gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker" }
-qemu-cmd-agent-protocol = { path = "../gpui_ohos/depend/ohos-qemu-agent/cmd-agent-protocol" }
+command-executor = { path = "../gpui_ohos/depend/command-executor" }
 
 [dev-dependencies]
 rand.workspace = true

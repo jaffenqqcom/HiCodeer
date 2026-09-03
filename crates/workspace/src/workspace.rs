@@ -10464,25 +10464,25 @@ pub fn open_workspace_by_id(
 }
 
 #[allow(clippy::type_complexity)]
-/// [ohos] Mounts every directory among `abs_paths` into the QEMU guest so
-/// git/LSP reach the user's workspace. Fire-and-forget: opening the workspace
-/// must not wait for the mount; failures only warn. Single files are skipped
-/// (per DESIGN only directories are mounted).
-#[cfg(target_env = "ohos")]
-/// [ohos] Mounts the folders being opened into the QEMU guest. Returns an
-/// error when a mount fails so the workspace is not recorded as open for a
-/// folder the guest cannot reach; reopening it then retries the mount.
-#[cfg(target_env = "ohos")]
+/// [ohos + qemu-agent] Mounts every directory among `abs_paths` into the QEMU
+/// guest so git/LSP reach the user's workspace. The QEMU backend exposes a
+/// folder mounter (registered via `command_executor`); the OpenEuler backend
+/// has no mount step (it syncs folders instead), so this is gated to qemu-agent.
+/// Fire-and-forget: opening the workspace must not wait for the mount; failures
+/// only warn. Single files are skipped (per DESIGN only directories are mounted).
+#[cfg(all(target_env = "ohos", feature = "qemu-agent"))]
 async fn mount_opened_dirs(
     abs_paths: &[PathBuf],
     app_state: &AppState,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<()> {
+    use command_executor::FolderMounter;
+
     log::info!(
         "[diag] mount_opened_dirs: {} paths: {abs_paths:?}",
         abs_paths.len()
     );
-    let Some(mounter) = qemu_cmd_agent_linker::mounter() else {
+    let Some(mounter) = command_executor::mounter() else {
         log::warn!("open_paths: no folder mounter registered, skipping work-dir mount");
         return Ok(());
     };
@@ -10516,6 +10516,20 @@ async fn mount_opened_dirs(
             }
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::type_complexity)]
+/// [ohos + openeuler-agent] The OpenEuler backend syncs folders to the VM
+/// instead of mounting them, so there is no mount step here. This variant is a
+/// no-op kept so the call site at `open_paths` compiles uniformly across
+/// backends.
+#[cfg(all(target_env = "ohos", feature = "openeuler-agent"))]
+async fn mount_opened_dirs(
+    _abs_paths: &[PathBuf],
+    _app_state: &AppState,
+    _cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
     Ok(())
 }
 

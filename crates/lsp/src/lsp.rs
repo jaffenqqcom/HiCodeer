@@ -7,7 +7,7 @@ pub use lsp_types::*;
 /// workspace mounts `/storage/Users/currentUser` at `/mnt/linux_share` on the
 /// VM), so the language server (which runs on the VM) sees paths it can open.
 /// Applied to outbound messages; a no-op on non-OHOS platforms.
-#[cfg(all(target_env = "ohos", not(feature = "qemu")))]
+#[cfg(all(target_env = "ohos", not(feature = "qemu-agent")))]
 pub(crate) fn map_uri_device_to_vm(message: &str) -> String {
     message.replace(
         "file:///storage/Users/currentUser/",
@@ -18,7 +18,7 @@ pub(crate) fn map_uri_device_to_vm(message: &str) -> String {
 /// Reverse of [`map_uri_device_to_vm`]: maps VM paths back to device paths so
 /// buffers and diagnostics resolve to the device-side worktree. Applied to
 /// inbound messages; a no-op on non-OHOS platforms.
-#[cfg(all(target_env = "ohos", not(feature = "qemu")))]
+#[cfg(all(target_env = "ohos", not(feature = "qemu-agent")))]
 pub(crate) fn map_uri_vm_to_device(message: &str) -> String {
     message.replace(
         "file:///mnt/linux_share/",
@@ -800,7 +800,7 @@ impl LanguageServer {
             // so URIs it receives must be VM paths (the shared workspace is
             // mounted there). Under the QEMU backend the guest reads device
             // paths directly, so no mapping is applied.
-            #[cfg(not(feature = "qemu"))]
+            #[cfg(not(feature = "qemu-agent"))]
             let message = map_uri_device_to_vm(&message);
             log::trace!("outgoing message:{}", message);
             for handler in io_handlers.lock().values_mut() {

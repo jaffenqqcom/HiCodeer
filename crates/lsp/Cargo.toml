@@ -13,7 +13,7 @@ path = "src/lsp.rs"
 doctest = false
 
 [features]
-qemu = []
+qemu-agent = []
 test-support = ["async-pipe"]
 
 [dependencies]
