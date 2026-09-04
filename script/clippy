@@ -4,6 +4,23 @@ set -euo pipefail
 
 if [[ ! " $* " == *" -p "* && ! " $* " == *" --package "* ]]; then
     set -- "$@" --workspace
+
+    # The OHOS crates are OHOS-only: their non-target-gated dependencies pull in
+    # napi-ohos, openharmony-ability and the locally patched wgpu tree, none of
+    # which build for macOS/Linux. Cargo has no way to target-gate a [lib], so
+    # skip these packages on non-OHOS targets. qemu-ssh-agentd and
+    # command-executor are deliberately kept: the former is the guest-side
+    # daemon built with the host gnu toolchain, the latter is pure trait
+    # definitions.
+    if [[ "${CARGO_BUILD_TARGET:-}" != *ohos* ]]; then
+        set -- "$@" \
+            --exclude launch-zed \
+            --exclude gpui_ohos \
+            --exclude gpui_ohos_linker \
+            --exclude ohos-file-geturi \
+            --exclude qemu-ssh-agent \
+            --exclude qemu-ssh-agent-linker
+    fi
 fi
 
 set -x

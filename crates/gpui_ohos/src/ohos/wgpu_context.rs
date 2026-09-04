@@ -44,13 +44,10 @@ impl WgpuContext {
 
         log::info!("OHOS WGPU backends configured: {:?}", backends);
         let mut instance_flags = wgpu::InstanceFlags::from_env_or_default();
-        #[cfg(target_env = "ohos")]
-        {
-            let validation_override_present = std::env::var_os("WGPU_VALIDATION").is_some();
-            let debug_override_present = std::env::var_os("WGPU_DEBUG").is_some();
-            if !validation_override_present && !debug_override_present {
-                instance_flags.remove(wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::DEBUG);
-            }
+        let validation_override_present = std::env::var_os("WGPU_VALIDATION").is_some();
+        let debug_override_present = std::env::var_os("WGPU_DEBUG").is_some();
+        if !validation_override_present && !debug_override_present {
+            instance_flags.remove(wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::DEBUG);
         }
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -69,12 +66,9 @@ impl WgpuContext {
             adapter.get_info().backend
         );
 
-        #[cfg(target_env = "ohos")]
+        // OHOS GPUs do not expose DUAL_SOURCE_BLENDING, so subpixel text
+        // antialiasing stays off without probing the adapter.
         let dual_source_blending_available = false;
-        #[cfg(not(target_env = "ohos"))]
-        let dual_source_blending_available = adapter
-            .features()
-            .contains(wgpu::Features::DUAL_SOURCE_BLENDING);
 
         let mut required_features = wgpu::Features::empty();
         if dual_source_blending_available {

@@ -1,5 +1,3 @@
-#![cfg(target_env = "ohos")]
-
 mod ohos;
 
 pub use gpui::*;

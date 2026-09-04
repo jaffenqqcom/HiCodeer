@@ -10,8 +10,6 @@
 //! Extracted from `openharmony-ability` (file_uri.rs) so the Zed mainline's `project`
 //! crate does not depend on the whole NAPI bridge. The original module is kept intact.
 
-#![cfg(target_env = "ohos")]
-
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::PathBuf;
 

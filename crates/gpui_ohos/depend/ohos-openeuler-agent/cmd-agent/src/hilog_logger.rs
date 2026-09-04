@@ -1,25 +1,16 @@
 //! OHOS hilog sink for the cmd-agent daemon's `log::xxx!` records.
 //!
 //! The daemon runs as an OHOS native child process whose stderr is discarded
-//! by the child-process runtime, so `env_logger` output on stderr is never
-//! observable. This logger routes every record through `OH_LOG_Print` into
+//! by the child-process runtime, so stderr logging is never observable. This
+//! logger routes every record through `OH_LOG_Print` into
 //! hilog, where the app's existing capture (`hilog | grep com.zcoder.studio`)
-//! picks it up under the `Zcoder` tag. Non-OHOS builds fall back to
-//! env_logger on stderr.
+//! picks it up under the `Zcoder` tag.
 
-/// Initializes the daemon logger: hilog on OHOS, env_logger elsewhere.
+/// Initializes the daemon logger.
 pub fn init() {
-    #[cfg(target_env = "ohos")]
-    {
-        ohos::init();
-    }
-    #[cfg(not(target_env = "ohos"))]
-    {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    }
+    ohos::init();
 }
 
-#[cfg(target_env = "ohos")]
 mod ohos {
     use std::ffi::{CStr, CString, c_char};
 

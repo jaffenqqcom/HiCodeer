@@ -66,9 +66,11 @@ impl BridgePlugin for ImeBridgePlugin {
             }
             DELETE_RIGHT_EVENT => {
                 let request = event.decode::<ImeDeleteRight>()?;
-                // OpenHarmony exposes delete-forward; GPUI has no forward-delete via
-                // IME, so we acknowledge it without synthesizing an event.
-                let _ = request;
+                // Forward delete-forward like deleteLeft so the window can deliver
+                // a real Delete key press when no composition text is active (e.g.
+                // the terminal has no forward-delete IME layer to act on).
+                let length = request.length.max(0);
+                Self::push_input(InputEvent::ImeEvent(ImeEvent::DeleteRightEvent(length)));
                 event.respond(ImeAck { accepted: true })
             }
             FUNCTION_KEY_EVENT => {

@@ -32,6 +32,11 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     // Hand the app to the platform layer immediately; OhosPlatform picks it up from
     // the global on construction, so gpui never sees the OpenHarmonyApp type.
     openharmony_ability::set_global_app(app.clone());
+    // [ohos] Pin the terminal child shell to /bin/sh before Zed starts. The
+    // sandbox only execs /bin/sh and the app uid has no /etc/passwd entry
+    // (every present entry resolves to /bin/false), so alacritty's shell
+    // discovery would otherwise fail before spawn. See ensure_terminal_shell_env.
+    ensure_terminal_shell_env(app.base_path());
     // Register the OHOS platform factory before Zed constructs any platform.
     gpui_ohos::register_platform();
     // Start the QEMU guest and/or the OpenEuler VM cmd-agent path depending on
@@ -47,9 +52,74 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     zed::start_zed_main(app.base_path());
 }
 
+/// Pins the process environment that alacritty's terminal shell discovery
+/// (`ShellUser::from_env`) reads, so an OHOS terminal always execs `/bin/sh`.
+///
+/// Why this is required on OHOS:
+///   - The sandbox whitelist only allows `execve` of `/bin/sh`.
+///   - `/etc/passwd` has no entry for the app uid, and every present entry
+///     resolves its shell to `/bin/false`.
+/// Without `SHELL`/`USER`/`HOME` all set, `ShellUser::from_env` errors out and
+/// opening a terminal fails before the child is even spawned.
+fn ensure_terminal_shell_env(base_path: Option<String>) {
+    std::env::set_var("SHELL", "/bin/sh");
+    if std::env::var_os("USER").is_none() {
+        std::env::set_var("USER", "app");
+    }
+    // HOME should be the app's el2 sandbox directory (base_path), not whatever
+    // the process launcher seeded (e.g. /storage/Users/currentUser): base_path
+    // is the app-private, writable directory the device-local shell can rely on.
+    if let Some(base_path_ref) = base_path.as_deref() {
+        std::env::set_var("HOME", base_path_ref);
+    }
+    // Extend PATH with the hap's el1 (resfile resources, reachable via
+    // application_resource_dir) and el2 (app sandbox files, i.e. base_path)
+    // directories, plus the resfile curl/ dir, so device-local tools bundled in
+    // the resfile (e.g. curl) are reachable from the terminal shell.
+    let mut curl_lib_dir: Option<String> = None;
+    let mut path_extra: Vec<String> = Vec::new();
+    if let Some(base_path_ref) = base_path.as_deref() {
+        path_extra.push(base_path_ref.to_string());
+    }
+    const APP_MODULE_NAME: &str = "entry";
+    match openharmony_ability::application_resource_dir(APP_MODULE_NAME) {
+        Ok(resource_dir) => {
+            let curl_dir = format!("{resource_dir}/curl");
+            curl_lib_dir = Some(curl_dir.clone());
+            path_extra.push(resource_dir);
+            path_extra.push(curl_dir);
+        }
+        Err(err) => log::warn!(
+            "ensure_terminal_shell_env: application_resource_dir unavailable: {err}"
+        ),
+    }
+    if !path_extra.is_empty() {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let mut full_path = current_path;
+        for extra in &path_extra {
+            if !full_path.is_empty() {
+                full_path.push(':');
+            }
+            full_path.push_str(extra);
+        }
+        std::env::set_var("PATH", full_path);
+    }
+    // Let the dynamic loader find curl's bundled libraries: the resfile curl/
+    // dir holds the transitive .so closure next to the curl binary.
+    if let Some(curl_dir) = curl_lib_dir {
+        let current = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        let full_lib_path = if current.is_empty() {
+            curl_dir
+        } else {
+            format!("{curl_dir}:{current}")
+        };
+        std::env::set_var("LD_LIBRARY_PATH", full_lib_path);
+    }
+}
+
 /// Starts the cmd-agent daemon (background thread) and initializes the
 /// business-side client so `util::command` can execute remote commands.
-#[cfg(all(feature = "openeuler-agent", target_env = "ohos"))]
+#[cfg(feature = "openeuler-agent")]
 fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
     let Some(base_path) = app.base_path() else {
         log::error!("start_cmd_agent: no base path, cmd-agent not started");
@@ -130,7 +200,7 @@ fn start_cmd_agent(app: &openharmony_ability::OpenHarmonyApp) {
 /// the device's. Runs on a background thread; if it fails (e.g. the VM is
 /// still being deployed), `vm_platform()` stays `None` and callers fall back
 /// to the device architecture.
-#[cfg(all(feature = "openeuler-agent", target_env = "ohos"))]
+#[cfg(feature = "openeuler-agent")]
 fn capture_vm_arch() {
     std::thread::spawn(|| {
         let arch = smol::block_on(async {
@@ -166,7 +236,7 @@ fn capture_vm_arch() {
 /// 172.16.105.2). The same scheme as warp-ohos's shell_bridge_process.cpp.
 /// Returns None when the bridge interface is missing or has no IPv4, so
 /// callers fall back to a hardcoded default.
-#[cfg(all(feature = "openeuler-agent", target_env = "ohos"))]
+#[cfg(feature = "openeuler-agent")]
 fn compute_vm_host() -> Option<String> {
     const VM_BRIDGE_IFACE: &str = "WVMBrEulerOS";
     const VM_HOST_IP_OFFSET: u32 = 1;
@@ -209,14 +279,11 @@ fn compute_vm_host() -> Option<String> {
     result
 }
 
-#[cfg(all(feature = "openeuler-agent", not(target_env = "ohos")))]
-fn start_cmd_agent(_app: &openharmony_ability::OpenHarmonyApp) {}
-
 /// Starts the in-process QEMU guest as the command backend. Kernel and
 /// initramfs are packaged in the module resfile and read directly (QEMU only
 /// reads them, so no sandbox copy is needed); the sandbox and the user
 /// workspace are exposed to the guest over virtio-9p.
-#[cfg(all(feature = "qemu-agent", target_env = "ohos"))]
+#[cfg(feature = "qemu-agent")]
 fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
     let Some(base_path) = app.base_path() else {
         log::error!("start_qemu: no base path, QEMU not started");
@@ -325,9 +392,6 @@ fn start_qemu(app: &openharmony_ability::OpenHarmonyApp) {
         Err(err) => log::error!("start_qemu: create SshCommandExecutor: {err}"),
     }
 }
-
-#[cfg(all(feature = "qemu-agent", not(target_env = "ohos")))]
-fn start_qemu(_app: &openharmony_ability::OpenHarmonyApp) {}
 
 /// Derives the OHOS sandbox root from the app files dir. base_path follows the
 /// fixed layout `<sandbox_root>/haps/<module>/files`, so everything before the

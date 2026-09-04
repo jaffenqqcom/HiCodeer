@@ -1,4 +1,3 @@
-#[cfg(target_env = "ohos")]
 use log::{debug, warn};
 
 use std::{
@@ -1607,6 +1606,123 @@ impl OhosWindow {
         }
     }
 
+    /// Handles an IME delete-left (Backspace) event.
+    ///
+    /// When IME composition text is present, delete within it through the IME
+    /// text layer. When there is no composition text, the focused view's text
+    /// lives outside the IME layer (e.g. the terminal, whose line buffer is in
+    /// the PTY), so deliver a real Backspace key press and let the view delete
+    /// through its own key handling.
+    fn handle_ime_backspace(&self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let deleted_ime_text = {
+            let mut handler_guard = self.input_handler.borrow_mut();
+            let Some(handler) = handler_guard.as_mut() else {
+                return;
+            };
+            if handler.marked_text_range().is_none() {
+                false
+            } else {
+                if let Some(selection) = handler.selected_text_range(true) {
+                    let range = if selection.range.start != selection.range.end {
+                        selection.range
+                    } else {
+                        let caret = if selection.reversed {
+                            selection.range.start
+                        } else {
+                            selection.range.end
+                        };
+                        let start = caret.saturating_sub(len);
+                        start..caret
+                    };
+                    handler.replace_text_in_range(Some(range), "");
+                } else {
+                    handler.replace_text_in_range(None, "");
+                }
+                true
+            }
+        };
+        if deleted_ime_text {
+            return;
+        }
+        let keystroke = Keystroke {
+            modifiers: Modifiers::default(),
+            key: "backspace".to_string(),
+            key_char: None,
+        };
+        self.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held: false,
+            prefer_character_input: false,
+        }));
+    }
+
+    /// Handles the IME delete-forward (Delete) event. Forward delete has no
+    /// meaning inside an IME composition, so when composition text is present
+    /// it is ignored; otherwise a real Delete key press is delivered so the
+    /// focused view can handle it.
+    fn handle_ime_delete_forward(&self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let has_composition = {
+            let mut handler_guard = self.input_handler.borrow_mut();
+            let Some(handler) = handler_guard.as_mut() else {
+                return;
+            };
+            handler.marked_text_range().is_some()
+        };
+        if has_composition {
+            return;
+        }
+        let keystroke = Keystroke {
+            modifiers: Modifiers::default(),
+            key: "delete".to_string(),
+            key_char: None,
+        };
+        self.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held: false,
+            prefer_character_input: false,
+        }));
+    }
+
+    /// Handles the IME enter / sendFunctionKey (completion) event. With
+    /// composition text present the previous behavior is kept (commit the text).
+    /// Without composition a real Enter key press is delivered, so each control
+    /// applies its own Enter semantics (e.g. completing a settings input,
+    /// submitting a terminal line) instead of inserting a literal newline.
+    fn handle_ime_enter(&self) {
+        let committed_ime_text = {
+            let mut handler_guard = self.input_handler.borrow_mut();
+            let Some(handler) = handler_guard.as_mut() else {
+                return;
+            };
+            if handler.marked_text_range().is_none() {
+                false
+            } else {
+                handler.replace_text_in_range(None, "\n");
+                handler.unmark_text();
+                true
+            }
+        };
+        if committed_ime_text {
+            return;
+        }
+        let keystroke = Keystroke {
+            modifiers: Modifiers::default(),
+            key: "enter".to_string(),
+            key_char: None,
+        };
+        self.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held: false,
+            prefer_character_input: false,
+        }));
+    }
+
     fn handle_input_event(&self, event: &InputEvent) {
         match event {
             InputEvent::ImeEvent(ime_event) => {
@@ -1618,6 +1734,29 @@ impl OhosWindow {
                     if self.refresh_keyboard_overlap_device_px() {
                         self.emit_resize_callback();
                     }
+                }
+
+                // OHOS reports the physical Backspace/Delete/Enter keys as IME
+                // editing-key events (deleteLeft/deleteRight/sendFunctionKey).
+                // When there is no composition (marked) text, the focused view
+                // (e.g. the terminal, whose line buffer lives in the PTY) has
+                // nothing in the IME text layer, so each editing key is delivered
+                // as a real key press instead and the view applies its own
+                // semantics. See handle_ime_backspace/delete_forward/enter.
+                match ime_event {
+                    ImeEvent::BackspaceEvent(len) => {
+                        self.handle_ime_backspace((*len).max(0) as usize);
+                        return;
+                    }
+                    ImeEvent::DeleteRightEvent(len) => {
+                        self.handle_ime_delete_forward((*len).max(0) as usize);
+                        return;
+                    }
+                    ImeEvent::EnterEvent(_key) => {
+                        self.handle_ime_enter();
+                        return;
+                    }
+                    _ => {}
                 }
 
                 let handler_ref = self.input_handler.clone();
@@ -1636,39 +1775,20 @@ impl OhosWindow {
                                 handler.replace_text_in_range(None, &data.text);
                                 handler.unmark_text();
                             }
-                            ImeEvent::EnterEvent(_action) => {
-                                handler.replace_text_in_range(None, "\n");
-                                handler.unmark_text();
-                            }
-                            ImeEvent::BackspaceEvent(len) => {
-                                let len = (len).max(0) as usize;
-                                if len == 0 {
-                                    return;
-                                }
-
-                                if let Some(selection) = handler.selected_text_range(true) {
-                                    let range = if selection.range.start != selection.range.end {
-                                        selection.range
-                                    } else {
-                                        let caret = if selection.reversed {
-                                            selection.range.start
-                                        } else {
-                                            selection.range.end
-                                        };
-                                        let start = caret.saturating_sub(len);
-                                        start..caret
-                                    };
-                                    handler.replace_text_in_range(Some(range), "");
-                                } else {
-                                    handler.replace_text_in_range(None, "");
-                                }
-                            }
+                            // Enter is handled synchronously in handle_input_event
+                            // (handle_ime_enter); never reached from the closure.
+                            ImeEvent::EnterEvent(_action) => {}
                             ImeEvent::ImeStatusEvent(status) => {
                                 if matches!(status, openharmony_ability::ime::KeyboardStatus::Hide)
                                 {
                                     handler.unmark_text();
                                 }
                             }
+                            // Backspace/Delete are handled synchronously in
+                            // handle_input_event before this closure runs, so
+                            // they never reach here; the arm only makes the match
+                            // exhaustive.
+                            ImeEvent::BackspaceEvent(_) | ImeEvent::DeleteRightEvent(_) => {}
                         }
                     })
                     .detach();

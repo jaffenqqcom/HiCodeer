@@ -131,6 +131,7 @@ pub enum ImeEvent {
     BackspaceEvent(i32),
     ImeStatusEvent(KeyboardStatus),
     EnterEvent(i32),
+    DeleteRightEvent(i32),
 }
 
 impl Debug for ImeEvent {
@@ -140,6 +141,7 @@ impl Debug for ImeEvent {
             ImeEvent::BackspaceEvent(len) => write!(f, "BackspaceEvent: delete length is {}", len),
             ImeEvent::ImeStatusEvent(status) => write!(f, "ImeStatusEvent: {:?}", status),
             ImeEvent::EnterEvent(key) => write!(f, "EnterEvent: {:?}", key),
+            ImeEvent::DeleteRightEvent(len) => write!(f, "DeleteRightEvent: delete length is {}", len),
         }
     }
 }

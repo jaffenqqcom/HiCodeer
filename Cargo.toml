@@ -1001,6 +1001,13 @@ nix = { path = "patches/nix" }
 # `manually::open` resolver (which uses `openat`). The OHOS-specific change is
 # guarded by `#[cfg(target_env = "ohos")]`, so other platforms are unchanged.
 cap-primitives = { path = "patches/cap-primitives" }
+# Local patched rustix-openpty 0.2.0: on OpenHarmony (target_env="ohos") the
+# `TIOCGPTPEER` fast path in `open_user` is rejected by the sandbox with
+# EACCES, which is not among the tolerated fallback errnos (EPERM/ENOSYS), so
+# it aborts openpty. The OHOS-specific change is guarded by
+# `#[cfg(target_env = "ohos")]`, so other platforms compile the exact upstream
+# crates.io 0.2.0 code.
+rustix-openpty = { path = "patches/rustix-openpty" }
 ohos-xcomponent-binding = { path = "crates/gpui_ohos/depend/ohos-xcomponent-binding" }
 ohos-xcomponent-sys = { path = "crates/gpui_ohos/depend/ohos-xcomponent-sys" }
 # Local patched wgpu tree (copied from warp-ohos), which adds OHOS Vulkan

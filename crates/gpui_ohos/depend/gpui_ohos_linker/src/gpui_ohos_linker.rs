@@ -6,8 +6,6 @@
 //! Decoupling this way keeps a change in the OHOS implementation from
 //! recompiling the whole Zed dependency graph.
 
-#![cfg(target_env = "ohos")]
-
 use std::rc::Rc;
 
 use gpui::Platform;

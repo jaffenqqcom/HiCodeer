@@ -25,6 +25,7 @@
 .vscode
 .wrangler
 .perf-runs
+*.lock
 /assets/*licenses.*
 /crates/collab/seed.json
 /crates/theme/schemas/theme.json

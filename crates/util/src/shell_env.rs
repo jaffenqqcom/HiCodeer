@@ -40,41 +40,17 @@ pub async fn capture(
     return capture_unix(shell_path.as_ref(), args, directory.as_ref()).await;
 }
 
-/// The device sandbox forbids exec of `/bin/sh`, so the login shell
-/// environment is captured on the VM, where the shell and commands actually
-/// run. `directory` is a device path; the cmd-agent server maps it to the VM
-/// root before spawning the shell, so `cd` resolves to the mirrored path.
+/// The OHOS terminal panel spawns a device-local `/bin/sh`, which must see the
+/// device environment, not the OpenEuler VM login environment (whose HOME/PATH
+/// point at VM paths that do not exist on the device). Return the current
+/// process environment instead of running a login-shell capture on the VM.
 #[cfg(target_env = "ohos")]
 async fn capture_ohos(
-    shell_path: &Path,
-    args: &[String],
-    directory: &Path,
+    _shell_path: &Path,
+    _args: &[String],
+    _directory: &Path,
 ) -> Result<collections::HashMap<String, String>> {
-    use crate::command::new_command;
-
-    let mut command = new_command(shell_path);
-    command.args(args);
-    command.arg("-l");
-    command.arg("-c");
-    command.arg("env");
-    command.current_dir(directory);
-    let output = command
-        .output()
-        .await
-        .with_context(|| format!("capturing shell environment on VM with {shell_path:?}"))?;
-
-    // `env` prints one KEY=value per line; a login shell may prepend startup
-    // noise, so only lines that look like assignments are kept.
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut envs = collections::HashMap::default();
-    for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-                envs.insert(key.to_string(), value.to_string());
-            }
-        }
-    }
-    Ok(envs)
+    Ok(std::env::vars().collect())
 }
 
 /// Try to parse the environment output before checking the exit status.

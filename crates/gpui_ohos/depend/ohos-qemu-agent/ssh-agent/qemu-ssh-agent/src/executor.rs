@@ -9,9 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-#[cfg(target_env = "ohos")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,7 +23,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::command;
 use crate::pool::{Pool, SshSession};
 use crate::qmp;
-#[cfg(target_env = "ohos")]
 use crate::virtiofs;
 
 /// Cap on a synchronous mount/`signal` wait before failing.
@@ -293,12 +290,9 @@ impl qemu_ssh_agent_linker::FolderMounter for SshCommandExecutor {
         );
 
         // 1. In-process virtiofsd backend for this work dir.
-        #[cfg(target_env = "ohos")]
         let port_dir = self.qmp_socket.parent().unwrap_or(Path::new("")).to_path_buf();
-        #[cfg(target_env = "ohos")]
-        let backend_socket = virtiofs::spawn_workdir(&port_dir, sequence, path.into(), mount_tag.clone());
-        #[cfg(not(target_env = "ohos"))]
-        let backend_socket = std::path::PathBuf::new();
+        let backend_socket =
+            virtiofs::spawn_workdir(&port_dir, sequence, path.into(), mount_tag.clone());
 
         // 2. QMP hotplug: chardev-add + device_add vhost-user-fs-pci.
         qmp::create_workdir_vhost_fs(

@@ -20,7 +20,6 @@ path = "src/main.rs"
 base64 = "0.22"
 cmd-agent-linker = { path = "../cmd-agent-linker" }
 cmd-agent-protocol = { path = "../cmd-agent-protocol" }
-env_logger = "0.11"
 notify = "6.1"
 futures-io = "0.3"
 futures-util = "0.3"

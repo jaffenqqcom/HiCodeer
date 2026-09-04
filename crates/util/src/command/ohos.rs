@@ -4,7 +4,7 @@
 //! and rust-analyzer run on the VM. This module mirrors the API of the other
 //! platform `Command` wrappers, but `spawn` executes remotely: it hands an
 //! [`ExecSpec`](command_executor::ExecSpec) to a registered command executor
-//! (provided by the active VM backend — openeuler-agent or qemu-agent) and the
+//! (provided by the active VM backend - openeuler-agent or qemu-agent) and the
 //! returned `Child` carries raw byte streams wired to the remote process's stdio.
 //! Callers stay unaware that the child lives on another machine.
 //!

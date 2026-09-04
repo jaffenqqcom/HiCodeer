@@ -11,7 +11,6 @@ pub mod command;
 pub mod executor;
 pub mod pool;
 pub mod qmp;
-#[cfg(target_env = "ohos")]
 pub mod virtiofs;
 
 pub use executor::SshCommandExecutor;
@@ -89,7 +88,6 @@ pub fn start(paths: QemuPaths) -> bool {
     }
     // Start the virtio-fs backends (sandbox/tools) before QEMU so their
     // listening sockets exist when the vhost-user-fs-pci chardev connects.
-    #[cfg(target_env = "ohos")]
     virtiofs::start(&paths);
 
     // Load the engine, build the argv and run the machine on its own thread.

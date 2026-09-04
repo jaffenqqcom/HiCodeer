@@ -1071,6 +1071,12 @@ impl TerminalBuilder {
             // Remove SHLVL so the spawned shell initializes it to 1, matching
             // the behavior of standalone terminal emulators like iTerm2/Kitty/Alacritty.
             env.remove("SHLVL");
+            // The OHOS process environment is captured from the OpenEuler VM's
+            // login shell (see util::load_login_shell_environment), whose SHELL
+            // is /bin/bash, which the device does not have. Pin the child's
+            // SHELL to the shell we actually exec (/bin/sh).
+            #[cfg(target_env = "ohos")]
+            env.insert("SHELL".to_string(), "/bin/sh".to_string());
 
             // If the parent environment doesn't have a locale set
             // (As is the case when launched from a .app on MacOS),
@@ -1113,6 +1119,15 @@ impl TerminalBuilder {
                             None,
                             None,
                         ))
+                    } else if cfg!(target_env = "ohos") {
+                        // The OHOS sandbox only execs `/bin/sh`. `System` would
+                        // otherwise fall through to alacritty's shell discovery,
+                        // which reads the process `SHELL` variable; that var is
+                        // overwritten by `load_login_shell_environment` with the
+                        // OpenEuler VM's /bin/bash, which does not exist on the
+                        // device. Pin the child shell to /bin/sh to bypass that
+                        // lookup entirely.
+                        Some(ShellParams::new("/bin/sh".to_string(), None, None))
                     } else {
                         None
                     }

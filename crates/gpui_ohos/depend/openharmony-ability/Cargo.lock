@@ -194,6 +194,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "log"
+version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -490,9 +496,11 @@ name = "openharmony-ability"
 version = "1.0.0-beta.1"
 dependencies = [
  "futures-channel",
+ "log",
  "napi-derive-ohos",
  "napi-ohos",
  "ohos-arkui-binding",
+ "ohos-arkui-input-binding",
  "ohos-display-binding",
  "ohos-ime-binding",
  "ohos-xcomponent-binding",
@@ -517,6 +525,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "openharmony-ability-plugin-cursor"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
+name = "openharmony-ability-plugin-filedrop"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
 name = "openharmony-ability-plugin-files"
 version = "1.0.0-beta.1"
 dependencies = [
@@ -526,9 +554,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "openharmony-ability-plugin-ime"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
+name = "openharmony-ability-plugin-openwith"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
 name = "openharmony-ability-plugin-permission"
 version = "1.0.0-beta.1"
 dependencies = [
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
+name = "openharmony-ability-plugin-pinch"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
  "napi-derive-ohos",
  "napi-ohos",
  "openharmony-ability",
