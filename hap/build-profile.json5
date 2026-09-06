@@ -4,13 +4,13 @@
       {
         "name": "default",
         "material": {
-          "storePassword": "00000020273C60FD725083607A4B723E51C179FAF729C946EF0580C5D7A6ED856D917A2FF43D06A3D95150AB602E5332",
-          "certpath": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
+          "storePassword": "00000020D0B5EE9AEAAA26A4009FBBED03C07834C4563C4F3B75A24E19B0CB8D490B973CADFA408FFC7689444E70FF18",
+          "certpath": "/storage/Users/currentUser/Documents/ohos/config/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
           "keyAlias": "debugKey",
-          "keyPassword": "00000020273C60FD725083607A4B723E51C179FAF729C946EF0580C5D7A6ED856D917A2FF43D06A3D95150AB602E5332",
-          "profile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
+          "keyPassword": "00000020D0B5EE9AEAAA26A4009FBBED03C07834C4563C4F3B75A24E19B0CB8D490B973CADFA408FFC7689444E70FF18",
+          "profile": "/storage/Users/currentUser/Documents/ohos/config/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "./cerfile/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"
+          "storeFile": "/storage/Users/currentUser/Documents/ohos/config/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"
         },
         "type": "HarmonyOS"
       }
@@ -18,7 +18,6 @@
     "products": [
       {
         "name": "default",
-        "signingConfig": "default",
         "targetSdkVersion": "6.1.0(23)",
         "compatibleSdkVersion": "6.1.0(23)",
         "runtimeOS": "HarmonyOS",
@@ -97,6 +96,10 @@
     {
       "name": "plugin_ime",
       "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/ime"
+    },
+    {
+      "name": "plugin_url",
+      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/url"
     }
   ]
 }

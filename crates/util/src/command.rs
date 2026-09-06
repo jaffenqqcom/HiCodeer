@@ -13,7 +13,10 @@ mod ohos;
 
 #[cfg(target_env = "ohos")]
 // pub use ohos::{Child, Command, Stdio}; // +init re-exported for launch-zed's cmd-agent client setup
-pub use ohos::{Child, Command, Stdio, init};
+pub use ohos::{
+    Child, Command, LocalToolStatus, Stdio, init, init_local_tools, local_tool_programs,
+    local_tool_status,
+};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000_u32;

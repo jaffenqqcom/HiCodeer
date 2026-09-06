@@ -83,7 +83,7 @@ pub struct SpawnRequest {
 /// One file-sync operation addressed by its device-side path; the daemon maps
 /// it to the VM side and (for `WriteContent`) streams the file body over the
 /// connection.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FileSyncOp {
     /// Stream `device_path`'s content to the VM as `path.ing` then rename it
     /// into place (atomic on the VM).
@@ -779,23 +779,20 @@ pub fn spawn_daemon(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Device-side download directories mirrored onto the VM. Each is a
-/// `{sandbox_base}/zcoder`-rooted subdirectory; the sync engine pushes changes
-/// to `/home/user/cmd-agent/zcoder/...` on the VM via the Rule A path mapping.
+/// Device-side download directories mirrored onto the VM. Only language-server
+/// binaries (LSPs) are ever spawned on the VM by zcoder, so only the
+/// `{sandbox_base}/zcoder/languages` directory is mirrored. Other downloads
+/// (extensions run locally as wasm, node/copilot/prettier etc. are not used on
+/// the VM) are intentionally excluded to avoid useless large transfers.
+///
+/// The sync engine pushes changes to `/home/user/cmd-agent/zcoder/languages/...`
+/// on the VM: Rule A maps `<DEVICE_APP_FILES_ROOT>` (= `{sandbox_base}`, the
+/// app files dir) to `<VM_AGENT_ROOT>`, so the remaining `zcoder/...` suffix
+/// matches the spawn-side `SYNC_DIR_RELATIVES` prefix verbatim. Both sides must
+/// stay in sync, or VM-side chmod/wait/delete-guard logic silently no-ops.
 fn sync_roots_from_base(sandbox_base: &str) -> Vec<PathBuf> {
     let data = PathBuf::from(sandbox_base).join("zcoder");
-    [
-        "languages",
-        "extensions",
-        "external_agents",
-        "copilot",
-        "prettier",
-        "node",
-        "debug_adapters",
-    ]
-    .iter()
-    .map(|name| data.join(name))
-    .collect()
+    vec![data.join("languages")]
 }
 
 

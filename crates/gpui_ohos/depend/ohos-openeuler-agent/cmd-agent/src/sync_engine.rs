@@ -1,10 +1,12 @@
-//! Device-sandbox -> VM file mirror sync engine.
+//! Device-sandbox -> openEuler file mirror sync engine.
 //!
-//! A background thread watches the download directories under `data_dir()`
-//! (LSP binaries, node runtime, extensions, AI plugins). Only "write complete"
-//! events are acted on (close-after-write and rename-into-directory), so a
-//! half-written file is never mirrored. Changes are pushed to the VM as
-//! FileSync operations through the daemon; deletes are mirrored too.
+//! A background thread watches the language-server download directory under
+//! `data_dir()` (i.e. `<files>/zcoder/languages`; only LSP binaries are ever
+//! spawned by zcoder on the openEuler side, so only this directory is
+//! mirrored). Only "write complete" events are acted on (close-after-write and
+//! rename-into-directory), so a half-written file is never mirrored. Changes
+//! are pushed to the openEuler side as FileSync operations through the daemon;
+//! deletes are mirrored too.
 //!
 //! The engine runs as an independent thread inside the host process, spawned
 //! by `daemon::spawn_daemon`, and needs no external handle.
@@ -28,6 +30,10 @@ const SYNC_DEBOUNCE: Duration = Duration::from_millis(500);
 /// Cap on a batch's wait, so a slow trickle of events cannot postpone a sync
 /// indefinitely.
 const SYNC_BATCH_CAP: Duration = Duration::from_secs(5);
+/// Pause before re-attempting a batch whose push failed (link down, openEuler
+/// side restarting). Bounds retry frequency while still re-pushing the batch;
+/// the whole batch is requeued so a transient outage cannot lose changes.
+const SYNC_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 /// Connect retry for the engine's business client: the daemon binds its unix
 /// socket shortly after `spawn_daemon` returns.
 const CLIENT_CONNECT_ATTEMPTS: usize = 20;
@@ -84,14 +90,23 @@ fn sync_engine_main(
     let (tx, rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
     let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())
         .with_context(|| "creating notify watcher".to_string())?;
-    // Watch every root that already exists. Roots that do not exist yet (a
-    // fresh sandbox before any download) are recorded and retried in the
-    // event loop: once they appear they are watched and scanned once, so a
-    // download that finished in the gap is still mirrored.
+    // Watch every root that already exists and scan it once as a startup
+    // baseline, so anything the openEuler mirror is missing (first run, a
+    // cleared mirror, a download that finished while this process was down) is
+    // pushed immediately. Roots that do not exist yet (a fresh sandbox before
+    // any download) are recorded and, when they later appear, watched and
+    // scanned the same way (see `retry_missing_roots`).
     let mut missing_roots: Vec<PathBuf> = Vec::new();
+    let mut pending: HashMap<PathBuf, FileSyncOp> = HashMap::new();
     for root in sync_roots {
         if root.exists() {
             watch_recursive(&mut watcher, root)?;
+            collect_dir_ops(root, &mut pending);
+            log::info!(
+                "sync engine: root {} exists, baseline scan enqueued ({} ops)",
+                root.display(),
+                pending.len()
+            );
         } else {
             log::info!(
                 "sync engine: root {} does not exist yet, will watch on creation",
@@ -102,29 +117,67 @@ fn sync_engine_main(
     }
 
     // Event pump with debounce: collect write-complete events, then fire one
-    // batch once the stream quiets down (or hits the cap).
-    let mut pending: HashMap<PathBuf, FileSyncOp> = HashMap::new();
+    // batch once the stream quiets down (or hits the cap). A batch whose push
+    // fails (link down, openEuler side restarting) is requeued and retried
+    // after a short backoff instead of being dropped, so a transient outage
+    // cannot lose mirror changes permanently.
     let mut last_event = Instant::now();
     let mut batch_start = Instant::now();
     let mut sync_id: u64 = 0;
+    let mut retry_after: Option<Instant> = None;
     loop {
         if !pending.is_empty() {
             let idle = last_event.elapsed() >= SYNC_DEBOUNCE;
             let capped = batch_start.elapsed() >= SYNC_BATCH_CAP;
-            if idle || capped {
+            let backoff_elapsed = match retry_after {
+                Some(t) => Instant::now() >= t,
+                None => true,
+            };
+            if (idle || capped) && backoff_elapsed {
                 sync_id += 1;
-                let ops: Vec<FileSyncOp> = pending.drain().map(|(_, op)| op).collect();
+                let ops: Vec<(PathBuf, FileSyncOp)> = pending.drain().collect();
                 log::info!(
                     "sync engine: pushing {} ops (sync_id={sync_id})",
                     ops.len()
                 );
-                for op in &ops {
+                for (_, op) in &ops {
                     // [diag] list every op so the pushed set can be cross-checked
                     // against the github_download finalize log.
                     log::info!("[diag] sync op(sync_id={sync_id}): {op:?}");
                 }
-                if let Err(err) = client.file_sync(sync_id, ops) {
-                    log::error!("sync engine: file_sync failed: {err}");
+                let file_ops: Vec<FileSyncOp> = ops.iter().map(|(_, op)| op.clone()).collect();
+                match client.file_sync(sync_id, file_ops) {
+                    Ok(()) => {
+                        retry_after = None;
+                    }
+                    Err(err) => {
+                        // Requeue the surviving ops; every op is idempotent on
+                        // the openEuler side (WriteContent/CreateDir rewrite,
+                        // Delete of a missing path is ignored), so re-sending
+                        // is safe. A WriteContent whose source has already
+                        // vanished on the device (e.g. a download tree being
+                        // replaced) can never succeed, so drop it instead of
+                        // letting a deterministic failure wedge the engine.
+                        log::error!(
+                            "sync engine: file_sync failed, requeuing surviving ops of batch {sync_id}: {err}"
+                        );
+                        retry_after = Some(Instant::now() + SYNC_RETRY_BACKOFF);
+                        for (path, op) in ops {
+                            let source_alive = match &op {
+                                FileSyncOp::WriteContent { device_path } => {
+                                    Path::new(device_path).exists()
+                                }
+                                _ => true,
+                            };
+                            if source_alive {
+                                pending.entry(path).or_insert(op);
+                            } else {
+                                log::info!(
+                                    "sync engine: dropping op for vanished source {path:?}"
+                                );
+                            }
+                        }
+                    }
                 }
                 batch_start = Instant::now();
             }

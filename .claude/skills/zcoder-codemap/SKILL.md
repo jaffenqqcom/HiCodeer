@@ -729,6 +729,62 @@ cmd-agentd 命令 到 [mount -t 9p <ztag{n}> /ws/{n}] 在 guest 内  [fsdev path
 - **动态挂载编号**：fsdev{n}（fsdev0 静态 sandbox）/ virtio9p{n} / ztag{n} / /ws/{n}；已挂载集合幂等；不主动 umount、fsdev 累积不删。
 - **mount/unmount 对称接口**：cmd-agent 侧 mount_folder/unmount_folder（对外，含 QMP），cmd-agentd 侧同名协议处理（执行 mount/unmount + 映射维护），register_mapping/unregister_mapping 为登记辅助对。
 
+### AI Agent 模块（agent_ui / agent / language_models：进程内 agent 引擎）
+
+Agent Panel 是 Zed 自家实现的**进程内 agent**：UI（crates/agent_ui）→ 引擎（crates/agent 的 Thread tool-call 循环）→ 工具集（crates/agent/src/tools，进程内操作 fs/Buffer）→ LLM（crates/language_models 各 provider）。整个 agent 层**零 `cfg(target_env = "ohos")`**；除 LLM 推理（出网）与第三方/远程 agent（ACP 子进程）外全在 zcoder 主进程内，无独立 agent 进程。OHOS 差异全部在下层（进程执行 util::command → cmd-agent/QEMU，见 Git/QEMU 模块）。会话存本地 SQLite（thread_store + crates/db）。
+
+模块入口：
+```
+Agent 到 agent_ui::init() 在 crates/agent_ui/src/agent_ui.rs  [由 zed 启动初始化序列调用（crates/zed/src/main.rs on_finish_launching，agent_ui 模块 init）；注册 AgentPanel / AgentRegistry / inline assistant]
+Agent 到 AgentPanel 在 crates/agent_ui/src/agent_panel.rs  [由 agent_ui::init 注册为 workspace 面板，crates/zed/src/zed.rs:520/861/902 register_action(toggle/focus)；用户点侧栏 agent 图标或快捷键打开]
+Agent 到 Agent::server() 在 crates/agent_ui/src/agent_ui.rs  [AgentPanel 连接时调用；enum Agent 默认 #[default] NativeAgent（:425/426），server()（:483）NativeAgent 分支返回 NativeAgentServer::new(fs, thread_store)；仅用户显式选 custom/第三方 agent 才走 ACP]
+Agent 到 NativeAgentServer::connect() 在 crates/agent/src/native_agent_server.rs  [server() 的 connect 触发（:32）；cx.new(NativeAgent::new(thread_store, templates, fs, cx))（:46）进程内创建，不 spawn 任何子进程]
+Agent 到 NativeAgent 的 Thread::new() 在 crates/agent/src/agent.rs  [NativeAgent 实体 agent.rs:404；新会话/子 agent 时 Thread::new（agent.rs:741）+ AcpThread::new（:774）包成 ACP 适配实体；会话/草稿经 ThreadStore 存本地 SQLite]
+Agent 到 Thread::run_turn() / run_turn_internal() 在 crates/agent/src/thread.rs  [用户发消息/回复继续/spawn_agent_tool 触发；Thread 是 gpui Entity（thread.rs:1229），run_turn（:2655）→ run_turn_internal（:2719）是 tool-call 循环：model.stream_completion → 解析 tool call → run_tool → 回填结果后下一轮]
+Agent 到 run_tool() 在 crates/agent/src/thread.rs  [循环内执行工具；按 NAME 调 tool.run()，文件编辑等先经 tool_permissions::authorize_file_edit 授权（tools/tool_permissions.rs）]
+```
+
+工具集（crates/agent/src/tools/，全进程内真实实现）：
+```
+Agent 到 read_file/list_directory/grep/find_path/create_directory/delete_path/move_path 在 crates/agent/src/tools/*.rs  [run_tool 按 NAME 分发；运行时 project.read_with(|p,_| p.fs().clone()) 拿 Arc<dyn Fs> → crates/fs RealFs（std::fs::read_to_string/write/read_dir，fs.rs:911/1000）；grep 用 project.search 进程内搜，不起外部进程；list 用 worktree snapshot]
+Agent 到 write_file/edit_file 在 crates/agent/src/tools/write_file_tool.rs / edit_file_tool.rs  [委托 EditSession（tools/edit_session.rs）；持 buffer: Entity<Buffer> + diff: Entity<Diff>（:354/:356）]
+Agent 到 EditSessionContext 在 crates/agent/src/tools/edit_session.rs  [工具运行时构造（:136）；持 project/thread/action_log/language_registry；编辑经 buffer.start_transaction→edit→end_transaction_with_source(BufferEditSource::Agent)（:1008-1026）进程内改真实 Buffer（editor 订阅该 buffer，用户实时见 diff）；落盘 ensure_buffer_saved 调 project.format + project.save_buffer（:186-215）经 RealFs 写]
+Agent 到 go_to_definition/find_references/apply_code_action/rename_symbol/diagnostics 在 crates/agent/src/tools/*.rs  [调 project.definitions/references/apply_code_action/perform_rename + lsp_store 拉诊断（LspToolFeatureFlag）；进程内对 LSP server]
+Agent 到 TerminalTool 在 crates/agent/src/tools/terminal_tool.rs  [run_terminal_tool 经 environment.create_terminal（:929）执行；授权 + sandbox 判定在工具内完成]
+Agent 到 fetch_tool / web_search_tool 在 crates/agent/src/tools/fetch_tool.rs / web_search_tool.rs  [fetch 走进程内 http_client 直拉 URL；web_search 走 WebSearchRegistry 外部搜索 provider]
+```
+
+跨文件跳转：
+```
+Agent::server() 在 crates/agent_ui/src/agent_ui.rs 到 NativeAgentServer::new() 在 crates/agent/src/native_agent_server.rs
+NativeAgentServer::connect() 在 crates/agent/src/native_agent_server.rs 到 NativeAgent::new() 在 crates/agent/src/agent.rs
+NativeAgent（agent.rs:404）到 Thread::new() 在 crates/agent/src/thread.rs  [会话实体创建；agent.rs:741]
+Thread::run_turn_internal() 在 crates/agent/src/thread.rs 到 model.stream_completion() 在 crates/language_model 的 LanguageModel 实现  [请求模型流式推理]
+ThreadEnvironment::create_terminal()（trait thread.rs:756）在 crates/agent/src/agent.rs（NativeThreadEnvironment:3138）到 project.create_terminal_task() 在 crates/project/src/terminals.rs:64  [→ TerminalBuilder → crates/terminal open_pty（alacritty_terminal::tty::new）真 fork/exec PTY shell；OHOS 重活经 util::command → cmd-agent → VM]
+EditSession buffer 编辑 在 crates/agent/src/tools/edit_session.rs 到 project.save_buffer()/format() 在 crates/project/src/project.rs  [落盘到 RealFs]
+```
+
+LLM provider（crates/language_models）：
+```
+Agent 到 language_models::init() 在 crates/zed/src/main.rs  [初始化序列（main.rs:744）；注册全部内置 provider 到全局 LanguageModelRegistry]
+Agent 到 register_language_model_providers() 在 crates/language_models/src/language_models.rs  [逐个 registry.register_provider(Arc::new(...))：Cloud（zed.dev 云，注册表第一个，需 Zed 账号）/ Anthropic / OpenAI / Ollama / LM Studio / LlamaCpp / DeepSeek / Google / Bedrock / OpenRouter / CopilotChat 等（:216-344，各实现在 crates/language_models/src/provider/*.rs）]
+Agent 到 Thread::ensure_model() / model() 在 crates/agent/src/thread.rs  [run_turn 前从 LanguageModelRegistry 取模型（:1971/:1963）；按 thread 存的语言模型设置选 provider/model，可本地 localhost（Ollama/LM Studio）或直连云 API]
+Agent 到 DeepSeekLanguageModelProvider 在 crates/language_models/src/provider/deepseek.rs  [stream_completion → crates/deepseek（DEEPSEEK_API_URL=https://api.deepseek.com/v1）→ http_client::HttpClient 进程内发 HTTP]
+```
+
+跨运行时跳转：
+```
+Thread run_turn_internal 到 [stream_completion HTTP 流] 到 云 LLM API / 本地模型  [唯一默认出网环节：zed.dev 云或 Anthropic/OpenAI/DeepSeek 等厂商 API 或 Ollama localhost；取决于所选 provider]
+AgentPanel 选 custom/第三方 agent 在 crates/agent_ui/src/agent_ui.rs 到 AcpConnection::stdio() 在 crates/agent_servers/acp.rs  [spawn 独立子进程走 ACP stdin/stdout；远程项目场景 agent 命令在远端 zed host 执行]
+Agent 到 AgentRegistryStore 在 crates/project/src/agent_server_store.rs 到 https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json  [列出可用第三方 agent（agent_registry_store.rs）]
+TerminalTool 到 [create_terminal → PTY] 到 本地 shell 子进程  [普通平台本地 fork/exec；OHOS 沙箱禁 exec，重活经 util::command → cmd-agent（OpenEuler/QEMU VM）在 VM 执行（见 Git/QEMU 模块）；PTY 本体 /bin/sh 本地 exec + rustix-openpty 补丁]
+Agent 工具编辑 到 [Buffer transaction + save_buffer] 到 打开文件的编辑器视图  [同进程 buffer 共享，改 buffer 即实时可见 diff，用户可撤销]
+```
+
+补充要点：
+- **进程内 vs 远程**：Agent Panel 默认 native agent 全进程内；ACP/agent_servers 只在 custom agent（spawn 外部 ACP 进程）与远程项目场景出现。会话持久化本地 SQLite（thread_store.rs ThreadsDatabase::connect），无云端存储。
+- **编辑落点是 Buffer 而非 Editor**：工具结构体无 Entity\<Editor\>/Workspace，编辑目标是 project 打开的真实 Buffer（被 editor 共享），因此 agent 编辑天然有实时 diff 与 undo。
+
 ### 关键配置与产物
 
 - `hap/entry/src/main/ets/entryability/EntryAbility.ets`：`moduleName = "zcoder"`。

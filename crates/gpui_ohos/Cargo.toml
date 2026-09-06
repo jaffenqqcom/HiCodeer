@@ -44,3 +44,4 @@ openharmony-ability-plugin-pinch = { path = "depend/openharmony-ability/crates/p
 openharmony-ability-plugin-filedrop = { path = "depend/openharmony-ability/crates/plugin-filedrop" }
 openharmony-ability-plugin-openwith = { path = "depend/openharmony-ability/crates/plugin-openwith" }
 openharmony-ability-plugin-ime = { path = "depend/openharmony-ability/crates/plugin-ime" }
+openharmony-ability-plugin-url = { path = "depend/openharmony-ability/crates/plugin-url" }

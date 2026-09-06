@@ -145,6 +145,22 @@
           "when": "inuse"
         }
       }
+    ],
+    // Private HNP native tools: installed to /data/app (private home), only this
+    // HAP may exec them. bundle-ohos injects exactly the packages declared here.
+    "hnpPackages": [
+      {
+        "package": "git.hnp",
+        "type": "private"
+      },
+      {
+        "package": "openssh.hnp",
+        "type": "private"
+      },
+      {
+        "package": "curl.hnp",
+        "type": "private"
+      }
     ]
   }
 }

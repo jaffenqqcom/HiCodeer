@@ -72,3 +72,5 @@ hap/entry/libs
 # the unpacked tree and the HAP resfile (build artifacts) are not tracked.
 crates/gpui_ohos/depend/ohos-qemu-agent/images/tools/
 hap/entry/src/main/resources/resfile/
+build/
+Cargo.lock

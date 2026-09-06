@@ -423,6 +423,79 @@ echo ""
     find "$CMAKE_STAGING_DIR" -depth -delete 2>/dev/null || true
   fi
 
+  # ==================== HNP 装配（注入载荷 + 重签，默认执行） ====================
+  # hvigor 只把 module.json 的 hnpPackages 写进产物、不嵌 .hnp 实体；这里把
+  # hap/entry/hnp/arm64-v8a/<pkg>.hnp 追加进 HAP，再用调试证书整体重签。
+  # 载荷缺失 / 证书未配齐都会显式报错，不产出“看似可装”的包。
+  HNP_SRC_DIR="$HAP_DIR/entry/hnp/arm64-v8a"
+  SIGN_TOOL_JAR="$TOOLCHAIN/sdk/default/openharmony/toolchains/lib/hap-sign-tool.jar"
+  if [ -d "$HNP_SRC_DIR" ] && ls "$HNP_SRC_DIR"/*.hnp >/dev/null 2>&1; then
+    # 优先 unsigned，其次任意非 -signed，最后回退 signed（重签会覆盖旧签名）。
+    UNSIGNED_HAP="$(ls -t "$HAP_DIR"/entry/build/default/outputs/default/*unsigned*.hap 2>/dev/null | head -1 || true)"
+    if [ -z "$UNSIGNED_HAP" ]; then
+      UNSIGNED_HAP="$(ls -t "$HAP_DIR"/entry/build/default/outputs/default/entry-default-*.hap 2>/dev/null | grep -v '\-signed\.hap$' | head -1 || true)"
+    fi
+    if [ -z "$UNSIGNED_HAP" ]; then
+      UNSIGNED_HAP="$(ls -t "$HAP_DIR"/entry/build/default/outputs/default/entry-default-signed.hap 2>/dev/null | head -1 || true)"
+    fi
+    if [ -z "$UNSIGNED_HAP" ]; then
+      echo "[zcoder-ohos-build] ERROR: no HAP found under outputs/default to inject hnp into" >&2
+      exit 1
+    fi
+    PACKED_HAP="${UNSIGNED_HAP%.hap}-packed.hap"
+    echo "[zcoder-ohos-build] inject hnp payloads: $UNSIGNED_HAP -> $PACKED_HAP"
+    python3 - "$UNSIGNED_HAP" "$PACKED_HAP" "$HNP_SRC_DIR" <<'PY'
+import json, os, sys, zipfile
+src, out, tools = sys.argv[1], sys.argv[2], sys.argv[3]
+zin = zipfile.ZipFile(src)
+module_json = json.loads(zin.read("module.json"))
+declared = [h["package"] for h in module_json.get("module", {}).get("hnpPackages", [])]
+with zipfile.ZipFile(out, "w", allowZip64=True) as zout:
+    for info in zin.infolist():
+        zout.writestr(info, zin.read(info.filename))
+    injected = 0
+    for pkg in declared:
+        payload = os.path.join(tools, pkg)
+        if not os.path.isfile(payload):
+            raise SystemExit("declared hnpPackages entry missing payload: " + payload)
+        entry = zipfile.ZipInfo("hnp/arm64-v8a/" + pkg)
+        # Preserve the source file's permission bits (bin/* must stay 0o755),
+        # otherwise the installed ELF is not executable.
+        entry.external_attr = (os.stat(payload).st_mode & 0xFFFF) << 16
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        with open(payload, "rb") as payload_file:
+            zout.writestr(entry, payload_file.read())
+        injected += 1
+zin.close()
+print("injected %d hnp payload(s): %s" % (injected, ", ".join(declared)))
+PY
+    # 签名默认值（env 可覆盖）：证书/Profile/keystore 全部取自 hap/cerfile 的
+    # default_zcoder*（com.zcoder.studio 可签三件套，明文口令见下）。该套是
+    # github/zcoder 拷贝的已验证可装证书；更换签名时覆盖 hap/cerfile 三件套并
+    # 同步更新 OHOS_SIGN_PWD。
+    : "${OHOS_SIGN_CER:="$(ls "$HAP_DIR"/cerfile/*.cer 2>/dev/null | head -1 || true)"}"
+    : "${OHOS_SIGN_P7B:="$(ls "$HAP_DIR"/cerfile/*.p7b 2>/dev/null | head -1 || true)"}"
+    : "${OHOS_SIGN_P12:="${OHOS_SIGN_CER%.cer}.p12"}"
+    : "${OHOS_SIGN_ALIAS:="debugkey"}"
+    : "${OHOS_SIGN_PWD:="mMahnPUzBCojAkQk"}"
+    if [ -z "${OHOS_SIGN_CER:-}" ] || [ -z "${OHOS_SIGN_P7B:-}" ] || [ -z "$OHOS_SIGN_P12" ] || [ -z "$OHOS_SIGN_PWD" ]; then
+      echo "[zcoder-ohos-build] ERROR: OHOS_SIGN_CER / OHOS_SIGN_P7B / OHOS_SIGN_P12 / OHOS_SIGN_PWD 未配齐，无法重签；装配件(未签名): $PACKED_HAP" >&2
+      exit 1
+    fi
+    SIGNED_HAP="${UNSIGNED_HAP%.hap}-signed.hap"
+    echo "[zcoder-ohos-build] sign-app -> $SIGNED_HAP"
+    java -jar "$SIGN_TOOL_JAR" sign-app \
+      -keyAlias "$OHOS_SIGN_ALIAS" -signAlg SHA256withECDSA -mode localSign \
+      -appCertFile "$OHOS_SIGN_CER" -profileFile "$OHOS_SIGN_P7B" -keystoreFile "$OHOS_SIGN_P12" \
+      -inFile "$PACKED_HAP" -outFile "$SIGNED_HAP" \
+      -keyPwd "$OHOS_SIGN_PWD" -keystorePwd "$OHOS_SIGN_PWD" -signCode 1 -profileSigned 1
+    # 稳定产物路径给 install_run.sh（其指向 outputs/default/entry-default-signed.hap）
+    cp -f "$SIGNED_HAP" "$HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
+    echo "[zcoder-ohos-build] INSTALLABLE (with hnp): $HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
+  else
+    echo "[zcoder-ohos-build] WARN: $HNP_SRC_DIR 无 .hnp 载荷，HAP 将不含本机 git/ssh（本地路由会报缺工具）" >&2
+  fi
+
 fi
 
 echo ""

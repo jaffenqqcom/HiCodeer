@@ -273,14 +273,25 @@ impl Client {
                 FileSyncOp::WriteContent { device_path } => {
                     // Stat the device file, then stream its raw content. The
                     // frame is only the header; the body is `len` raw bytes.
-                    let len = std::fs::metadata(&device_path)
-                        .map_err(|err| {
-                            io::Error::new(
+                    let len = match std::fs::metadata(&device_path) {
+                        Ok(meta) => meta.len(),
+                        // The source file vanished after the engine queued it
+                        // (a download tree being replaced in place). Skip it:
+                        // failing the whole batch on one gone file would block
+                        // every other op in the batch forever.
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                            log::info!(
+                                "file sync: source vanished before stat, skipping {device_path}"
+                            );
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 format!("file sync: stat {device_path}: {err}"),
-                            )
-                        })?
-                        .len();
+                            ))
+                        }
+                    };
                     // [diag] record the pushed path+size for sync cross-checking.
                     log::info!(
                         "[diag] file_sync WriteContent(sync_id={sync_id}): {device_path} ({len} bytes)"
@@ -299,14 +310,23 @@ impl Client {
                     // runtime, LSP binaries) are not buffered whole; reads run
                     // on smol::unblock so the executor is never blocked.
                     let open_path = device_path.clone();
-                    let file = smol::unblock(move || std::fs::File::open(&open_path))
-                        .await
-                        .map_err(|err| {
-                            io::Error::new(
+                    let file = match smol::unblock(move || std::fs::File::open(&open_path)).await {
+                        Ok(file) => file,
+                        // Same vanish-after-stat race as above: skip, do not
+                        // fail the batch.
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                            log::info!(
+                                "file sync: source vanished before open, skipping {device_path}"
+                            );
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 format!("file sync: open {device_path}: {err}"),
-                            )
-                        })?;
+                            ))
+                        }
+                    };
                     let file = Arc::new(Mutex::new(file));
                     let mut remaining = len;
                     while remaining > 0 {

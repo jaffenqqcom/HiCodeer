@@ -1808,16 +1808,23 @@ impl OhosWindow {
                             },
                         ));
 
-                        let keystroke = super::keycodes::key_event_to_keystroke(key_event);
-                        let key_down_event = KeyDownEvent {
-                            keystroke: keystroke.clone(),
-                            is_held: false,
-                            prefer_character_input: false,
-                        };
-                        self.dispatch_input(PlatformInput::KeyDown(key_down_event));
-                        // OHOS KeyAction has no Repeat; synthesize auto-repeat with an
-                        // initial delay followed by a periodic is_held key-down.
-                        self.begin_key_repeat(key_event, keystroke);
+                        // Modifier keys only update the modifier state; they are not
+                        // delivered as KeyDown events, matching desktop platforms.
+                        // Delivering a lone Alt as KeyDown (key "alt") would let the
+                        // terminal encode it as ESC+ascii and echo stray characters
+                        // (observed as "lt" in the PTY).
+                        if !Self::is_modifier_key(key_event.code) {
+                            let keystroke = super::keycodes::key_event_to_keystroke(key_event);
+                            let key_down_event = KeyDownEvent {
+                                keystroke: keystroke.clone(),
+                                is_held: false,
+                                prefer_character_input: false,
+                            };
+                            self.dispatch_input(PlatformInput::KeyDown(key_down_event));
+                            // OHOS KeyAction has no Repeat; synthesize auto-repeat with an
+                            // initial delay followed by a periodic is_held key-down.
+                            self.begin_key_repeat(key_event, keystroke);
+                        }
                     }
                     Action::Up => {
                         self.end_key_repeat();

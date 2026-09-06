@@ -33,11 +33,13 @@ const SYNC_NO_ING_TIMEOUT: Duration = Duration::from_millis(1000);
 /// big LSP binaries).
 const SYNC_ING_RENAME_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Device-side application-sandbox file root; the VM mirrors it under the
-/// cmd-agent data directory, so `<this>/...` becomes `$VM_AGENT_ROOT/...`.
+/// Device-side application-sandbox file root; the openEuler side mirrors it
+/// under the cmd-agent data directory, so `<this>/...` becomes
+/// `$VM_AGENT_ROOT/...`.
 const DEVICE_APP_FILES_ROOT: &str = "/data/storage/el2/base/haps/entry/files";
-/// VM-side root that mirrors the device sandbox files (LSP installs, npm
-/// cache, formatter packages all live under `<this>/zed/...`).
+/// openEuler-side root that mirrors the device sandbox downloads (language
+/// server binaries live under `<this>/zcoder/languages/...`; note the `zcoder`
+/// prefix, matching the device `data_dir()` name).
 const VM_AGENT_ROOT: &str = "/home/user/cmd-agent";
 /// Device-side IDE workspace root; the VM shares it at the workspace mount.
 const DEVICE_IDE_ROOT: &str = "/storage/Users/currentUser";
@@ -80,20 +82,15 @@ fn map_path_value(path: &str) -> String {
     path.to_string()
 }
 
-/// Relative names of the sync-mirrored directories under `VM_AGENT_ROOT`.
-/// Device downloads (LSP binaries, node runtime, extensions, AI plugins) land
-/// under these on the device and are mirrored here by the sync engine; a spawn
-/// that maps a device path into one of them may therefore wait for the mirror
-/// instead of failing immediately.
-const SYNC_DIR_RELATIVES: &[&str] = &[
-    "zed/languages",
-    "zed/extensions",
-    "zed/external_agents",
-    "zed/copilot",
-    "zed/prettier",
-    "zed/node",
-    "zed/debug_adapters",
-];
+/// Relative (to `VM_AGENT_ROOT`) names of the sync-mirrored directories.
+/// Only the device language-server binaries (`<files>/zcoder/languages`) are
+/// mirrored, because they are the only device downloads zcoder spawns on the
+/// openEuler side. The prefix must be the device `data_dir()` name `zcoder`
+/// (Rule A maps `<DEVICE_APP_FILES_ROOT>` to `VM_AGENT_ROOT` and keeps the
+/// trailing `zcoder/...`), never the historic `zed/`: a `zed/` prefix here
+/// silently disables the executable-bit fix, the wait-on-sync and the delete
+/// guard below, because real mirrored paths never match it.
+const SYNC_DIR_RELATIVES: &[&str] = &["zcoder/languages"];
 
 /// True when `path` (already VM-side) falls under one of the sync-mirrored
 /// directories. Used to (a) decide whether a missing spawn binary may still be

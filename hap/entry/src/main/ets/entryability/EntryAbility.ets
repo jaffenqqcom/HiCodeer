@@ -6,6 +6,7 @@ import { PinchPlugin } from '@ohos-rs/ability-plugin-pinch';
 import { FileDropPlugin } from '@ohos-rs/ability-plugin-filedrop';
 import { OpenWithPlugin } from '@ohos-rs/ability-plugin-openwith';
 import { ImePlugin } from '@ohos-rs/ability-plugin-ime';
+import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
 import { Want, AbilityConstant } from '@kit.AbilityKit';
 
 // EntryAbility：鸿蒙 Ability 生命周期入口。
@@ -28,6 +29,7 @@ export default class EntryAbility extends NativeAbility {
     new LazyPlugin((): BridgePlugin => new FileDropPlugin()),
     new LazyPlugin((): BridgePlugin => openWith),
     new LazyPlugin((): BridgePlugin => new ImePlugin()),
+    new LazyPlugin((): BridgePlugin => new UrlPlugin()),
   ];
 
   // 冷启动：系统带 want（含要打开的文件 URI）启动。必须先让基类完成会话初始化，

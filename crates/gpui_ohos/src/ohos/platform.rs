@@ -18,6 +18,7 @@ use openharmony_ability_plugin_pinch::PinchBridgePlugin;
 use openharmony_ability_plugin_filedrop::FileDropBridgePlugin;
 use openharmony_ability_plugin_openwith::OpenWithBridgePlugin;
 use openharmony_ability_plugin_ime::ImeBridgePlugin;
+use openharmony_ability_plugin_url::{UrlBridgePlugin, UrlExt};
 
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
@@ -132,6 +133,11 @@ impl OhosPlatform {
         if let Err(error) = app.register_plugin(ImeBridgePlugin) {
             log::error!(
                 "register_plugins: register_plugin(ImeBridgePlugin) failed: {error}"
+            );
+        }
+        if let Err(error) = app.register_plugin(UrlBridgePlugin) {
+            log::error!(
+                "register_plugins: register_plugin(UrlBridgePlugin) failed: {error}"
             );
         }
     }
@@ -543,8 +549,15 @@ impl Platform for OhosPlatform {
     }
 
     fn open_url(&self, url: &str) {
-        // Not supported on OHOS
-        warn!("open_url not supported on OHOS: {}", url);
+        let url = url.to_string();
+        if let Some(app) = self.app.borrow().clone() {
+            self.foreground_executor.spawn(async move {
+                if let Err(e) = app.open_url(url).await {
+                    warn!("open_url failed: {e}");
+                }
+            })
+            .detach();
+        }
     }
 
     fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
