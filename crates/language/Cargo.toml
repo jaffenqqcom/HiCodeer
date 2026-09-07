@@ -13,7 +13,6 @@ path = "src/language.rs"
 doctest = false
 
 [features]
-qemu-agent = ["lsp/qemu-agent"]
 test-support = [
     "rand",
     "collections/test-support",

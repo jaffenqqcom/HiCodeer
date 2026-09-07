@@ -10464,67 +10464,10 @@ pub fn open_workspace_by_id(
 }
 
 #[allow(clippy::type_complexity)]
-/// [ohos + qemu-agent] Mounts every directory among `abs_paths` into the QEMU
-/// guest so git/LSP reach the user's workspace. The QEMU backend exposes a
-/// folder mounter (registered via `command_executor`); the OpenEuler backend
-/// has no mount step (it syncs folders instead), so this is gated to qemu-agent.
-/// Fire-and-forget: opening the workspace must not wait for the mount; failures
-/// only warn. Single files are skipped (per DESIGN only directories are mounted).
-#[cfg(all(target_env = "ohos", feature = "qemu-agent"))]
-async fn mount_opened_dirs(
-    abs_paths: &[PathBuf],
-    app_state: &AppState,
-    cx: &mut AsyncApp,
-) -> anyhow::Result<()> {
-    use command_executor::FolderMounter;
-
-    log::info!(
-        "[diag] mount_opened_dirs: {} paths: {abs_paths:?}",
-        abs_paths.len()
-    );
-    let Some(mounter) = command_executor::mounter() else {
-        log::warn!("open_paths: no folder mounter registered, skipping work-dir mount");
-        return Ok(());
-    };
-    for path in abs_paths {
-        // Re-activate the picker authorization for user-public paths so the
-        // QEMU fsdev can open the real directory (Operation not permitted
-        // otherwise). Sandbox paths and activation failures return unchanged.
-        let authorized = ohos_file_geturi::ensure_root_authorized(&path.to_string_lossy());
-        log::info!("[diag] mount_opened_dirs: considering {path:?} -> {:?}", authorized);
-        let is_dir = app_state
-            .fs
-            .metadata(&authorized)
-            .await
-            .ok()
-            .flatten()
-            .map(|metadata| metadata.is_dir)
-            .unwrap_or(false);
-        if !is_dir {
-            log::info!("[diag] mount_opened_dirs: {path:?} not a dir, skip");
-            continue;
-        }
-        // Synchronous: the caller (Workspace::new_local) waits for the guest
-        // mount to complete so git/LSP run against a folder that exists in the
-        // guest. Bounded by MOUNT_OK_TIMEOUT in run_mount.
-        let path = authorized.to_string_lossy().into_owned();
-        match mounter.mount_folder(&path) {
-            Ok(()) => log::info!("open_paths: mounted work dir {path}"),
-            Err(err) => {
-                log::error!("open_paths: mount work dir {path}: {err}");
-                return Err(anyhow::anyhow!("mount work dir {path}: {err}"));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::type_complexity)]
-/// [ohos + openeuler-agent] The OpenEuler backend syncs folders to the VM
-/// instead of mounting them, so there is no mount step here. This variant is a
-/// no-op kept so the call site at `open_paths` compiles uniformly across
-/// backends.
-#[cfg(all(target_env = "ohos", feature = "openeuler-agent"))]
+/// [ohos] zcoderd runs on the same device as zcoder and shares its filesystem,
+/// so user-opened folders need no guest mount or VM sync. Kept as a no-op so
+/// the call site at `new_local` compiles uniformly.
+#[cfg(target_env = "ohos")]
 async fn mount_opened_dirs(
     _abs_paths: &[PathBuf],
     _app_state: &AppState,

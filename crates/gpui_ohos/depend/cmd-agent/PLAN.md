@@ -23,7 +23,7 @@ zcoder(编辑器，移植到 HarmonyOS NEXT) 因 OHOS 应用沙箱禁止 exec �
 
 **下载与工作目录（用户最初 5 点 #5 与 D3）**
 - zcoderd 默认工作路径/数据根 = `/storage/Users/currentUser/.zcoder`。
-- **只改 LSP 下载**：落到 `.zcoder/languages`；**不改** extensions 等其它下载。下载仍由 zcoder(cmd-client 侧)发起落盘；zcoderd 执行 LSP 时在 `.zcoder/languages` 找它。
+- **只改 LSP 下载**：落到 `.zcoder/languages`；**不改** extensions 等其它下载。下载仍由 zcoder 侧发起落盘；启动 LSP 用 `languages_dir()` 拼绝对路径下发，zcoderd 按绝对路径 exec（不靠 PATH，cmd-client 不注入 PATH）。
 - 与"命令/URI 不映射"是两件事：不映射 = 路径原样传递；改 LSP 下载路径 = 一处语言服务器安装目录常量调整。
 
 ## 目录与构建归属（按 DESIGN §2；zcoderd 不进顶层 cargo workspace）

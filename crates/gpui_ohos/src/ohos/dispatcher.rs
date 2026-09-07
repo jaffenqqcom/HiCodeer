@@ -8,20 +8,49 @@ use crate::{
     PlatformDispatcher, Priority, PriorityQueueSender, RunnableVariant, ThreadTaskTimings,
 };
 use openharmony_ability::{OpenHarmonyTimer, OpenHarmonyWaker};
+use worker_pool::{PoolConfig, PoolPriority, WorkerPool};
+
+/// Thread-name prefix for the background pool; each worker is named `{prefix}-{index}`.
+/// Kept short so the full OS thread name stays readable in hilog / thread dumps.
+const BACKGROUND_THREAD_NAME_PREFIX: &str = "gpui-ohos-bg";
+/// The pool never drops below one worker, so queued work always makes progress.
+const MIN_BACKGROUND_WORKERS: usize = 1;
+/// Cap for the background pool: the UI process stays lean; coarse parallel CPU work is
+/// handled by dedicated executor threads, not this pool.
+const MAX_BACKGROUND_WORKERS: usize = 4;
+
+/// Resident worker count for the background pool: device parallelism clamped into
+/// `MIN..=MAX`, falling back to `MIN` when the value cannot be queried.
+fn background_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|it| it.get().clamp(MIN_BACKGROUND_WORKERS, MAX_BACKGROUND_WORKERS))
+        .unwrap_or(MIN_BACKGROUND_WORKERS)
+}
 
 pub(crate) struct OhosDispatcher {
     main_thread_id: thread::ThreadId,
     main_sender: PriorityQueueSender<RunnableVariant>,
     waker: Arc<Mutex<Option<OpenHarmonyWaker>>>,
+    /// Resident worker pool running off-main-thread background tasks (see `dispatch`).
+    /// Held via `Arc` so the pool's shared state stays alive for the dispatcher's whole
+    /// lifetime; it is drained gracefully only when the dispatcher is dropped.
+    _background_pool: Arc<WorkerPool>,
 }
 
 impl OhosDispatcher {
     pub(crate) fn new(main_sender: PriorityQueueSender<RunnableVariant>) -> Self {
         let waker: Arc<Mutex<Option<OpenHarmonyWaker>>> = Arc::new(Mutex::new(None));
+        // One resident pool, created once and reused for every `dispatch`, replaces the
+        // previous per-task `std::thread::spawn` (mirrors the Linux dispatcher's pool).
+        let background_pool = Arc::new(WorkerPool::new(PoolConfig {
+            thread_name_prefix: BACKGROUND_THREAD_NAME_PREFIX.to_owned(),
+            worker_count: background_worker_count(),
+        }));
         Self {
             main_thread_id: thread::current().id(),
             main_sender,
             waker,
+            _background_pool: background_pool,
         }
     }
 
@@ -58,9 +87,29 @@ impl PlatformDispatcher for OhosDispatcher {
         thread::current().id() == self.main_thread_id
     }
 
-    fn dispatch(&self, runnable: RunnableVariant, _priority: Priority) {
-        // On OHOS, run background tasks off the main thread to avoid UI stalls.
-        std::thread::spawn(move || runnable.run());
+    fn dispatch(&self, runnable: RunnableVariant, priority: Priority) {
+        // Background tasks run on a resident worker pool (threads created once and reused)
+        // instead of spawning a fresh OS thread per task. The pool schedules its three
+        // priority lanes with the same weighted-random draw as the Linux dispatcher, so
+        // runnables keep their gpui priority. RealtimeAudio never reaches `dispatch` in
+        // practice (the executor routes it to `spawn_realtime`); it is handled defensively
+        // on a dedicated thread so it is never silently dropped.
+        let pool_priority = match priority {
+            Priority::High => PoolPriority::High,
+            Priority::Medium => PoolPriority::Medium,
+            Priority::Low => PoolPriority::Low,
+            Priority::RealtimeAudio => {
+                log::error!("dispatch received RealtimeAudio; running on a dedicated thread");
+                thread::spawn(move || runnable.run());
+                return;
+            }
+        };
+        self._background_pool
+            .dispatch_with_priority(pool_priority, move || {
+                // Discard the `bool` returned by `Runnable::run` (async-task reports whether
+                // the future finished); the job closure must evaluate to `()`.
+                runnable.run();
+            });
     }
 
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, priority: Priority) {

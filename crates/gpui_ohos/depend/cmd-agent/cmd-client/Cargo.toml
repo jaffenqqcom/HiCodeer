@@ -1,0 +1,27 @@
+[package]
+name = "cmd-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "SSH client library that talks to the on-device zcoderd command server"
+
+# Pulled in by util and launch-zed as a path dependency (same pattern as the
+# cmd-agent client). Deliberately no [workspace] here: cargo absorbs a path
+# dependency that lives under the workspace root, mirroring cmd-agent.
+[lib]
+name = "cmd_client"
+path = "src/lib.rs"
+
+[dependencies]
+# Same russh configuration as the OpenEuler cmd-agent: ring backend (pure Rust,
+# fast compile) instead of the default aws-lc-rs. This crate only uses the
+# client half, but both modules compile unconditionally in russh.
+russh = { version = "0.55", default-features = false, features = ["ring", "flate2", "rsa"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "process"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+smol = "2"
+
+[dev-dependencies]
+env_logger = "0.11"

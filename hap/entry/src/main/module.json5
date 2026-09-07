@@ -147,19 +147,28 @@
       }
     ],
     // Private HNP native tools: installed to /data/app (private home), only this
-    // HAP may exec them. bundle-ohos injects exactly the packages declared here.
+    // HAP may exec them. zcoderd is a public HNP: it runs on the same device as
+    // a standalone, spawn-capable command server reachable by cmd-client over
+    // loopback SSH. bundle-ohos injects exactly the packages declared here.
+    // NOTE: git.hnp / curl.hnp temporarily unpackaged for a test (2026-09-07);
+    // the .hnp payloads remain in hap/entry/hnp/arm64-v8a/ untouched — restore
+    // by re-adding {"package":"git.hnp","type":"private"} and curl likewise.
     "hnpPackages": [
-      {
-        "package": "git.hnp",
-        "type": "private"
-      },
       {
         "package": "openssh.hnp",
         "type": "private"
       },
       {
+        "package": "git.hnp",
+        "type": "private"
+      },
+      {
         "package": "curl.hnp",
         "type": "private"
+      },
+      {
+        "package": "zcoderd.hnp",
+        "type": "public"
       }
     ]
   }

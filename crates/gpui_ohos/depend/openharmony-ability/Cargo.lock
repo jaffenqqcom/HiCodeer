@@ -607,6 +607,7 @@ dependencies = [
 name = "openharmony-ability-plugin-url"
 version = "1.0.0-beta.1"
 dependencies = [
+ "log",
  "napi-derive-ohos",
  "napi-ohos",
  "openharmony-ability",
@@ -717,3 +718,10 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "worker-pool"
+version = "0.1.0"
+dependencies = [
+ "log",
+]

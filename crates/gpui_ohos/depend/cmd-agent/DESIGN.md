@@ -109,7 +109,7 @@ SshInfo 字段（管理口返回，JSON）：动态命令 host key(公钥) 、�
 ## 10. 下载与工作目录
 
 - zcoderd 默认工作路径/数据根 = `/storage/Users/currentUser/.zcoder`。
-- **只改 LSP 下载**：LSP 应用下载到 `/storage/Users/currentUser/.zcoder/languages`；extensions 等其它下载路径不变。下载仍由 zcoder(cmd-client 侧)发起并落盘，zcoderd 执行 LSP 时在 `.zcoder/languages` 找到它。
+- **只改 LSP 下载**：LSP 下载到 `/storage/Users/currentUser/.zcoder/languages`；extensions 等其它下载路径不变。下载仍由 zcoder 侧发起并落盘；启动 LSP 时 zed 用 `languages_dir()` 拼出**绝对路径**下发，zcoderd 按绝对路径 exec（不靠 PATH：`which` 只查 PATH 目录本身、不递归子目录，cmd-client 不再注入 PATH）。
 - 与"命令/URI 不映射"区别：不映射 = 路径原样；改 LSP 下载路径 = 一处语言服务器安装目录常量调整。
 
 ## 11. 日志

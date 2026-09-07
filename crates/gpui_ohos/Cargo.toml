@@ -45,3 +45,4 @@ openharmony-ability-plugin-filedrop = { path = "depend/openharmony-ability/crate
 openharmony-ability-plugin-openwith = { path = "depend/openharmony-ability/crates/plugin-openwith" }
 openharmony-ability-plugin-ime = { path = "depend/openharmony-ability/crates/plugin-ime" }
 openharmony-ability-plugin-url = { path = "depend/openharmony-ability/crates/plugin-url" }
+worker-pool = { path = "depend/openharmony-ability/crates/worker-pool" }

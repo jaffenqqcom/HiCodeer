@@ -24,12 +24,6 @@ test-support = [
     "gpui/test-support",
     "fs/test-support",
 ]
-# VM command backend selectors (OHOS only). Mirrors util's selectors: the active
-# backend registers the shared `command_executor` mounter/executor. Markers only;
-# the `command-executor` dependency is gated by the target-specific [dependencies].
-openeuler-agent = []
-qemu-agent = []
-
 [dependencies]
 any_vec.workspace = true
 agent_settings.workspace = true
@@ -78,7 +72,6 @@ uuid.workspace = true
 zed_actions.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-command-executor = { path = "../gpui_ohos/depend/command-executor" }
 ohos-file-geturi = { path = "../gpui_ohos/depend/ohos-file-geturi" }
 
 [target.'cfg(target_os = "windows")'.dependencies]

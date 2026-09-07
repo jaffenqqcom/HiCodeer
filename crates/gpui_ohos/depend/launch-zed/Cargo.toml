@@ -11,18 +11,11 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [features]
-# Default backend: the OpenEuler VM cmd-agent path (daemon + business client
-# reaching the VM server over TCP). Exactly one of openeuler-agent / qemu-agent
-# must be enabled; switch with --no-default-features --features qemu-agent.
-default = ["openeuler-agent"]
-# OpenEuler VM backend: cmd-agent daemon + client, requires the VM server.
-openeuler-agent = ["dep:cmd-agent", "dep:cmd-agent-linker", "workspace/openeuler-agent", "util/openeuler-agent"]
-# In-process QEMU backend: dlopen libqemu-system-aarch64.so and boot a Linux
-# guest with virtio-fs shared folders and an SSH command channel. Build with
-# --no-default-features --features qemu-agent to replace the OpenEuler VM.
-qemu-agent = ["dep:qemu-ssh-agent", "dep:qemu-ssh-agent-linker", "zed/qemu-agent", "workspace/qemu-agent", "util/qemu-agent"]
-# Debug-only QEMU diagnostics (stderr/stdout -> hilog); forwarded to qemu-ssh-agent.
-qemu_debug_assertions = ["qemu-ssh-agent/qemu_debug_assertions"]
+# Default backend: the on-device zcoderd command server (public HNP on the same
+# device), reached over loopback SSH through the self-contained cmd-client
+# crate. Replaces the retired openeuler-agent / qemu-agent backends.
+default = ["zcoderd-agent"]
+zcoderd-agent = ["dep:cmd-client"]
 
 [dependencies]
 zed = { path = "../../../zed" }
@@ -30,10 +23,7 @@ workspace = { path = "../../../workspace" }
 gpui_ohos = { path = "../.." }
 openharmony-ability = { path = "../openharmony-ability/crates/ability" }
 openharmony-ability-derive = { path = "../openharmony-ability/crates/derive" }
-cmd-agent = { path = "../ohos-openeuler-agent/cmd-agent", optional = true }
-cmd-agent-linker = { path = "../ohos-openeuler-agent/cmd-agent-linker", optional = true }
-qemu-ssh-agent = { path = "../ohos-qemu-agent/ssh-agent/qemu-ssh-agent", optional = true }
-qemu-ssh-agent-linker = { path = "../ohos-qemu-agent/ssh-agent-linker", optional = true }
+cmd-client = { path = "../cmd-agent/cmd-client", optional = true }
 gpui_ohos_linker.workspace = true
 util = { path = "../../../util" }
 log = "0.4"

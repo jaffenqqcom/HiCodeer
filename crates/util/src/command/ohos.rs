@@ -1,23 +1,23 @@
 //! OHOS command execution - hybrid local/remote.
 //!
 //! HarmonyOS's sandbox forbids `exec` of arbitrary external programs, so most
-//! binaries (LSP servers, node, chmod, ...) run on the VM: `spawn` hands an
-//! [`ExecSpec`](command_executor::ExecSpec) to a registered command executor
-//! (openeuler-agent or qemu-agent) and the returned `Child` carries raw byte
+//! binaries (LSP servers, node, chmod, ...) run through the on-device zcoderd
+//! command server: `spawn` hands an [`ExecSpec`](cmd_client::ExecSpec) to the
+//! registered `cmd-client` executor and the returned `Child` carries raw byte
 //! streams wired to the remote process's stdio.
 //!
 //! Tools found on-device in the private HNP install dir (`/data/app/bin`) are
 //! the exception: they are forked on the device itself via `smol::process`, so
-//! they no longer depend on the VM. The install dir is snapshotted once at
+//! they no longer depend on zcoderd. The install dir is snapshotted once at
 //! startup ([`init_local_tools`]); `spawn` routes a command local when its
-//! basename is in that set and forwards everything else to the VM. Because
+//! basename is in that set and forwards everything else to zcoderd. Because
 //! `/data/app/bin` never changes while the process lives, no per-spawn
 //! directory read is needed. If the set is empty (no HNP shipped), every
-//! command simply runs on the VM.
+//! command simply runs through zcoderd.
 //!
-//! This module depends only on the backend-agnostic [`command_executor`] crate.
-//! It never references a concrete agent linker, so the two backends are
-//! interchangeable and can be switched independently at compile time.
+//! This module depends only on the self-contained `cmd-client` crate, which
+//! carries its own executor contract (`ExecSpec` / `RemoteCommandExecutor`).
+//! It never references a concrete agent or the retired `command-executor` crate.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output};
 use std::sync::{Arc, OnceLock};
 
-use command_executor::{ExecSpec, FdMode, RemoteCommandExecutor, Signal};
+use cmd_client::{ExecSpec, FdMode, RemoteCommandExecutor, Signal};
 use smol::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 /// How a child's standard descriptor is wired.
@@ -92,11 +92,6 @@ pub fn init_local_tools() {
                 }
             }
         }
-        log::info!(
-            "util::command::init_local_tools: {} on-device tool(s): {:?}",
-            names.len(),
-            names
-        );
         names
     });
 }
@@ -208,24 +203,23 @@ pub fn local_tool_status(program: &str) -> LocalToolStatus {
     }
 }
 
-/// Initializes the global remote command executor. The host calls this once
-/// after the active VM backend has registered its executor.
+/// Initializes the global remote command executor. launch-zed calls this once
+/// after it has registered the `cmd-client` executor.
 pub fn init(_socket_path: &str) -> io::Result<()> {
     if executor().is_err() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "cmd-agent executor not registered",
+            "zcoderd executor not registered",
         ));
     }
-    log::info!("util::command::init: executor ready");
     Ok(())
 }
 
 fn executor() -> io::Result<Arc<dyn RemoteCommandExecutor>> {
-    command_executor::executor().ok_or_else(|| {
+    cmd_client::executor().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "cmd-agent executor not initialized",
+            "zcoderd executor not initialized",
         )
     })
 }
@@ -346,27 +340,13 @@ impl Command {
     /// executor. Blocking: the remote handshake (plus the SpawnOk wait)
     /// completes here, so the returned `Child` is immediately usable.
     pub fn spawn(&mut self) -> io::Result<Child> {
-        log::info!(
-            "util::command::spawn: program={:?}, args={:?}, cwd={:?}",
-            self.program,
-            self.args,
-            self.current_dir
-        );
         if local_exec_matches(&self.program) {
-            log::info!(
-                "util::command::spawn: {} routed LOCAL (on-device HNP tool)",
-                self.program.to_string_lossy()
-            );
             // A tool that exists on-device is forced local; a missing binary is
             // an error, never a silent fallback to the VM.
             return spawn_local(self);
         }
         let executor = executor()?;
         let child = executor.spawn(self.build_spec())?;
-        log::info!(
-            "util::command::spawn: session_id={} started",
-            child.session_id
-        );
         Ok(Child {
             stdin: child.stdin,
             stdout: child.stdout,
@@ -466,10 +446,6 @@ fn apply_local_tool_env(command: &mut smol::process::Command, resolved: &Path) {
     if tool_name == "git" {
         let git_core = root.join("libexec").join("git-core");
         if git_core.is_dir() {
-            log::info!(
-                "util::command::apply_local_tool_env: set GIT_EXEC_PATH={}",
-                git_core.display()
-            );
             command.env("GIT_EXEC_PATH", &git_core);
         }
         let templates = root.join("share").join("git-core").join("templates");
@@ -518,12 +494,6 @@ fn spawn_local(command: &Command) -> io::Result<Child> {
     }
     apply_local_tool_env(&mut child_command, &exe);
     child_command.kill_on_drop(command.kill_on_drop);
-    log::info!(
-        "util::command::spawn_local: exec {} args={:?} cwd={:?}",
-        exe.display(),
-        command.args,
-        command.current_dir
-    );
     let mut child = child_command.spawn().map_err(|error| {
         log::error!(
             "util::command::spawn_local: spawn {} failed: {error} (HNP type 'private' may deny \
@@ -532,10 +502,6 @@ fn spawn_local(command: &Command) -> io::Result<Child> {
         );
         io::Error::new(error.kind(), format!("spawn {} failed: {error}", exe.display()))
     })?;
-    log::info!(
-        "util::command::spawn_local: pid={} running (local)",
-        child.id()
-    );
     Ok(Child {
         stdin: child
             .stdin
@@ -635,13 +601,7 @@ impl Child {
                 let executor = executor.clone();
                 let session_id = *session_id;
                 Box::pin(async move {
-                    log::info!(
-                        "util::command::Child::status: session_id={session_id} waiting for exit"
-                    );
                     let exit_code = executor.wait_exit_async(session_id).await?;
-                    log::info!(
-                        "util::command::Child::status: session_id={session_id} exit_code={exit_code:?}"
-                    );
                     Ok(status_from_code(exit_code))
                 })
             }
@@ -656,26 +616,10 @@ impl Child {
     }
 
     pub async fn output(mut self) -> io::Result<Output> {
-        let remote_session = match &self.kind {
-            ChildKind::Remote { session_id, .. } => Some(*session_id),
-            ChildKind::Local { .. } => None,
-        };
-        if let Some(session_id) = remote_session {
-            log::info!(
-                "util::command::Child::output: session_id={session_id} reading output"
-            );
-        }
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         if let Some(mut stdout) = self.stdout.take() {
             stdout.read_to_end(&mut stdout_buf).await?;
-        }
-        // [diag] distinguish a stuck stdout read from a stuck wait_exit.
-        if let Some(session_id) = remote_session {
-            log::info!(
-                "[diag] Child::output: session_id={session_id} stdout read done, stdout_bytes={}",
-                stdout_buf.len()
-            );
         }
         if let Some(mut stderr) = self.stderr.take() {
             stderr.read_to_end(&mut stderr_buf).await?;
@@ -690,23 +634,6 @@ impl Child {
             }
             ChildKind::Local { child } => child.status().await?,
         };
-        // [diag] surface the command's stderr so a fatal message (e.g. git's) is
-        // visible in hilog, bounded to a readable prefix.
-        let stderr_brief: String = String::from_utf8_lossy(&stderr_buf)
-            .chars()
-            .take(300)
-            .collect();
-        if let Some(session_id) = remote_session {
-            log::info!(
-                "util::command::Child::output: session_id={session_id} status={status:?}, stdout_bytes={}, stderr={stderr_brief}",
-                stdout_buf.len()
-            );
-        } else {
-            log::info!(
-                "util::command::Child::output: local status={status:?}, stdout_bytes={}, stderr={stderr_brief}",
-                stdout_buf.len()
-            );
-        }
         Ok(Output {
             status,
             stdout: stdout_buf,
