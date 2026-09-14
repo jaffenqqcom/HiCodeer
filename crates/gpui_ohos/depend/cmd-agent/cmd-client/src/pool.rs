@@ -1,9 +1,9 @@
-//! SSH connection pool to zcoderd's command listener.
+//! SSH connection pool to the daemon's command listener.
 //!
 //! A single multi-threaded tokio runtime is shared by the pool thread and every
 //! command's pump task. A pool thread keeps at least MIN_IDLE ready connections
 //! (each an authenticated russh Handle); `allocate()` pops one with a bounded
-//! wait. When zcoderd restarts, its dynamic keys change and the bootstrap
+//! wait. When the daemon restarts, its dynamic keys change and the bootstrap
 //! swaps the config and clears the ready pool so in-flight commands fail
 //! explicitly and re-establish against the new keys.
 
@@ -19,19 +19,19 @@ use russh::keys::{PrivateKey, PrivateKeyWithHashAlg};
 const MIN_IDLE: usize = 5;
 /// Target maximum idle connections the pool thread fills to.
 const MAX_IDLE: usize = 16;
-/// How long a command waits when the pool has never connected to zcoderd (first
-/// boot, zcoderd not started yet). Bounded and short so a missing zcoderd never
-/// blocks zcoder startup: allocate pokes the bootstrap to connect right now and
+/// How long a command waits when the pool has never connected to the daemon (first
+/// boot, the daemon not started yet). Bounded and short so a missing daemon never
+/// blocks the host application's startup: allocate pokes the bootstrap to connect right now and
 /// only waits this long before failing the command fast.
 const FIRST_CONNECT_BUDGET: Duration = Duration::from_millis(1000);
-/// How long a command waits when the pool was configured before (zcoderd was
-/// reachable) but is momentarily empty (e.g. zcoderd restarted). Fails fast
+/// How long a command waits when the pool was configured before (the daemon was
+/// reachable) but is momentarily empty (e.g. the daemon restarted). Fails fast
 /// rather than stalling the caller.
 const RECONNECT_BUDGET: Duration = Duration::from_secs(3);
 /// After a failed connect, subsequent commands fail immediately for this long
-/// (no point re-waiting for a zcoderd that is down); the background bootstrap
+/// (no point re-waiting for a daemon that is down); the background bootstrap
 /// keeps trying every BOOTSTRAP_INTERVAL and re-configures the pool the moment
-/// zcoderd is back.
+/// the daemon is back.
 const DOWN_COOLDOWN: Duration = Duration::from_secs(5);
 /// Timeout for establishing one SSH connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -41,8 +41,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const ALLOCATE_RETRY: Duration = Duration::from_millis(20);
 
 /// Rejects any host key that does not match the expected one. The expected key
-/// is the zcoderd command host key delivered in this run's `SshInfo`, so a
-/// restarted zcoderd (new key) is rejected and triggers a re-bootstrap.
+/// is the daemon's command host key delivered in this run's `SshInfo`, so a
+/// restarted daemon (new key) is rejected and triggers a re-bootstrap.
 #[derive(Clone)]
 pub struct VerifyHandler {
     pub(crate) expected: PublicKey,
@@ -54,7 +54,7 @@ impl Handler for VerifyHandler {
     async fn check_server_key(&mut self, server_key: &PublicKey) -> Result<bool, Self::Error> {
         let accepted = server_key == &self.expected;
         if !accepted {
-            log::warn!("pool: host key mismatch (zcoderd restarted?), rejecting");
+            log::warn!("pool: host key mismatch (hicodeerd restarted?), rejecting");
         }
         Ok(accepted)
     }
@@ -75,7 +75,7 @@ pub(crate) fn host_public_key(text: &str) -> Result<PublicKey, String> {
     PublicKey::from_openssh(&canonical).map_err(|err| format!("parse host public key: {err}"))
 }
 
-/// Connection parameters for the current zcoderd command SSH server.
+/// Connection parameters for the current daemon command SSH server.
 #[derive(Clone)]
 pub struct ConnConfig {
     pub host: String,
@@ -84,6 +84,9 @@ pub struct ConnConfig {
     pub host_public_pem: String,
     /// OpenSSH text of the command client private key.
     pub private_key_pem: String,
+    /// Identity presented as the SSH user name, naming this client instance to
+    /// the daemon (see `protocol::CLIENT_ID_PREFIX`).
+    pub client_id: String,
 }
 
 /// Shared SSH connection pool.
@@ -125,7 +128,7 @@ impl Pool {
         &self.runtime
     }
 
-    /// Swaps the connection config and clears the ready pool (zcoderd restarted
+    /// Swaps the connection config and clears the ready pool (the daemon restarted
     /// with new dynamic keys).
     pub fn update_config(&self, config: ConnConfig) {
         log::info!(
@@ -151,11 +154,11 @@ impl Pool {
             .clone()
     }
 
-    /// Pops one ready connection. Never blocks zcoder for long: if zcoderd has
+    /// Pops one ready connection. Never blocks the host application for long: if the daemon has
     /// not been reached yet (config is None) or a recent connect failed, fail
     /// the command fast instead of stalling the caller. The bootstrap loop
     /// keeps reconnecting in the background (every BOOTSTRAP_INTERVAL, or
-    /// immediately when poked here), so a command issued right after zcoderd
+    /// immediately when poked here), so a command issued right after the daemon
     /// comes up triggers an on-demand reconnect.
     pub fn allocate(&self) -> std::io::Result<SshSession> {
         let configured = self.config().is_some();
@@ -192,9 +195,9 @@ impl Pool {
                         .unwrap_or_else(|poison| poison.into_inner()) = Some(Instant::now());
                 }
                 let err = if configured {
-                    "zcoderd connection unavailable"
+                    "hicodeerd connection unavailable"
                 } else {
-                    "zcoderd not connected yet (start zcoderd on the device)"
+                    "hicodeerd not connected yet (start hicodeerd on the device)"
                 };
                 log::warn!("cmd-client pool: allocate failed fast: {err}");
                 return Err(std::io::Error::new(std::io::ErrorKind::NotFound, err));
@@ -241,7 +244,7 @@ fn pool_loop(pool: Arc<Pool>) {
     }
 }
 
-/// Keepalive interval for pooled connections: the zcoderd server is configured
+/// Keepalive interval for pooled connections: the server is configured
 /// with no inactivity timeout, so this only guards against intermediate drops.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -269,7 +272,10 @@ async fn connect(config: &ConnConfig) -> Result<SshSession, String> {
     let key = PrivateKey::from_openssh(&config.private_key_pem)
         .map_err(|err| format!("parse client private key: {err}"))?;
     let auth = session
-        .authenticate_publickey("root", PrivateKeyWithHashAlg::new(Arc::new(key), None))
+        .authenticate_publickey(
+            config.client_id.as_str(),
+            PrivateKeyWithHashAlg::new(Arc::new(key), None),
+        )
         .await
         .map_err(|err| format!("publickey auth: {err}"))?;
     if !auth.success() {

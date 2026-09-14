@@ -64,10 +64,12 @@ tendril = "0.4.3"
 windows.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
-# The on-device zcoderd backend (cmd-client) carries its own executor contract
+# The on-device daemon backend (cmd-client) carries its own executor contract
 # (ExecSpec / RemoteCommandExecutor, mirroring the retired command-executor
 # crate) so util no longer depends on command-executor at all.
 cmd-client = { path = "../gpui_ohos/depend/cmd-agent/cmd-client" }
+# Tar extraction with the OHOS sandbox link fallback (see archive.rs).
+async-tar.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

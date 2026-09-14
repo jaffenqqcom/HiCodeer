@@ -4,13 +4,13 @@
       {
         "name": "default",
         "material": {
-          "storePassword": "00000020D0B5EE9AEAAA26A4009FBBED03C07834C4563C4F3B75A24E19B0CB8D490B973CADFA408FFC7689444E70FF18",
-          "certpath": "/storage/Users/currentUser/Documents/ohos/config/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
+          "storePassword": "0000002042A86CF761157D2D640CEB4CAFCA2C153D1E0474EB6B0761FEE7F30F99218508077DEA57839B957B92CC66B8",
+          "certpath": "./cerfile/default_HiCodeernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.cer",
           "keyAlias": "debugKey",
-          "keyPassword": "00000020D0B5EE9AEAAA26A4009FBBED03C07834C4563C4F3B75A24E19B0CB8D490B973CADFA408FFC7689444E70FF18",
-          "profile": "/storage/Users/currentUser/Documents/ohos/config/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
+          "keyPassword": "0000002042A86CF761157D2D640CEB4CAFCA2C153D1E0474EB6B0761FEE7F30F99218508077DEA57839B957B92CC66B8",
+          "profile": "./cerfile/default_HiCodeernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p7b",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "/storage/Users/currentUser/Documents/ohos/config/default_zcodernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"
+          "storeFile": "./cerfile/default_HiCodeernkCqbmyLzwMzQ_1BJFMkQSwqlhp2JhhjdE_1qPLhU_o.p12"
         },
         "type": "HarmonyOS"
       }
@@ -38,7 +38,9 @@
               "arm64-v8a"
             ]
           }
-        }
+        },
+        "bundleName": "com.hicodeer.studio",
+        "signingConfig": "default"
       }
     ],
     "buildModeSet": [

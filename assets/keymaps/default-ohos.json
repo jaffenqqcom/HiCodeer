@@ -1245,7 +1245,7 @@
       "ctrl-shift-c": "terminal::Copy",
       "paste": "terminal::Paste",
       "shift-insert": "terminal::Paste",
-      "ctrl-shift-v": "terminal::Paste",
+      "ctrl-v": "terminal::Paste",
       "ctrl-enter": "assistant::InlineAssist",
       "alt-b": ["terminal::SendText", "\u001bb"],
       "alt-f": ["terminal::SendText", "\u001bf"],

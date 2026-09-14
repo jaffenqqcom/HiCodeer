@@ -1,13 +1,13 @@
-//! End-to-end probe against a running zcoderd (P3 bring-up).
+//! End-to-end probe against a running daemon (P3 bring-up).
 //!
-//! Reads the client half of the management keys from `ZCODERD_KEY_DIR`
+//! Reads the client half of the management keys from `KEY_DIR_ENV`
 //! (mgmt-host.pub + mgmt-client-key), boots a `SshCommandExecutor`, runs
 //! `/bin/echo probe-ok`, prints its stdout and exit status, then runs a
 //! long-lived command that is killed via `signal` to exercise the session
 //! table. Usage:
 //!
 //! ```text
-//! ZCODERD_KEY_DIR=<client-half-dir> cargo run --example probe \
+//! KEY_DIR_ENV=<client-half-dir> cargo run --example probe \
 //!   --manifest-path .../cmd-agent/cmd-client/Cargo.toml
 //! ```
 
@@ -18,7 +18,7 @@ use smol::io::AsyncReadExt as _;
 
 /// Env var pointing at the directory holding the client half of the management
 /// keys.
-const KEY_DIR_ENV: &str = "ZCODERD_KEY_DIR";
+const KEY_DIR_ENV: &str = "HICODEERD_KEY_DIR";
 /// Management host public key file (client half, pair A).
 const MGMT_HOST_PUB_FILE: &str = "mgmt-host.pub";
 /// Management client private key file (client half, pair B).
@@ -40,7 +40,9 @@ fn main() {
     let host_pub = read_file(&format!("{key_dir}/{MGMT_HOST_PUB_FILE}"));
     let client_key = read_file(&format!("{key_dir}/{MGMT_CLIENT_KEY_FILE}"));
 
-    let executor = SshCommandExecutor::new(client_key, host_pub).expect("executor");
+    let executor =
+        SshCommandExecutor::new(cmd_client::CommandEndpoint::ohos_default(), client_key, host_pub)
+            .expect("executor");
     let executor = std::sync::Arc::new(executor);
 
     smol::block_on(async {

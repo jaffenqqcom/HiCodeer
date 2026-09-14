@@ -10,7 +10,7 @@ use futures::{
 use gpui::AsyncApp;
 
 use util::TryFutureExt as _;
-use util::process::Child;
+use util::process::{Child, Stdio};
 use util::shell::Shell;
 use util::shell_builder::ShellBuilder;
 
@@ -42,9 +42,9 @@ impl StdioTransport {
 
         let mut server = Child::spawn(
             command,
-            std::process::Stdio::piped(),
-            std::process::Stdio::piped(),
-            std::process::Stdio::piped(),
+            Stdio::piped(),
+            Stdio::piped(),
+            Stdio::piped(),
         )?;
 
         let stdin = server.stdin.take().unwrap();

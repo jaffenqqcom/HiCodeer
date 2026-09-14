@@ -57,6 +57,10 @@ pub(crate) struct OhosPlatform {
     /// opened through Zed's normal workspace path rather than the drag-and-drop state
     /// machine (which requires an element drop target under the pointer).
     open_urls_callback: Rc<RefCell<Option<Box<dyn FnMut(Vec<String>)>>>>,
+    /// Whether a system file dialog is already pending. The system picker is not a
+    /// gpui modal, so nothing upstream keeps a second request out while the first
+    /// is still open; each extra request would launch another UIExtension.
+    path_prompt_busy: Rc<Cell<bool>>,
 }
 
 impl OhosPlatform {
@@ -81,6 +85,7 @@ impl OhosPlatform {
             menus: Rc::new(RefCell::new(Vec::new())),
             pending_open_with: Rc::new(RefCell::new(Vec::new())),
             open_urls_callback: Rc::new(RefCell::new(None)),
+            path_prompt_busy: Rc::new(Cell::new(false)),
         };
         // The ArkTS host provides the OpenHarmonyApp on the main thread before this
         // platform is constructed; own it from creation, mirroring how MacPlatform /
@@ -331,6 +336,7 @@ impl Clone for OhosPlatform {
             menus: self.menus.clone(),
             pending_open_with: self.pending_open_with.clone(),
             open_urls_callback: self.open_urls_callback.clone(),
+            path_prompt_busy: self.path_prompt_busy.clone(),
         }
     }
 }
@@ -580,6 +586,11 @@ impl Platform for OhosPlatform {
             tx.send(Ok(None)).ok();
             return rx;
         };
+        if self.path_prompt_busy.replace(true) {
+            tx.send(Ok(None)).ok();
+            return rx;
+        }
+        let busy = self.path_prompt_busy.clone();
         // GPUI PathPromptOptions -> OHOS dialog mapping:
         //   directories=true -> open-folder picker (DocumentSelectMode.FOLDER)
         //   directories=false -> open-file picker (DocumentSelectMode.FILE)
@@ -614,6 +625,7 @@ impl Platform for OhosPlatform {
                     tx.send(Err(anyhow::anyhow!("file dialog failed: {error}"))).ok();
                 }
             }
+            busy.set(false);
         })
         .detach();
         rx
@@ -629,6 +641,11 @@ impl Platform for OhosPlatform {
             tx.send(Ok(None)).ok();
             return rx;
         };
+        if self.path_prompt_busy.replace(true) {
+            tx.send(Ok(None)).ok();
+            return rx;
+        }
+        let busy = self.path_prompt_busy.clone();
         let mut dialog_options = FileDialogOptions::new(dialog_type::SAVE_FILE);
         if let Some(name) = suggested_name {
             dialog_options = dialog_options.default_location(name);
@@ -643,6 +660,7 @@ impl Platform for OhosPlatform {
                     tx.send(Err(anyhow::anyhow!("save dialog failed: {error}"))).ok();
                 }
             }
+            busy.set(false);
         })
         .detach();
         rx

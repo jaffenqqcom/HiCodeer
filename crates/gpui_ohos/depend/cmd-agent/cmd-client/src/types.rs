@@ -14,6 +14,8 @@ use std::pin::Pin;
 
 use smol::io::{AsyncRead, AsyncWrite};
 
+use crate::pty::RemotePty;
+
 /// How one of the child's standard descriptors is wired on the server side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FdMode {
@@ -34,7 +36,7 @@ pub enum Signal {
 }
 
 impl Signal {
-    /// POSIX signal number used on the wire (`__zcoderd_signal__ <sid> <code>`).
+    /// POSIX signal number used on the wire (`SIGNAL_PREFIX <sid> <code>`).
     pub fn code(self) -> i32 {
         match self {
             Signal::SigInterrupt => 2,
@@ -46,7 +48,7 @@ impl Signal {
 
 /// One execution request: spawn a binary with argv and stream its stdio.
 ///
-/// Paths are passed through verbatim: zcoderd runs on the same device as zcoder
+/// Paths are passed through verbatim: the daemon runs on the same device as the host application
 /// and sees the same filesystem, so no path mapping is applied.
 #[derive(Debug, Clone)]
 pub struct ExecSpec {
@@ -79,15 +81,23 @@ impl ExecSpec {
 }
 
 /// A spawned remote process: session id plus the three stdio streams.
+///
+/// The streams are `Sync` in addition to `Send`: the caller that owns them
+/// (`util::command::Child`, aliased by `util::process::Child` on OHOS) is stored
+/// in `Send + Sync` containers, and the concrete streams are smol
+/// `Async<UnixStream>`, which already satisfy both.
 pub struct RemoteChild {
     pub session_id: u64,
-    pub stdin: Option<Box<dyn AsyncWrite + Unpin + Send>>,
-    pub stdout: Option<Box<dyn AsyncRead + Unpin + Send>>,
-    pub stderr: Option<Box<dyn AsyncRead + Unpin + Send>>,
+    pub stdin: Option<Box<dyn AsyncWrite + Unpin + Send + Sync>>,
+    pub stdout: Option<Box<dyn AsyncRead + Unpin + Send + Sync>>,
+    pub stderr: Option<Box<dyn AsyncRead + Unpin + Send + Sync>>,
 }
 
 /// Boxed async exit-status future returned by the executor.
 pub type ExitFuture<'a> = Pin<Box<dyn Future<Output = io::Result<Option<i32>>> + Send + 'a>>;
+
+/// Boxed future resolving to an interactive shell session on the backend pty.
+pub type ShellPtyFuture<'a> = Pin<Box<dyn Future<Output = io::Result<RemotePty>> + Send + 'a>>;
 
 /// Remote command execution behind a stable interface. `cmd-client` registers
 /// itself through [`super::init_executor`] at startup.
@@ -96,4 +106,22 @@ pub trait RemoteCommandExecutor: Send + Sync {
     fn signal(&self, session_id: u64, signal: Signal) -> io::Result<()>;
     fn try_exit(&self, session_id: u64) -> Option<Option<i32>>;
     fn wait_exit_async(&self, session_id: u64) -> ExitFuture<'_>;
+
+    /// Opens an interactive shell on the backend pty, starting in `cwd` when
+    /// that directory exists there. Backends without interactive-shell support
+    /// return `ErrorKind::Unsupported`, so the caller can fall back to a local
+    /// shell instead of failing the terminal.
+    fn open_shell_pty<'a>(
+        &self,
+        _cols: u32,
+        _rows: u32,
+        _cwd: Option<&'a str>,
+    ) -> ShellPtyFuture<'a> {
+        Box::pin(async {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "backend does not support interactive shells",
+            ))
+        })
+    }
 }

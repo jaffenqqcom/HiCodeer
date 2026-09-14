@@ -810,9 +810,15 @@ impl LanguageRegistry {
         self.state.write().next_language_server_id()
     }
 
+    /// Returns the directory under which language servers are downloaded.
+    ///
+    /// Falls back to `paths::languages_dir()` when no explicit dir was set, so
+    /// the value is resolved at call time.
     pub fn language_server_download_dir(&self, name: &LanguageServerName) -> Option<Arc<Path>> {
         self.language_server_download_dir
             .as_ref()
+            .map(|dir| dir.as_ref())
+            .or(Some(paths::languages_dir().as_path()))
             .map(|dir| Arc::from(dir.join(name.0.as_ref())))
     }
 

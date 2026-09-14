@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "Pinch gesture bridge plugin facade for openharmony-ability"
 
 [dependencies]
-# Explicit path/version deps instead of `workspace = true`: this crate is consumed by the zcoder
+# Explicit path/version deps instead of `workspace = true`: this crate is consumed by the host application
 # workspace (which does not define the openharmony-ability workspace dependencies), so workspace
 # inheritance cannot resolve here.
 openharmony-ability = { path = "../ability" }

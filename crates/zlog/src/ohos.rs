@@ -26,9 +26,9 @@ const LOG_LEVEL_WARN: i32 = 5;
 const LOG_LEVEL_ERROR: i32 = 6;
 
 /// 应用服务域名，0x0001 起可自定义。
-const ZCODER_DOMAIN: u32 = 0x0001;
+const HILOG_DOMAIN: u32 = 0x0001;
 /// hilog tag（31 字节以内），用于在设备日志里按应用聚合。
-const ZCODER_TAG: &CStr = c"Zcoder";
+const HILOG_TAG: &CStr = c"HiCodeer";
 /// 消息格式串：整条消息作为 public 参数明文投递。
 const HILOG_FORMAT: &CStr = c"%{public}s";
 
@@ -61,8 +61,8 @@ pub fn submit_to_hilog(record: &Record) {
         OH_LOG_Print(
             LOG_APP,
             hi_log_level,
-            ZCODER_DOMAIN,
-            ZCODER_TAG.as_ptr(),
+            HILOG_DOMAIN,
+            HILOG_TAG.as_ptr(),
             HILOG_FORMAT.as_ptr(),
             msg_cstr.as_ptr(),
         );
@@ -85,13 +85,13 @@ fn ohos_log_level(level: log::Level) -> i32 {
 /// - `direct_hilog_info` 出现、`log::info!()` 不出现 → 重定向未生效
 /// - `direct_hilog_info` 也不出现 → hilog NDK 链接或 `OH_LOG_Print` FFI 本身有问题
 pub fn direct_hilog_info(tag: &str, message: &str) {
-    let tag_cstr = CString::new(tag).unwrap_or_else(|_| CString::new("Zcoder").unwrap());
+    let tag_cstr = CString::new(tag).unwrap_or_else(|_| CString::new("HiCodeer").unwrap());
     let msg_cstr = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
     unsafe {
         OH_LOG_Print(
             LOG_APP,
             LOG_LEVEL_INFO,
-            ZCODER_DOMAIN,
+            HILOG_DOMAIN,
             tag_cstr.as_ptr(),
             HILOG_FORMAT.as_ptr(),
             msg_cstr.as_ptr(),

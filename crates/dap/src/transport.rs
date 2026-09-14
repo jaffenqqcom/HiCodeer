@@ -19,12 +19,12 @@ use smol::{
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    process::Stdio,
     sync::Arc,
     time::Duration,
 };
 use task::TcpArgumentsTemplate;
-use util::{ConnectionResult, ResultExt, process::Child};
+use util::process::{Child, Stdio};
+use util::{ConnectionResult, ResultExt};
 
 use crate::{
     adapters::{DebugAdapterBinary, TcpArguments},

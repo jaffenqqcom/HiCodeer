@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_compression::futures::bufread::GzipDecoder;
+#[cfg(not(target_env = "ohos"))]
 use async_tar::Archive;
 use chrono::{DateTime, Utc};
 use futures::{AsyncReadExt, FutureExt as _, channel::oneshot, future::Shared};
@@ -610,8 +611,14 @@ impl ManagedNodeRuntime {
     #[cfg(windows)]
     const NODE_PATH: &str = "node.exe";
 
-    #[cfg(not(windows))]
+    // OHOS has no symlink support, so the tar unpack fallback copies `bin/npm`
+    // (a symlink to ../lib/node_modules/npm/bin/npm-cli.js upstream) as a plain
+    // file. That breaks npm-cli.js' relative `require('../lib/cli.js')`, so we
+    // point straight at the real CLI file, mirroring the Windows layout.
+    #[cfg(all(not(windows), not(target_env = "ohos")))]
     const NPM_PATH: &str = "bin/npm";
+    #[cfg(all(not(windows), target_env = "ohos"))]
+    const NPM_PATH: &str = "lib/node_modules/npm/bin/npm-cli.js";
     #[cfg(windows)]
     const NPM_PATH: &str = "node_modules/npm/bin/npm-cli.js";
 
@@ -709,8 +716,27 @@ impl ManagedNodeRuntime {
             match archive_type {
                 ArchiveType::TarGz => {
                     let decompressed_bytes = GzipDecoder::new(BufReader::new(response.body_mut()));
-                    let archive = Archive::new(decompressed_bytes);
-                    archive.unpack(&node_containing_dir).await?;
+                    // The OHOS app sandbox denies symlink(2)/hard_link(2), so
+                    // the plain unpack would abort on the node distribution's
+                    // bin/npm & bin/npx link entries. Route through the shared
+                    // extractor that materializes denied links as real copies.
+                    #[cfg(target_env = "ohos")]
+                    {
+                        let archive = async_tar::ArchiveBuilder::new(decompressed_bytes)
+                            .set_preserve_mtime(false)
+                            .build();
+                        util::archive::unpack_tar_ohos(
+                            archive,
+                            &node_containing_dir,
+                            &url,
+                        )
+                        .await?;
+                    }
+                    #[cfg(not(target_env = "ohos"))]
+                    {
+                        let archive = Archive::new(decompressed_bytes);
+                        archive.unpack(&node_containing_dir).await?;
+                    }
                 }
                 ArchiveType::Zip => extract_zip(&node_containing_dir, body).await?,
             }

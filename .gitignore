@@ -68,9 +68,12 @@ hap/entry/libs
 # WorkBuddy workspace data
 **/.workbuddy
 
-# Guest toolchain shipped as a single compressed archive (tools.tar.zst);
-# the unpacked tree and the HAP resfile (build artifacts) are not tracked.
-crates/gpui_ohos/depend/ohos-qemu-agent/images/tools/
-hap/entry/src/main/resources/resfile/
+# The HAP resfile is populated by bundle-ohos at build time (guest kernel
+# Image, golden.qcow2, guest daemon, per-build management keys). Only the CA
+# bundle is a checked-in source; everything else is a build artifact.
+hap/entry/src/main/resources/resfile/*
+!hap/entry/src/main/resources/resfile/ca-bundle.crt
 build/
 Cargo.lock
+hap/cerfile/
+

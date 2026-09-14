@@ -32,6 +32,9 @@ pub struct AbilityInitContext {
     pub pref_path: Option<String>,
     pub preferred_locales: Option<String>,
     pub module_name: Option<String>,
+    /// Home directory (`<picked root>/HiCodeer`) resolved by the ets side before
+    /// the native module loaded. Empty/absent means no directory was chosen.
+    pub home_directory: Option<String>,
 }
 
 impl AbilityInitContext {
@@ -45,6 +48,7 @@ impl AbilityInitContext {
             pref_path: context.get("prefPath")?,
             preferred_locales: context.get("preferredLocales")?,
             module_name: context.get("moduleName")?,
+            home_directory: context.get("homeDirectory")?,
         })
     }
 }
@@ -425,6 +429,11 @@ impl OpenHarmonyApp {
 
     pub fn base_path(&self) -> Option<String> {
         self.init_context().base_path
+    }
+
+    /// The home directory the ets side resolved before the native module loaded.
+    pub fn home_directory(&self) -> Option<String> {
+        self.init_context().home_directory
     }
 
     pub fn pref_path(&self) -> Option<String> {

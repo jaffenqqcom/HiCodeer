@@ -1,19 +1,22 @@
 //! OHOS command execution - hybrid local/remote.
 //!
 //! HarmonyOS's sandbox forbids `exec` of arbitrary external programs, so most
-//! binaries (LSP servers, node, chmod, ...) run through the on-device zcoderd
+//! binaries (LSP servers, node, chmod, ...) run through the on-device daemon
 //! command server: `spawn` hands an [`ExecSpec`](cmd_client::ExecSpec) to the
 //! registered `cmd-client` executor and the returned `Child` carries raw byte
-//! streams wired to the remote process's stdio.
+//! streams wired to the remote process's stdio. A remote child starts from the
+//! daemon's own environment: none of the caller's variables travel, because the
+//! two run under different uids and a caller's value can point inside its
+//! private sandbox. Only a local child receives the caller's overrides.
 //!
 //! Tools found on-device in the private HNP install dir (`/data/app/bin`) are
 //! the exception: they are forked on the device itself via `smol::process`, so
-//! they no longer depend on zcoderd. The install dir is snapshotted once at
+//! they no longer depend on the daemon. The install dir is snapshotted once at
 //! startup ([`init_local_tools`]); `spawn` routes a command local when its
-//! basename is in that set and forwards everything else to zcoderd. Because
+//! basename is in that set and forwards everything else to the daemon. Because
 //! `/data/app/bin` never changes while the process lives, no per-spawn
 //! directory read is needed. If the set is empty (no HNP shipped), every
-//! command simply runs through zcoderd.
+//! command simply runs through the daemon.
 //!
 //! This module depends only on the self-contained `cmd-client` crate, which
 //! carries its own executor contract (`ExecSpec` / `RemoteCommandExecutor`).
@@ -209,7 +212,7 @@ pub fn init(_socket_path: &str) -> io::Result<()> {
     if executor().is_err() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "zcoderd executor not registered",
+            "hicodeerd executor not registered",
         ));
     }
     Ok(())
@@ -219,7 +222,7 @@ fn executor() -> io::Result<Arc<dyn RemoteCommandExecutor>> {
     cmd_client::executor().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "zcoderd executor not initialized",
+            "hicodeerd executor not initialized",
         )
     })
 }
@@ -271,6 +274,9 @@ impl Command {
         self.args.iter().map(|arg| arg.as_os_str())
     }
 
+    /// Records an override for the child. Honoured only when the child runs on
+    /// this device; a remote child starts from the daemon's environment instead
+    /// (see `build_spec`).
     pub fn env(&mut self, key: impl AsRef<OsStr>, val: impl AsRef<OsStr>) -> &mut Self {
         self.envs
             .insert(key.as_ref().to_owned(), Some(val.as_ref().to_owned()));
@@ -335,6 +341,31 @@ impl Command {
         self.program.as_os_str()
     }
 
+    /// Rebuild a routable command from an already-built `std::process::Command`,
+    /// copying program, arguments, working directory and the per-variable
+    /// environment overrides. `env_clear` is deliberately not recovered: std
+    /// exposes no getter for it, so a cleared environment is indistinguishable
+    /// from an untouched one, and guessing wrong would silently leak the
+    /// caller's environment into the child.
+    pub fn from_std(std_command: std::process::Command) -> Self {
+        let mut command = Self::new(std_command.get_program());
+        command.args(std_command.get_args());
+        if let Some(dir) = std_command.get_current_dir() {
+            command.current_dir(dir);
+        }
+        for (key, value) in std_command.get_envs() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+        command
+    }
+
     /// Spawns the command. Tools snapshotted as on-device (git/ssh/curl)
     /// fork on the device itself; everything else is spawned through the VM
     /// executor. Blocking: the remote handshake (plus the SpawnOk wait)
@@ -381,17 +412,12 @@ impl Command {
             .current_dir
             .as_ref()
             .map(|dir| dir.to_string_lossy().into_owned());
-        // Remote commands inherit the VM's default environment; only explicit
-        // overrides travel in the spec. `env_remove` has no VM-side deletion
-        // mechanism, so it is approximated by leaving the variable inherited.
-        if !self.env_clear {
-            for (key, maybe_val) in &self.envs {
-                if let Some(val) = maybe_val {
-                    spec.env
-                        .insert(key.to_string_lossy().into_owned(), val.to_string_lossy().into_owned());
-                }
-            }
-        }
+        // A remote command carries no environment: it starts from whatever the
+        // daemon itself was launched with. The two run under different uids, so
+        // the caller's own environment can name roots that only resolve inside
+        // its sandbox, and forwarding those would hand the child a path it
+        // cannot open. Explicit overrides are honoured only where the child runs
+        // on this device -- see `spawn_local`.
         spec.stdin_mode = fd_mode(self.stdin_cfg);
         spec.stdout_mode = fd_mode(self.stdout_cfg);
         spec.stderr_mode = fd_mode(self.stderr_cfg);
@@ -506,15 +532,15 @@ fn spawn_local(command: &Command) -> io::Result<Child> {
         stdin: child
             .stdin
             .take()
-            .map(|stream| Box::new(stream) as Box<dyn AsyncWrite + Unpin + Send>),
+            .map(|stream| Box::new(stream) as Box<dyn AsyncWrite + Unpin + Send + Sync>),
         stdout: child
             .stdout
             .take()
-            .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Unpin + Send>),
+            .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Unpin + Send + Sync>),
         stderr: child
             .stderr
             .take()
-            .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Unpin + Send>),
+            .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Unpin + Send + Sync>),
         kind: ChildKind::Local { child },
         kill_on_drop: command.kill_on_drop,
     })
@@ -532,10 +558,14 @@ enum ChildKind {
     },
 }
 
+// The streams are `Sync` as well as `Send` because `util::process::Child`
+// aliases this type on OHOS and its callers require `Send + Sync` (e.g.
+// `context_server::Transport`); the concrete streams behind them (smol
+// `Async<..>`) already satisfy both.
 pub struct Child {
-    pub stdin: Option<Box<dyn AsyncWrite + Unpin + Send>>,
-    pub stdout: Option<Box<dyn AsyncRead + Unpin + Send>>,
-    pub stderr: Option<Box<dyn AsyncRead + Unpin + Send>>,
+    pub stdin: Option<Box<dyn AsyncWrite + Unpin + Send + Sync>>,
+    pub stdout: Option<Box<dyn AsyncRead + Unpin + Send + Sync>>,
+    pub stderr: Option<Box<dyn AsyncRead + Unpin + Send + Sync>>,
     kill_on_drop: bool,
     kind: ChildKind,
 }
@@ -640,6 +670,23 @@ impl Child {
             stderr: stderr_buf,
         })
     }
+
+    /// Spawn a process from an already-built `std::process::Command`, routing it
+    /// exactly like [`Command::spawn`]: an on-device HNP tool forks locally,
+    /// everything else is forwarded to the daemon. This is the entry point for
+    /// callers that hold a plain std command they did not build through
+    /// [`Command`] (the shared `util::process` call sites), so the sandbox
+    /// workaround stays in one place instead of being repeated per caller.
+    pub fn spawn(
+        std_command: std::process::Command,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> io::Result<Child> {
+        let mut command = Command::from_std(std_command);
+        command.stdin(stdin).stdout(stdout).stderr(stderr);
+        command.spawn()
+    }
 }
 
 impl Drop for Child {
@@ -664,5 +711,39 @@ fn status_from_code(exit_code: Option<i32>) -> ExitStatus {
         Some(code) => ExitStatus::from_raw(code << 8),
         // Terminated by a signal; approximate with a non-successful status.
         None => ExitStatus::from_raw(128 << 8),
+    }
+}
+
+/// An interactive shell session on the command backend's pty.
+pub use cmd_client::RemotePty as RemoteShell;
+// Re-exported so callers that host a remote shell (crates/terminal) can forward
+// window resizes from a thread that does not own the session.
+pub use cmd_client::ResizeHandle;
+
+/// Opens an interactive shell on the registered command backend - the OHOS
+/// the daemon or the QEMU guest daemon, whichever the launch layer selected.
+/// The shell starts in `cwd` when that directory exists on the backend.
+///
+/// Returns `NotFound` when no backend is registered and `Unsupported` when the
+/// backend cannot serve a pty, so the terminal can fall back to a local shell
+/// instead of failing to open.
+pub async fn open_remote_shell(
+    cols: u32,
+    rows: u32,
+    cwd: Option<&str>,
+) -> io::Result<RemoteShell> {
+    log::info!("util::command::open_remote_shell: cols={cols} rows={rows} cwd={cwd:?}");
+    let executor = cmd_client::executor().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "no command backend registered")
+    })?;
+    match executor.open_shell_pty(cols, rows, cwd).await {
+        Ok(shell) => {
+            log::info!("util::command::open_remote_shell: interactive shell opened");
+            Ok(shell)
+        }
+        Err(err) => {
+            log::warn!("util::command::open_remote_shell: backend has no shell: {err}");
+            Err(err)
+        }
     }
 }

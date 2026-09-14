@@ -273,7 +273,7 @@ impl Onboarding {
         })
     }
 
-    fn on_finish(_: &Finish, _: &mut Window, cx: &mut App) {
+    fn on_finish(_: &Finish, _window: &mut Window, cx: &mut App) {
         telemetry::event!("Finish Setup");
         go_to_welcome_page(cx);
     }

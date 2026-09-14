@@ -1,0 +1,33 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The guest root filesystem ships busybox and (being Alpine) already has the
+# per-applet symlinks, so `mount` and `ip` normally resolve without help. Keep
+# the install step as a guard for a rootfs that was pruned: without `mount` the
+# sandbox virtiofs never mounts and the daemon never starts.
+if ! command -v mount >/dev/null 2>&1; then
+    for bb in /bin/busybox /usr/bin/busybox /usr/sbin/busybox; do
+        if [ -x "$bb" ]; then
+            "$bb" --install -s /usr/sbin 2>/dev/null
+            break
+        fi
+    done
+fi
+# Bring up the slirp user-mode NIC. QEMU slirp hands the guest a 10.0.2.0/24
+# network; the host reaches the guest daemon through the static hostfwd rules
+# (host 4122/4123 -> guest 4022/4023), which only work once eth0 is up and has
+# its 10.0.2.15 address. Without this the daemon SSH listeners bind but are
+# unreachable from the host.
+# `ip` is the busybox applet; the ifconfig/route pair covers a busybox built
+# without the `ip` applet.
+if command -v ip >/dev/null 2>&1; then
+    ip link set eth0 up 2>/dev/null
+    ip addr add 10.0.2.15/24 dev eth0 2>/dev/null
+    ip route add default via 10.0.2.2 dev eth0 2>/dev/null
+else
+    ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
+    route add default gw 10.0.2.2 eth0 2>/dev/null
+fi
+for i in /usr/lib/qemu-init/S??*; do
+  [ -f "$i" ] || continue
+  "$i" start
+done

@@ -1,0 +1,31 @@
+[package]
+name = "qemu-manager"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "In-process QEMU manager for HarmonyOS NEXT: boot the guest and manage virtio-fs mounts (no SSH / command execution)"
+
+[lib]
+name = "qemu_manager"
+path = "src/lib.rs"
+
+[features]
+# Debug-only diagnostics: forward QEMU stderr (engine errors) and stdout (guest
+# serial console) into hilog. bundle-ohos enables this for debug builds.
+qemu_debug_assertions = []
+
+[dependencies]
+libc = "0.2"
+log = "0.4"
+serde_json = "1"
+zlog = { path = "../../../../zlog" }
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+# virtio-fs backend daemon embedded in-process. Only built for OHOS; other
+# platforms keep compiling without the vhost-user stack. The
+# vhost/vhost-user-backend/vm-memory versions are pinned to match what
+# virtiofsd resolves, so cargo does not build a second copy.
+virtiofsd = { workspace = true }
+vhost = "0.16"
+vhost-user-backend = "0.22"
+vm-memory = "0.17.1"

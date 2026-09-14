@@ -26,4 +26,5 @@ export type {
   MainThreadSyncBridgePlugin,
 } from "./src/main/ets/ability/type";
 export { DefaultXComponent } from "./src/main/ets/components/DefaultXComponent";
+export { RouteName as MainPageRouteName } from "./src/main/ets/components/MainPage";
 export { invokeNativeBackPressInterceptor } from "./src/main/ets/runtime/BackPress";

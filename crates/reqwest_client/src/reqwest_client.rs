@@ -33,7 +33,7 @@ impl ReqwestClient {
     fn builder(read_timeout: Option<Duration>) -> reqwest::ClientBuilder {
         let builder = reqwest::Client::builder()
             .use_rustls_tls()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(30))
             // Detect and drop connections that have silently gone bad on a
             // flaky path (NAT timeouts, resets) instead of reusing them. A
             // stale reused HTTP/2 connection is a common source of

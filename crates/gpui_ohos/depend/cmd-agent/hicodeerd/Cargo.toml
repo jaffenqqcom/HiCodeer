@@ -1,0 +1,27 @@
+[package]
+name = "hicodeerd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "On-device command server for the HiCodeer host application (russh SSH, HarmonyOS)"
+
+# Standalone crate: NOT a member of the top-level workspace. Declaring an empty
+# [workspace] here stops cargo from searching upward into the repository workspace,
+# so this crate resolves independently (same pattern as cmd-agentd).
+[workspace]
+
+[[bin]]
+name = "hicodeerd"
+path = "src/main.rs"
+
+[dependencies]
+# Same russh configuration as the OpenEuler cmd-agent: ring backend (pure Rust,
+# fast compile) instead of the default aws-lc-rs. Serves both the dynamic
+# command SSH listener and the fixed-key management listener.
+russh = { version = "0.55", default-features = false, features = ["ring", "flate2", "rsa"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "process"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+libc = "0.2"
+rand_core = "0.6"

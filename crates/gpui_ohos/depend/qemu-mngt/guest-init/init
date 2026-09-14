@@ -1,0 +1,17 @@
+#!/bin/sh
+# PID-1 init for the guest disk system. Runs the qemu-init rc scripts (mount
+# virt, mount the shared sandbox, start the daemon), then parks forever so the
+# guest keeps running (the embedded QEMU engine must never exit the machine).
+#
+# The kernel command line passes `init=/usr/lib/qemu-init/init`, so the root
+# filesystem's own /init never runs: no busybox /sbin/init, no OpenRC, no
+# getty, and no `hostshare` 9p mount from /etc/fstab. Everything the guest
+# needs at boot is done by the scripts below.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+if [ -x /usr/lib/qemu-init/rcS ]; then
+    /usr/lib/qemu-init/rcS
+fi
+# PID 1 must not exit, or the kernel panics and the machine stops.
+while :; do
+    sleep 3600
+done

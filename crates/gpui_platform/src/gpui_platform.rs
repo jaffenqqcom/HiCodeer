@@ -103,8 +103,8 @@ pub fn current_headless_renderer() -> Option<Box<dyn gpui::PlatformHeadlessRende
 }
 
 /// Platform information about the VM that OHOS commands run on. Distinct from
-/// the device's own platform (`current_platform`): on zcoder the device
-/// sandbox cannot execute binaries, so commands run on a paired VM, and
+/// the device's own platform (`current_platform`): on this platform the
+/// device sandbox cannot execute binaries, so commands run on a paired VM, and
 /// downloads must be built for the VM's architecture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmPlatform {

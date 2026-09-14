@@ -27,6 +27,7 @@ fuzzy.workspace = true
 gpui.workspace = true
 menu.workspace = true
 notifications.workspace = true
+paths.workspace = true
 picker.workspace = true
 project.workspace = true
 schemars.workspace = true

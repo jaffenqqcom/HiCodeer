@@ -1,6 +1,8 @@
 mod mappings;
 
 mod alacritty;
+#[cfg(target_env = "ohos")]
+mod ohos_shell;
 mod pty_info;
 pub mod terminal_settings;
 
@@ -61,12 +63,14 @@ use gpui::{
 
 #[cfg(not(windows))]
 use crate::alacritty::current_child_signal_mask;
+#[cfg(not(target_env = "ohos"))]
+use crate::alacritty::open_pty;
 use crate::alacritty::{
     AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
     AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
     append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
     display_only_term_config, find_from_terminal_point, full_content_range, last_non_empty_lines,
-    make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
+    make_content, new_term, pty_options, pty_term_config, resize, screen_lines,
     scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
     set_selection as set_term_selection, shrink_to_used, spawn_event_loop,
     toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
@@ -1214,12 +1218,28 @@ impl TerminalBuilder {
                 };
                 (TerminalType::DisplayOnly, Some(subprocess))
             } else {
+                // OHOS: when the command backend serves a pty, the terminal's
+                // shell runs inside the QEMU guest instead of the sandbox
+                // /bin/sh. The probe resolves before the pty is opened so a
+                // backend without a shell simply keeps the local one.
+                #[cfg(target_env = "ohos")]
+                let guest_shell = crate::ohos_shell::probe(
+                    working_directory.as_deref().and_then(|path| path.to_str()),
+                )
+                .await;
+
                 let alacritty_shell = shell_params.as_ref().map(|params| {
                     (
                         params.program.clone(),
                         params.args.clone().unwrap_or_default(),
                     )
                 });
+                // A guest shell provides the argv of its parked local child.
+                #[cfg(target_env = "ohos")]
+                let alacritty_shell = match guest_shell.as_ref() {
+                    Some(guest) => Some(guest.local_shell_argv()),
+                    None => alacritty_shell,
+                };
                 let pty_options = pty_options(
                     alacritty_shell,
                     working_directory.clone(),
@@ -1235,7 +1255,13 @@ impl TerminalBuilder {
                 );
 
                 //Setup the pty...
-                let pty = match open_pty(&pty_options, TerminalBounds::default(), window_id) {
+                // A guest shell hosts its own local pty pair; otherwise this is
+                // the plain alacritty pty with a local /bin/sh child.
+                #[cfg(target_env = "ohos")]
+                let opened_pty = crate::ohos_shell::open_pty(guest_shell, &pty_options, window_id);
+                #[cfg(not(target_env = "ohos"))]
+                let opened_pty = open_pty(&pty_options, TerminalBounds::default(), window_id);
+                let pty = match opened_pty {
                     Ok(pty) => pty,
                     Err(error) => {
                         bail!(TerminalError {
@@ -3207,7 +3233,7 @@ fn spawn_task_subprocess(
     executor: &BackgroundExecutor,
 ) -> Result<SubprocessHandle> {
     use futures::io::AsyncReadExt as _;
-    use std::process::Stdio;
+    use util::process::Stdio;
 
     let mut command = util::command::new_std_command(&program);
     command.args(&args);

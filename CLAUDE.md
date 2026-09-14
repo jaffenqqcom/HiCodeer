@@ -50,8 +50,8 @@ hdc tconn 192.168.3.57:37581
 hdc list targets -v
 
 # 查看日志（按 tag 和级别过滤）
-hdc hilog -t zcoder -l I       # 只看 zcoder 的 Info 日志
-hdc hilog -t zcoder -l E       # 只看 zcoder 的 Error 日志
+hdc hilog -t HiCodeer -l I       # 只看 HiCodeer 的 Info 日志
+hdc hilog -t HiCodeer -l E       # 只看 HiCodeer 的 Error 日志
 hdc hilog -l I | grep "关键词"  # 多关键词过滤
 timeout 5 hdc hilog          # 带超时获取（非阻塞）
 
@@ -94,12 +94,12 @@ timeout 5 hdc hilog          # 带超时获取（非阻塞）
 
 > OHOS 沙箱禁止 spawn 子进程，git/LSP/终端等命令经 cmd-agent 转发到 OpenEuler VM 执行。代码在 `crates/gpui_ohos/depend/ohos-openeuler-agent/`。crate 逻辑名与物理名已彻底改名：`cmd-agent`（原 cmd-agent-client，lib `cmd_agent`）、`cmd-agentd`（原 cmd-agent-server）、`cmd-agent-protocol`、`cmd-agent-linker`——目录名、编译产物、VM 部署程序名均随改名（`cmd-agent/`、`cmd-agentd/`，产物 `cmd-agent`、`cmd-agentd`）。
 
-- 三段式：业务代码 → zcoder 进程内 daemon（3 线程，双 executor 隔离）→ VM 上 cmd-agent-server。Client↔Daemon 走 unix socket，Daemon↔Server 走 TCP
+- 三段式：业务代码 → HiCodeer 进程内 daemon（3 线程，双 executor 隔离）→ VM 上 cmd-agent-server。Client↔Daemon 走 unix socket，Daemon↔Server 走 TCP
 - **路径映射**（cmd-agent-server/src/spawn.rs，判断路径时必须心算）：
   - Rule A：设备沙箱 `/data/storage/el2/base/haps/entry/files/...` → VM `/home/user/cmd-agent/...`
   - Rule B：设备工作区 `/storage/Users/currentUser/...` → VM `/mnt/linux_share/...`
 - 下载落盘以 `data_dir()` 为根（OHOS 设备沙箱），**全部走 http 直连落设备**（GitHub 二进制曾改用 util::command+curl 落 VM，因引入"沙箱→VM 同步"已回退）：`languages/`（LSP）、`extensions/`、`external_agents/`、`copilot/`、`prettier/`、`node/`、`debug_adapters/`，经同步引擎镜像到 VM `/home/user/cmd-agent/zed/...`
-- 沙箱→VM 同步：zcoder 内独立后台线程用 notify 监听下载目录（只处理写入完成事件，含 rename），经 cmd-agent 协议 FileSync 消息推 VM（`FileContent` 写 `.ing` → `FileRename` 原子改名，保证 binary 完整）；**VM 侧 spawn 时 binary 缺失且属同步目录 → 每 50ms 轮询查 `binary`/`binary.ing`：出现过 `.ing` 等 `.ing`→`binary` 最多 30s（大文件），从未出现 `.ing` 最多等 1000ms，超时失败**；不属于同步目录立即失败；**cmd-agent-server 启动时扫描同步目录删除残留 `*.ing` 半成品**（异常退出遗留）
+- 沙箱→VM 同步：HiCodeer 内独立后台线程用 notify 监听下载目录（只处理写入完成事件，含 rename），经 cmd-agent 协议 FileSync 消息推 VM（`FileContent` 写 `.ing` → `FileRename` 原子改名，保证 binary 完整）；**VM 侧 spawn 时 binary 缺失且属同步目录 → 每 50ms 轮询查 `binary`/`binary.ing`：出现过 `.ing` 等 `.ing`→`binary` 最多 30s（大文件），从未出现 `.ing` 最多等 1000ms，超时失败**；不属于同步目录立即失败；**cmd-agent-server 启动时扫描同步目录删除残留 `*.ing` 半成品**（异常退出遗留）
 - LSP 安装：GitHub 二进制 http 直连落设备沙箱；npm 包经 `npm install`（util::command，VM 侧执行）装到 `<server_dir>/node_modules`；gopls 走 PATH 检测启动
 - 已修的路径映射坑：`--flag=<path>` 等号内联参数必须拆分映射；映射后 cwd 在 VM 不存在时 spawn 前自动 `create_dir_all`
 - **硬约束**：cmd-agent client 零线程，绝不在调用线程 `block_on`（GPUI 主线程嵌套 async-io reactor 会死锁）

@@ -1,6 +1,6 @@
 //! Open-with (file association) bridge plugin.
 //!
-//! When the system opens a file with zcoder — via double-click or the "open with"
+//! When the system opens a file with the host application — via double-click or the "open with"
 //! sheet — the ArkTS `OpenWithPlugin` forwards the file URIs through the
 //! synchronous main-thread bridge. `gpui_ohos` resolves them to paths and delivers
 //! them to Zed through gpui's `on_open_urls` callback, which routes into Zed's
@@ -22,7 +22,7 @@ use openharmony_ability::{
 /// Main-thread event name pushed by the ArkTS `OpenWithPlugin`.
 const OPEN_WITH_EVENT: &str = "open-with";
 
-/// File URIs the system asked zcoder to open.
+/// File URIs the system asked the host application to open.
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct OpenWithData {

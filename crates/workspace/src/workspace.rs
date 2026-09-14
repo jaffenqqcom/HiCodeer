@@ -10464,7 +10464,7 @@ pub fn open_workspace_by_id(
 }
 
 #[allow(clippy::type_complexity)]
-/// [ohos] zcoderd runs on the same device as zcoder and shares its filesystem,
+/// [ohos] The daemon runs on the same device as the host application and shares its filesystem,
 /// so user-opened folders need no guest mount or VM sync. Kept as a no-op so
 /// the call site at `new_local` compiles uniformly.
 #[cfg(target_env = "ohos")]

@@ -2023,6 +2023,12 @@ impl ConversationView {
                             active.update(cx, |active, cx| active.handle_thread_error(err, cx));
                         }
                     } else {
+                        // Authentication is done, so drop the temporary URL cards that
+                        // were injected while the agent was unauthenticated. The view
+                        // already stops rendering them once authenticated; this keeps
+                        // the backing store from holding on to them as well.
+                        #[cfg(target_env = "ohos")]
+                        this.cancel_request_elicitations(cx);
                         this.reset(window, cx);
                     }
                     this.auth_task.take()

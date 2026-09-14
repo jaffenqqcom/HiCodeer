@@ -14,6 +14,6 @@
     "@ohos-rs/ability-plugin-openwith": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/openwith",
     "@ohos-rs/ability-plugin-ime": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/ime",
     "@ohos-rs/ability-plugin-url": "file:../../crates/gpui_ohos/depend/openharmony-ability/plugins/url",
-    "libzcoder.so": "file:./src/main/cpp/types/libzcoder"
+    "libhicodeer.so": "file:./src/main/cpp/types/libhicodeer"
   }
 }

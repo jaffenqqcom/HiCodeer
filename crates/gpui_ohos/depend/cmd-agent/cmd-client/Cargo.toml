@@ -3,7 +3,7 @@ name = "cmd-client"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "SSH client library that talks to the on-device zcoderd command server"
+description = "SSH client library that talks to the on-device hicodeerd command server"
 
 # Pulled in by util and launch-zed as a path dependency (same pattern as the
 # cmd-agent client). Deliberately no [workspace] here: cargo absorbs a path

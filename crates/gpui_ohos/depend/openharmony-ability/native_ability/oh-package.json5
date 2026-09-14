@@ -13,6 +13,6 @@
   "version": "1.0.0-beta.2",
   "peerDependencies": {
     "libnative_ability.so": "file:./src/main/cpp/types/libnative_ability",
-    "libzcoder.so": "file:../../../../hap/entry/src/main/cpp/types/libzcoder"
+    "libhicodeer.so": "file:../../../../hap/entry/src/main/cpp/types/libhicodeer"
   },
 }

@@ -1,0 +1,12 @@
+// Defaults this build layers on top of "settings/default.json".
+//
+// Keep this file to deltas: a value that is absent here keeps the shipped
+// default, so upstream default changes are inherited without editing this file.
+{
+  // A terminal selection is copied as soon as it is made. The panel has no
+  // hardware copy chord, so requiring an explicit copy command would put the
+  // selection one step out of reach.
+  "terminal": {
+    "copy_on_select": true,
+  },
+}

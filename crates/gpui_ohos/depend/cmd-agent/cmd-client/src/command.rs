@@ -1,21 +1,14 @@
-//! Translates an `ExecSpec` into a POSIX sh command string for zcoderd.
+//! Translates an `ExecSpec` into a POSIX sh command string for the daemon.
 //!
-//! The SSH session env is empty, so the spec's own env is injected as an exec
-//! prefix. No PATH is
-//! injected: the shell zcoderd spawns inherits the device PATH, and started
-//! LSPs are addressed by absolute path. Paths are passed through verbatim (no
-//! mapping:
-//! zcoderd and zcoder share the same device filesystem). The cwd is created
-//! before cd-ing. A reserved first line carries the session id that zcoderd
-//! uses to associate the exec with its in-memory session table.
+//! A child of the daemon starts from the daemon's own environment; the spec's
+//! env is emitted as an exec prefix only for the entries a caller sets
+//! explicitly, and started LSPs are addressed by absolute path. Values and paths
+//! travel verbatim (no mapping: the daemon and the host application share the
+//! same device filesystem). The cwd is created before cd-ing. A reserved first
+//! line carries the session id that the daemon uses to associate the exec with
+//! its in-memory session table.
 
 use crate::types::{ExecSpec, FdMode};
-
-/// Environment key set for git to suppress "dubious ownership" (the command may
-/// run under a uid different from the file owner).
-const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
-const GIT_CONFIG_KEY: &str = "GIT_CONFIG_KEY_0";
-const GIT_CONFIG_VALUE: &str = "GIT_CONFIG_VALUE_0";
 
 /// Builds the shell command string for one exec request.
 pub fn build_command(spec: &ExecSpec, session_id: u64) -> String {
@@ -29,16 +22,9 @@ pub fn build_command(spec: &ExecSpec, session_id: u64) -> String {
         }
     }
 
-    // Environment: apply the caller's env verbatim. The shell zcoderd spawns
-    // already inherits the device PATH (LSPs are started by absolute path, and
-    // `which` only searches PATH dirs directly, so injecting the LSP download
-    // dir here would be a no-op) and its own HOME from the guest environment.
+    // Environment: only the entries a caller sets explicitly are emitted as an
+    // exec prefix; a child otherwise inherits the daemon's own environment.
     let mut envs: Vec<String> = Vec::new();
-    if spec.source_program == "git" {
-        envs.push(format!("{GIT_CONFIG_COUNT}=1"));
-        envs.push(format!("{GIT_CONFIG_KEY}={}", sh_quote("safe.directory")));
-        envs.push(format!("{GIT_CONFIG_VALUE}={}", sh_quote("*")));
-    }
     for (key, value) in &spec.env {
         envs.push(format!("{}={}", key, sh_quote(value)));
     }

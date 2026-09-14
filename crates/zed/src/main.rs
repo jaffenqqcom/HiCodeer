@@ -212,18 +212,69 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
 }
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
+/// Records the resolved data root so the next launch's ets-side check can find it
+/// without touching `paths` (which must not be initialized before it is set).
 #[cfg(target_env = "ohos")]
-pub fn start_zed_main(base_path: Option<String>) {
-    zlog::ohos::direct_hilog_info("zcoder-boot", "[boot] start_zed_main entered");
-    if let Some(base_path) = base_path.filter(|path| !path.is_empty()) {
-        // Product data dir is `zcoder` (not `zed`): the QEMU guest mounts the
-        // whole sandbox, so downloaded programs live under base_path/zcoder.
-        let data_dir = PathBuf::from(base_path).join("zcoder");
-        if let Some(data_dir) = data_dir.to_str() {
-            paths::set_custom_data_dir(data_dir);
+const HOME_DIRECTORY_RECORD_FILE: &str = "custom_data_dir";
+
+#[cfg(target_env = "ohos")]
+pub fn start_zed_main(base_path: Option<String>, home_directory: Option<String>) {
+    zlog::ohos::direct_hilog_info("hicodeer-boot", "[boot] start_zed_main entered");
+    let base_path = base_path.filter(|path| !path.is_empty());
+    let home_directory = home_directory.filter(|path| !path.is_empty());
+
+    match resolve_home_directory(home_directory.as_deref()) {
+        Some(home_directory) => {
+            let data_dir = paths::set_custom_data_dir(&home_directory);
+            if let Some(base_path) = base_path.as_deref() {
+                write_home_directory_record(base_path, &data_dir.to_string_lossy());
+            }
+        }
+        None => {
+            // No usable home directory (none chosen, or it became unreachable):
+            // fall back to the sandbox so the app still starts.
+            log::warn!("start_zed_main: no usable home directory; falling back to the sandbox");
+            if let Some(base_path) = base_path {
+                // Product data subdirectory (not `zed`): the QEMU guest mounts the whole
+                // sandbox, so downloaded programs live under this directory of base_path.
+                let data_dir = PathBuf::from(base_path).join("hicodeer");
+                if let Some(data_dir) = data_dir.to_str() {
+                    paths::set_custom_data_dir(data_dir);
+                }
+            }
         }
     }
     main();
+}
+
+/// Resolves the directory to use as the data root. Prefers the user home
+/// directory: re-activates its picker grant and makes sure it exists first.
+/// Returns `None` when it cannot be used, so the caller falls back to the sandbox
+/// instead of letting `set_custom_data_dir` panic on an unreachable path.
+#[cfg(target_env = "ohos")]
+fn resolve_home_directory(home_directory: Option<&str>) -> Option<String> {
+    let home_directory = home_directory?;
+    // The ets side persisted the picker grant when the user chose the directory;
+    // re-activate it for this launch so the sandbox keeps read/write access.
+    let authorized = ohos_file_geturi::ensure_root_authorized(home_directory);
+    let authorized = authorized.to_str()?;
+    match std::fs::create_dir_all(authorized) {
+        Ok(()) => Some(authorized.to_owned()),
+        Err(err) => {
+            log::error!("start_zed_main: home directory {authorized} is unusable: {err}");
+            None
+        }
+    }
+}
+
+/// Writes the resolved data root to `<base_path>/custom_data_dir`. Idempotent:
+/// the ets side writes the same value when the user picks a directory.
+#[cfg(target_env = "ohos")]
+fn write_home_directory_record(base_path: &str, home_directory: &str) {
+    let record = PathBuf::from(base_path).join(HOME_DIRECTORY_RECORD_FILE);
+    if let Err(err) = std::fs::write(&record, home_directory) {
+        log::error!("start_zed_main: write {} failed: {err}", record.display());
+    }
 }
 
 fn main() {
@@ -338,7 +389,7 @@ fn main() {
         // OHOS: logs are redirected to hilog by zlog, so skip file/stdout output initialization;
         // emit a boot confirmation log directly to hilog to verify the redirection chain works.
         zlog::ohos::direct_hilog_info(
-            "zcoder-boot",
+            "hicodeer-boot",
             "zlog redirected to hilog, file logging skipped on OHOS",
         );
     }
@@ -572,7 +623,8 @@ fn main() {
         let client = Client::production(cx);
         cx.set_http_client(client.http_client());
         let mut languages = LanguageRegistry::new(cx.background_executor().clone());
-        languages.set_language_server_download_dir(paths::languages_dir().clone());
+        let lsp_download_dir = paths::languages_dir().clone();
+        languages.set_language_server_download_dir(lsp_download_dir);
         let languages = Arc::new(languages);
         let (mut tx, rx) = watch::channel(None);
         cx.observe_global::<SettingsStore>(move |cx| {

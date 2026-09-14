@@ -1,0 +1,26 @@
+#!/bin/sh
+# Second virtio-fs share, for the user's customer data root: the directory
+# holding the managed Node runtime, the downloaded language servers and the
+# debug adapters. That directory can be chosen outside the app sandbox, where
+# the S10sandbox mount does not reach it, yet the guest must still exec those
+# host-side Linux binaries at their original absolute paths. The host stages
+# the path into the guest-conf directory before boot; with no custom data root
+# recorded there is nothing to mount and this script does nothing.
+RECORD=/data/storage/el2/base/haps/entry/files/qemu/guest-conf/customer_data_path
+
+case "$1" in
+  start)
+    [ -f "$RECORD" ] || exit 0
+    root=$(cat "$RECORD" 2>/dev/null)
+    [ -n "$root" ] || exit 0
+    mkdir -p "$root"
+    if mount -t virtiofs customer_data "$root" 2>/dev/null; then
+      # List the top level: this console line is the only guest-side proof that
+      # the share carries real content rather than an empty mount point.
+      echo "[qemu-init] data root mounted at $root: $(ls "$root" 2>/dev/null | tr '\n' ' ')"
+    else
+      echo "[qemu-init] FAILED to mount data root at $root"
+    fi
+    ;;
+  stop) ;;
+esac

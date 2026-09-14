@@ -1,0 +1,69 @@
+#!/bin/sh
+# Guest-side command daemon start/stop. Its binary and config directory arrive
+# through the virtio-fs sandbox mount (S10sandbox), so both paths are host
+# sandbox paths seen from inside the guest; nothing is copied at boot.
+#
+# The daemon runs under a supervisor loop in this script, because the host's
+# entire command channel (git, language servers, terminals) rides on it: a
+# daemon that is killed or crashes must come back on its own instead of leaving
+# the editor dead until the guest is rebooted.
+#
+# The script name deliberately avoids the daemon's own name. A kill addressed
+# to the daemon by whole command line (for example a `pkill -f <daemon name>`)
+# would otherwise match this supervisor too and take it down with the daemon,
+# leaving nothing behind to restart it.
+DAEMON_BIN=/data/storage/el2/base/haps/entry/files/qemu/bin/hicodeerd
+DAEMON_CONF=/data/storage/el2/base/haps/entry/files/qemu/guest-conf
+STOP_FLAG=/run/daemon.stop
+RESPAWN_DELAY=1
+
+case "$1" in
+  start)
+    if [ ! -x "$DAEMON_BIN" ]; then
+      echo "[qemu-init] guest daemon missing: $DAEMON_BIN"
+      exit 0
+    fi
+    rm -f "$STOP_FLAG"
+    export HICODEERD_BIND_ADDR=0.0.0.0
+    export HICODEERD_CONF_DIR="$DAEMON_CONF"
+    export HICODEERD_DROP_CACHES=1
+    # HOME must be a real directory: agents spawned by the daemon inherit this
+    # environment and write their state under $HOME.
+    export HOME=/home
+    mkdir -p "$HOME"
+    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    export SHELL=/bin/sh
+    # Point TLS at whichever trust store this rootfs actually ships. Alpine
+    # keeps a single bundle at /etc/ssl/cert.pem; Debian-style trees use
+    # ca-certificates.crt. Setting SSL_CERT_FILE to a missing path makes every
+    # TLS client fail, so only export it once a candidate exists.
+    for cert in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+      if [ -f "$cert" ]; then
+        export SSL_CERT_FILE="$cert"
+        break
+      fi
+    done
+    # The daemon runs in the foreground of the supervisor loop below, so every
+    # start and every exit is visible on the guest console (ttyAMA0) and from
+    # there in hilog. No --log and no log-file redirect: the daemon logger is
+    # opt-in via the flag, and nothing may be written into the sandbox.
+    (
+      echo "[qemu-init] guest daemon supervisor active"
+      while [ ! -f "$STOP_FLAG" ]; do
+        echo "[qemu-init] guest daemon starting"
+        "$DAEMON_BIN"
+        # An intentional stop drops the flag before the kill, so the loop exits
+        # instead of undoing it.
+        [ -f "$STOP_FLAG" ] && break
+        echo "[qemu-init] guest daemon exited; restarting in ${RESPAWN_DELAY}s"
+        sleep "$RESPAWN_DELAY"
+      done
+      echo "[qemu-init] guest daemon supervisor stopped"
+    ) &
+    echo "[qemu-init] guest daemon supervisor started"
+    ;;
+  stop)
+    : > "$STOP_FLAG"
+    pkill -f /qemu/bin/hicodeerd 2>/dev/null
+    ;;
+esac

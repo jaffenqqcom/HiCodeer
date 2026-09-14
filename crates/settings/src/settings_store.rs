@@ -910,8 +910,8 @@ impl SettingsStore {
     }
 
     /// Parses the default settings JSON and folds any `dev`/`nightly`/`preview`/`stable`
-    /// release-channel overrides and `macos`/`linux`/`windows` platform overrides into
-    /// the returned [`SettingsContent`].
+    /// release-channel overrides, `macos`/`linux`/`windows` platform overrides and the
+    /// build-specific default layer into the returned [`SettingsContent`].
     ///
     /// Unlike user settings, default settings are used directly as the base for all
     /// merges, so overrides must be resolved up front.
@@ -920,6 +920,11 @@ impl SettingsStore {
         let mut merged = (*parsed.content).clone();
         merged.merge_from_option(parsed.for_release_channel());
         merged.merge_from_option(parsed.for_os());
+        #[cfg(target_env = "ohos")]
+        {
+            let customization = crate::customization_settings()?;
+            merged.merge_from_option(Some(&customization));
+        }
         Ok(merged)
     }
 

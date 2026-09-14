@@ -1,0 +1,144 @@
+diff --git a/drivers/tty/n_tty.c b/drivers/tty/n_tty.c
+index 94fa98108..8f513338f 100644
+--- a/drivers/tty/n_tty.c
++++ b/drivers/tty/n_tty.c
+@@ -44,6 +44,8 @@
+ #include <linux/slab.h>
+ #include <linux/string.h>
+ #include <linux/tty.h>
++#include <linux/vt_kern.h>
++#include <linux/sched/signal.h>
+ #include <linux/types.h>
+ #include <linux/uaccess.h>
+ #include <linux/vmalloc.h>
+@@ -1608,7 +1610,101 @@ static void n_tty_receive_buf_standard(struct tty_struct *tty, const u8 *cp,
+ 	}
+ }
+ 
+-static void __receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp,
++static void __do_set_pty_winsize(struct tty_struct *tty, unsigned rows, unsigned cols) {
++
++    struct winsize ws;
++
++    /* prepare winsize */
++    memset(&ws, 0, sizeof(ws));
++    ws.ws_row = rows;
++    ws.ws_col = cols;
++
++    /* set tty winsize */
++    tty_do_resize(tty, &ws);
++}
++
++/**
++ * process 'set size control sequence' from buffer
++ * 
++ * @skip: chars to skip because of control sequence
++ * @return count of chars to be processed normally
++ */
++static size_t __process_set_size(struct tty_struct *tty, const u8 *cp, size_t count, size_t* skip) {
++
++	enum { S_NORMAL, S_ESC, S_CSI, S_PARAM } state = S_NORMAL;
++	unsigned int params[4] = { 0 };
++	int nparams = 0;
++
++	int start = -1, end = -1;
++
++	int i;
++	for (i = 0; i < count; ++i) {
++		unsigned char ch = cp[i];
++		switch (state) {
++		case S_NORMAL:
++			if (ch == 0x1b) { /* ESC */
++				state = S_ESC;
++				nparams = 0;
++				start = i;
++			}
++			break;
++		case S_ESC:
++			if (ch == '[') {
++				state = S_CSI;
++			} else {
++				state = S_NORMAL;
++			}
++			break;
++		case S_CSI:
++			if (ch >= '0' && ch <= '9') {
++				params[0] = ch - '0';
++				nparams = 1;
++				state = S_PARAM;
++			} else {
++				/* not our sequence */
++				state = S_NORMAL;
++			}
++			break;
++		case S_PARAM:
++			if (ch >= '0' && ch <= '9') {
++				params[nparams-1] = params[nparams-1] * 10 + (ch - '0');
++			} else if (ch == ';') {
++				if (nparams < 4) {
++					params[nparams++] = 0;
++				} else {
++					state = S_NORMAL;
++				}
++			} else if (ch == 't') {
++				/* Expect that the first parameter is 8 for "CSI 8 ; r ; c t" */
++				if (nparams >= 3 && params[0] == 8) {
++					unsigned int rows = params[1];
++					unsigned int cols = params[2];
++					/* rudimentary sanity checks */
++					if (rows >= 1 && rows <= 4096 && cols >= 1 && cols <= 4096) {
++						__do_set_pty_winsize(tty, rows, cols);
++					}
++				}
++				state = S_NORMAL;
++				end = i;
++				goto out;
++			} else {
++				state = S_NORMAL;
++			}
++			break;
++		}
++	}
++
++out:
++	if(start < 0 || end < 0) {
++		*skip = 0;
++		return count;
++	} else {
++		*skip = (end - start + 1);
++		return start;
++	}
++}
++
++static void __receive_sub_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp,
+ 			  size_t count)
+ {
+ 	struct n_tty_data *ldata = tty->disc_data;
+@@ -1659,6 +1755,27 @@ static void __receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp,
+ 	}
+ }
+ 
++static void __receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp,
++			  size_t count)
++{
++	if (tty->driver->type == TTY_DRIVER_TYPE_SERIAL) {
++		do {
++			size_t to_skip = 0;
++			size_t pass = __process_set_size(tty, cp, count, &to_skip);
++			if (pass > 0) {
++				__receive_sub_buf(tty, cp, fp, pass);
++			}
++			cp += (pass + to_skip);
++			count -= (pass + to_skip);
++			if (fp) {
++				fp += (pass + to_skip);
++			}
++		} while(count > 0);
++	} else {
++		__receive_sub_buf(tty, cp, fp, count);
++	}
++}
++
+ /**
+  * n_tty_receive_buf_common	-	process input
+  * @tty: device to receive input

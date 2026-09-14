@@ -1,0 +1,6 @@
+{
+  "name": "libhicodeer.so",
+  "types": "./Index.d.ts",
+  "version": "1.0.0",
+  "description": "Type declarations for libhicodeer.so (HiCodeer editor engine)"
+}

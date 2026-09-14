@@ -1,0 +1,18 @@
+#!/bin/sh
+case "$1" in
+  start)
+    mkdir -p /proc /sys /dev /dev/pts /dev/shm /run /tmp /home
+    mount -t proc proc /proc 2>/dev/null
+    mount -t sysfs sysfs /sys 2>/dev/null
+    mount -t devtmpfs devtmpfs /dev 2>/dev/null
+    mount -t devpts devpts /dev/pts 2>/dev/null
+    mount -t tmpfs tmpfs /run 2>/dev/null
+    mount -t tmpfs tmpfs /tmp 2>/dev/null
+    # /dev/shm is a separate tmpfs: the root filesystem is a plain ext4 with no
+    # shared-memory mount, and programs that use POSIX shm (node, rustc) need
+    # one with the right mode rather than a plain directory.
+    mount -t tmpfs tmpfs /dev/shm 2>/dev/null
+    chmod 1777 /dev/shm 2>/dev/null
+    ;;
+  stop) ;;
+esac

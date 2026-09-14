@@ -7,6 +7,8 @@ mod language;
 mod language_model;
 pub mod merge_from;
 mod project;
+#[cfg(target_env = "ohos")]
+mod qemu;
 mod serde_helper;
 mod terminal;
 mod theme;
@@ -22,6 +24,8 @@ pub use language::*;
 pub use language_model::*;
 pub use merge_from::MergeFrom as MergeFromTrait;
 pub use project::*;
+#[cfg(target_env = "ohos")]
+pub use qemu::*;
 use serde::de::DeserializeOwned;
 pub use serde_helper::{
     serialize_f32_with_two_decimal_places, serialize_optional_f32_with_two_decimal_places,
@@ -258,6 +262,35 @@ pub struct SettingsContent {
     /// This allows running multiple Zed instances side by side without them
     /// overwriting each other's keychain entries.
     pub credentials_url: Option<String>,
+
+    /// OHOS: whether the embedded QEMU guest is enabled. When on, LSP servers
+    /// and the terminal run inside the aarch64 Linux guest instead of on
+    /// HarmonyOS. The guest is opt-in. Takes effect after an app restart.
+    ///
+    /// Default: false
+    #[cfg(target_env = "ohos")]
+    pub qemu_enabled: Option<bool>,
+
+    /// OHOS: number of vCPUs assigned to the QEMU guest (1..=10). Takes effect
+    /// after an app restart.
+    ///
+    /// Default: cpu1
+    #[cfg(target_env = "ohos")]
+    pub qemu_cpu_cores: Option<QemuCpuCores>,
+
+    /// OHOS: guest RAM size (4..=12 GB). Takes effect after an app restart.
+    ///
+    /// Default: mem4
+    #[cfg(target_env = "ohos")]
+    pub qemu_mem_gb: Option<QemuMemGb>,
+
+    /// OHOS: guest virtual disk size (64/96/128/256/512 GB). A disk that was
+    /// already created is never recreated; changing to a larger size grows it,
+    /// while a smaller size is ignored (the current capacity is kept).
+    ///
+    /// Default: disk128
+    #[cfg(target_env = "ohos")]
+    pub qemu_disk_gb: Option<QemuDiskGb>,
 
     /// Configuration for session-related features
     pub session: Option<SessionSettingsContent>,

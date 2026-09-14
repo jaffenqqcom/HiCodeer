@@ -1,5 +1,17 @@
+#[cfg(not(target_env = "ohos"))]
 use anyhow::{Context as _, Result};
-use std::process::Stdio;
+
+/// On OHOS the sandbox forbids `exec` of arbitrary binaries, so every external
+/// process has to go through the platform router in [`crate::command`]. Shared
+/// call sites pick the right pair through `#[cfg(target_env = "ohos")]`: the
+/// router's child already carries the whole surface they use
+/// (`stdin`/`stdout`/`stderr`, `id`, `kill`, `status`, `try_status`, `output`),
+/// and its `Stdio` keeps the same `piped()` / `inherit()` / `null()` spelling.
+/// Other platforms keep the `std::process` types re-exported from this module.
+#[cfg(target_env = "ohos")]
+pub use crate::command::{Child, Stdio};
+#[cfg(not(target_env = "ohos"))]
+pub use std::process::Stdio;
 
 /// A wrapper around `smol::process::Child` that ensures all subprocesses
 /// are killed when the process is terminated: on Unix by using process
@@ -9,12 +21,14 @@ use std::process::Stdio;
 /// terminates all processes in the job. This also applies when the Zed
 /// process exits for any reason (including crashes), since the OS closes
 /// its handles, so spawned process trees can never outlive Zed.
+#[cfg(not(target_env = "ohos"))]
 pub struct Child {
     process: smol::process::Child,
     #[cfg(windows)]
     job: Option<windows_job::JobObject>,
 }
 
+#[cfg(not(target_env = "ohos"))]
 impl std::ops::Deref for Child {
     type Target = smol::process::Child;
 
@@ -23,12 +37,23 @@ impl std::ops::Deref for Child {
     }
 }
 
+#[cfg(not(target_env = "ohos"))]
 impl std::ops::DerefMut for Child {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.process
     }
 }
 
+/// Delegates to the inner process so callers can print a child directly instead
+/// of reaching through `Deref`, which the OHOS router child does not expose.
+#[cfg(not(target_env = "ohos"))]
+impl std::fmt::Debug for Child {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.process, f)
+    }
+}
+
+#[cfg(not(target_env = "ohos"))]
 impl Child {
     #[cfg(not(windows))]
     pub fn spawn(

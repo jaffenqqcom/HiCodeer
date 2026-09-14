@@ -1,0 +1,18 @@
+#!/bin/sh
+# Static virtio-fs sandbox: host `files/` mounted at the same absolute path, so
+# a host path handed to a guest command needs no translation. Everything the
+# guests execs from the host (the staged daemon, its management keys, logs)
+# arrives through this one mount.
+case "$1" in
+  start)
+    SANDBOX=/data/storage/el2/base/haps/entry/files
+    mkdir -p "$SANDBOX"
+    if mount -t virtiofs sandbox "$SANDBOX" 2>/dev/null; then
+      echo "[qemu-init] sandbox mounted at $SANDBOX"
+      mkdir -p "$SANDBOX/home" "$SANDBOX/qemu/logs" "$SANDBOX/qemu/guest-conf"
+    else
+      echo "[qemu-init] FAILED to mount sandbox"
+    fi
+    ;;
+  stop) ;;
+esac

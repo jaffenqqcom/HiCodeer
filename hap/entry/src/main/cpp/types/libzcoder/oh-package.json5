@@ -1,6 +1,0 @@
-{
-  "name": "libzcoder.so",
-  "types": "./Index.d.ts",
-  "version": "1.0.0",
-  "description": "Type declarations for libzcoder.so (zcoder editor engine)"
-}

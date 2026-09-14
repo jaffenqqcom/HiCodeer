@@ -1,5 +1,13 @@
 use openharmony_ability_derive::ability;
 
+/// Environment variable carrying the app sandbox's `files/` directory.
+///
+/// Set by `ensure_shell_env` on the main thread, because
+/// `openharmony_ability::global_app()` is a thread_local: work running off the
+/// main thread (such as the terminal's shell probe) can only reach the sandbox
+/// through this name.
+const SANDBOX_FILES_DIR_ENV: &str = "SANDBOX_FILES_DIR";
+
 // Replaces the NAPI launch entry that used to live in crates/zed/src/lib.rs.
 // Dependency direction is now openharmony-ability -> zed: this entry depends on
 // zed and only passes it the information zed truly needs (the sandbox base path).
@@ -11,11 +19,11 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     // [ohos] Pin the terminal child shell to /bin/sh before Zed starts. The
     // sandbox only execs /bin/sh and the app uid has no /etc/passwd entry
     // (every present entry resolves to /bin/false), so alacritty's shell
-    // discovery would otherwise fail before spawn. See ensure_terminal_shell_env.
-    ensure_terminal_shell_env(app.base_path());
+    // discovery would otherwise fail before spawn. See ensure_shell_env.
+    ensure_shell_env(app.base_path(), app.home_directory());
     // Snapshot the private HNP install dir (/data/app/bin) once: the set of
     // on-device tools never changes while the process lives, so util::command
-    // routes local vs zcoderd from this snapshot without re-reading the directory.
+    // routes local vs the daemon from this snapshot without re-reading the directory.
     util::command::init_local_tools();
     // [diag] Report which on-device HNP tools (git/ssh/curl) resolved once the
     // zlog->hilog redirect is live; a missing tool shows one clear line instead
@@ -23,12 +31,13 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     log_local_tools_delayed();
     // Register the OHOS platform factory before Zed constructs any platform.
     gpui_ohos::register_platform();
-    // Start the on-device zcoderd client (management bootstrap + command pool)
+    // Start the on-device daemon client (management bootstrap + command pool)
     // so remote command execution is ready before Zed starts issuing git/LSP
-    // commands. zcoderd replaces the retired openeuler-VM and QEMU backends.
-    start_zcoderd_client(&app);
-    // Launch Zed with only the information it truly needs: the sandbox base path.
-    zed::start_zed_main(app.base_path());
+    // commands. The daemon replaces the retired openeuler-VM and QEMU backends.
+    start_daemon_client(&app);
+    // Launch Zed with only the information it truly needs: the sandbox base path
+    // and the home directory the ets side resolved before this native module loaded.
+    zed::start_zed_main(app.base_path(), app.home_directory());
 }
 
 /// Pins the process environment that alacritty's terminal shell discovery
@@ -40,16 +49,31 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
 ///     resolves its shell to `/bin/false`.
 /// Without `SHELL`/`USER`/`HOME` all set, `ShellUser::from_env` errors out and
 /// opening a terminal fails before the child is even spawned.
-fn ensure_terminal_shell_env(base_path: Option<String>) {
+fn ensure_shell_env(base_path: Option<String>, home_directory: Option<String>) {
+    // Export the sandbox files directory under its own name (see the constant).
+    // The terminal's shell probe runs off the main thread, so it cannot call
+    // `global_app()`, yet it needs an on-device directory: the FIFOs that park
+    // its local pty child cannot live under HOME, which points at a virtiofs
+    // share once the user has picked a home directory, and virtiofs rejects
+    // mkfifo with EPERM.
+    if let Some(base_path_ref) = base_path.as_deref() {
+        std::env::set_var(SANDBOX_FILES_DIR_ENV, base_path_ref);
+    }
     std::env::set_var("SHELL", "/bin/sh");
     if std::env::var_os("USER").is_none() {
         std::env::set_var("USER", "app");
     }
-    // HOME should be the app's el2 sandbox directory (base_path), not whatever
-    // the process launcher seeded (e.g. /storage/Users/currentUser): base_path
-    // is the app-private, writable directory the device-local shell can rely on.
-    if let Some(base_path_ref) = base_path.as_deref() {
-        std::env::set_var("HOME", base_path_ref);
+    // HOME is the directory the user picked (the ets side passes it as
+    // homeDirectory), not the app-private sandbox dir. Tools that keep their
+    // state under $HOME - git config, ~/.codebuddy, shell history - need a
+    // directory the user owns, can reach outside the host application, and keeps its
+    // contents across reinstalls; the sandbox dir satisfies none of those.
+    // base_path stays as the fallback for the launch before a directory is chosen.
+    let home = home_directory
+        .filter(|dir| !dir.is_empty())
+        .or_else(|| base_path.clone());
+    if let Some(home_ref) = home.as_deref() {
+        std::env::set_var("HOME", home_ref);
     }
     // Extend PATH with the hap's el1 (resfile resources, reachable via
     // application_resource_dir) and el2 (app sandbox files, i.e. base_path)
@@ -65,7 +89,7 @@ fn ensure_terminal_shell_env(base_path: Option<String>) {
         Ok(resource_dir) => resource_dir,
         Err(err) => {
             log::warn!(
-                "ensure_terminal_shell_env: application_resource_dir unavailable: {err}"
+                "ensure_shell_env: application_resource_dir unavailable: {err}"
             );
             String::new()
         }
@@ -83,7 +107,7 @@ fn ensure_terminal_shell_env(base_path: Option<String>) {
             std::env::set_var("SSL_CERT_FILE", &ca_bundle);
             std::env::set_var("CURL_CA_BUNDLE", &ca_bundle);
         } else {
-            log::warn!("ensure_terminal_shell_env: {ca_bundle} missing in resfile");
+            log::warn!("ensure_shell_env: {ca_bundle} missing in resfile");
         }
     }
     if !path_extra.is_empty() {
@@ -104,66 +128,13 @@ fn ensure_terminal_shell_env(base_path: Option<String>) {
     // package's own libs, so no LD_LIBRARY_PATH is set here at all.
 }
 
-/// Starts the on-device zcoderd client and registers it as the remote command
-/// executor so `util::command` executes commands through zcoderd over loopback
-/// SSH.
-///
-/// The client half of the fixed management keys is read from the module resfile
-/// (`<resfile>/zcoderd-mgmt/{mgmt-host.pub,mgmt-client-key}`); the server half
-/// lives inside the zcoderd public HNP. `cmd_client::SshCommandExecutor::new`
-/// spawns a background bootstrap thread that keeps re-fetching zcoderd's
-/// dynamic command keys (recovering across zcoderd restarts), so this returns
-/// as soon as the executor is constructed and never blocks a calling thread.
-fn start_zcoderd_client(_app: &openharmony_ability::OpenHarmonyApp) {
-    const APP_MODULE_NAME: &str = "entry";
-    const MGMT_KEY_SUBDIR: &str = "zcoderd-mgmt";
-    const MGMT_HOST_PUB_FILE: &str = "mgmt-host.pub";
-    const MGMT_CLIENT_KEY_FILE: &str = "mgmt-client-key";
-
-    let resource_dir = match openharmony_ability::application_resource_dir(APP_MODULE_NAME) {
-        Ok(resource_dir) => resource_dir,
-        Err(err) => {
-            log::error!("start_zcoderd_client: application_resource_dir failed: {err}");
-            return;
-        }
-    };
-    let key_dir = std::path::Path::new(&resource_dir).join(MGMT_KEY_SUBDIR);
-    let mgmt_host_pub = match std::fs::read_to_string(key_dir.join(MGMT_HOST_PUB_FILE)) {
-        Ok(text) => text,
-        Err(err) => {
-            log::error!(
-                "start_zcoderd_client: read {} failed: {err}",
-                MGMT_HOST_PUB_FILE
-            );
-            return;
-        }
-    };
-    let mgmt_client_key = match std::fs::read_to_string(key_dir.join(MGMT_CLIENT_KEY_FILE)) {
-        Ok(text) => text,
-        Err(err) => {
-            log::error!(
-                "start_zcoderd_client: read {} failed: {err}",
-                MGMT_CLIENT_KEY_FILE
-            );
-            return;
-        }
-    };
-    log::info!("start_zcoderd_client: loading management keys from {}", key_dir.display());
-
-    match cmd_client::SshCommandExecutor::new(mgmt_client_key, mgmt_host_pub) {
-        Ok(executor) => {
-            let executor = std::sync::Arc::new(executor);
-            if cmd_client::init_executor(executor.clone()).is_err() {
-                log::warn!("start_zcoderd_client: executor already registered");
-            } else {
-                log::info!("start_zcoderd_client: SshCommandExecutor registered");
-            }
-            if let Err(err) = util::command::init("") {
-                log::warn!("start_zcoderd_client: util init failed: {err}");
-            }
-        }
-        Err(err) => log::error!("start_zcoderd_client: create SshCommandExecutor: {err}"),
-    }
+/// Starts the command backend and registers the process-wide executor so
+/// `util::command` can execute commands. Delegates to `qemu_runtime`, which
+/// selects the backend once by the QEMU setting: the on-device daemon on
+/// loopback 4022/4023 when QEMU is off, or the guest daemon (hostfwd
+/// 4122/4123) plus dynamic work-dir mounts when the embedded QEMU guest is on.
+fn start_daemon_client(app: &openharmony_ability::OpenHarmonyApp) {
+    crate::qemu_runtime::start_command_backend(app);
 }
 
 /// [diag] From a background thread ~3s after launch (once the zlog->hilog

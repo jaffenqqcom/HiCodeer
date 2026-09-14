@@ -130,8 +130,28 @@ pub fn init(cx: &mut App) {
     SettingsStore::observe_active_settings_profile_name(cx).detach();
 }
 
+/// Path of the build-specific default settings, layered on top of
+/// [`BASE_SETTINGS_PATH`] when the build defines one. The file carries only
+/// deltas, so the shipped defaults stay the single source for everything it
+/// does not mention.
+#[cfg(target_env = "ohos")]
+pub const CUSTOMIZATION_SETTINGS_PATH: &str = "settings/default-ohos.json";
+
+/// Shipped defaults, shared by every build.
+pub const BASE_SETTINGS_PATH: &str = "settings/default.json";
+
 pub fn default_settings() -> Cow<'static, str> {
-    asset_str::<SettingsAssets>("settings/default.json")
+    asset_str::<SettingsAssets>(BASE_SETTINGS_PATH)
+}
+
+/// Parses the build-specific default settings layer, if this build defines one.
+///
+/// Layered on top of the shipped defaults so a build only states what it
+/// changes, and before user settings so a user can still override it.
+#[cfg(target_env = "ohos")]
+pub fn customization_settings() -> anyhow::Result<SettingsContent> {
+    let text = asset_str::<SettingsAssets>(CUSTOMIZATION_SETTINGS_PATH);
+    SettingsContent::parse_json_with_comments(text.as_ref())
 }
 
 pub fn default_semantic_token_rules() -> Cow<'static, str> {

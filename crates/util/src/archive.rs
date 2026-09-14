@@ -1,10 +1,15 @@
 use std::path::Path;
 
+#[cfg(target_env = "ohos")]
+use std::path::PathBuf;
+
 use anyhow::{Context as _, Result};
 use async_zip::base::read;
 #[cfg(not(windows))]
 use futures::AsyncSeek;
 use futures::{AsyncRead, io::BufReader};
+#[cfg(target_env = "ohos")]
+use futures::{AsyncReadExt, StreamExt};
 
 #[cfg(any(unix, windows))]
 fn archive_path_is_normal(filename: &str) -> bool {
@@ -140,6 +145,206 @@ pub async fn extract_seekable_zip<R: AsyncRead + AsyncSeek + Unpin>(
         }
     }
 
+    Ok(())
+}
+
+/// OHOS tar extraction with the sandbox link fallback.
+///
+/// The OHOS app sandbox denies symlink(2) and hard_link(2), so async-tar's
+/// default unpack aborts as soon as a tar contains a link entry. This
+/// extractor recovers denied link entries and materializes them as real
+/// copies, so tarballs that legitimately contain links (node distribution,
+/// LSP packages, ...) still extract successfully. Shared by every in-app tar
+/// extraction path (github downloads, managed Node.js, ...).
+#[cfg(target_env = "ohos")]
+pub async fn unpack_tar_ohos<R>(
+    archive: async_tar::Archive<R>,
+    destination_path: &Path,
+    url: &str,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    log::info!("unpack_tar_ohos: extracting {url} into {destination_path:?}");
+    let mut entries = archive
+        .entries()
+        .with_context(|| format!("opening archive from {url}"))?;
+
+    // Link entries whose creation the sandbox denied. They are materialized
+    // as real copies after the rest of the archive has been unpacked, because
+    // a link's target may appear later in the tar.
+    let mut links = Vec::new();
+    // Directories are deferred to the end, mirroring Archive::unpack, so that
+    // directory permissions do not interfere with descendant extraction.
+    let mut directories = Vec::new();
+
+    while let Some(entry) = entries.next().await {
+        let mut entry = entry.with_context(|| format!("iterating archive from {url}"))?;
+        let entry_type = entry.header().entry_type();
+
+        if entry_type.is_dir() {
+            directories.push(entry);
+            continue;
+        }
+
+        // Let async-tar unpack this entry. On OHOS the only expected failure
+        // is a link whose creation the sandbox denied; intercept it here and
+        // materialize it afterwards.
+        match entry.unpack_in(destination_path).await {
+            Ok(_) => {}
+            Err(err) if entry_type.is_symlink() || entry_type.is_hard_link() => {
+                // async-tar yields async_std paths here; convert them to std
+                // paths for the materialization helpers below.
+                let link_path =
+                    PathBuf::from(entry.path().context("reading link path")?.as_os_str());
+                let link_target = entry
+                    .link_name()
+                    .context("reading link target")?
+                    .map(|target| PathBuf::from(target.as_os_str()));
+                // Link entries carry no payload; consume any remaining bytes
+                // so the entry stream advances to the next header.
+                entry
+                    .read_to_end(&mut Vec::new())
+                    .await
+                    .context("skipping link payload")?;
+                log::debug!(
+                    "unpack_tar_ohos: denied link {link_path:?} -> {link_target:?}: {err}"
+                );
+                links.push((entry_type, link_path, link_target));
+                continue;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("extracting {url} to {destination_path:?}"));
+            }
+        }
+    }
+
+    for mut directory in directories {
+        directory
+            .unpack_in(destination_path)
+            .await
+            .with_context(|| format!("extracting {url} to {destination_path:?}"))?;
+    }
+
+    if !links.is_empty() {
+        log::info!(
+            "unpack_tar_ohos: materializing {} link(s) from {url}",
+            links.len()
+        );
+    }
+    for (entry_type, link_path, link_target) in links {
+        materialize_link(destination_path, entry_type, &link_path, link_target.as_deref())
+            .await
+            .with_context(|| {
+                format!("materializing link {link_path:?} while extracting {url}")
+            })?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_env = "ohos")]
+async fn materialize_link(
+    destination_path: &Path,
+    entry_type: async_tar::EntryType,
+    link_path: &Path,
+    link_target: Option<&Path>,
+) -> Result<()> {
+    let Some(link_target) = link_target else {
+        log::warn!("materialize_link: link {link_path:?} has no target, skipping");
+        return Ok(());
+    };
+
+    // Build the link destination from the entry path, dropping any `..`
+    // components the same way async-tar's unpack_in does.
+    let mut dest = destination_path.to_path_buf();
+    for part in link_path.components() {
+        match part {
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                log::warn!(
+                    "materialize_link: skipping link {link_path:?} escaping the extraction root"
+                );
+                return Ok(());
+            }
+            std::path::Component::Normal(part) => dest.push(part),
+        }
+    }
+    if dest == destination_path {
+        log::warn!("materialize_link: skipping link {link_path:?} with empty destination");
+        return Ok(());
+    }
+
+    // Symlink targets are relative to the link's parent directory, while
+    // hard-link targets are relative to the archive root.
+    let target_path = if entry_type.is_hard_link() {
+        destination_path.join(link_target)
+    } else {
+        dest.parent().unwrap_or(destination_path).join(link_target)
+    };
+
+    let root_canon = match async_fs::canonicalize(destination_path).await {
+        Ok(path) => path,
+        Err(err) => {
+            log::warn!("materialize_link: cannot canonicalize {destination_path:?}: {err}");
+            return Ok(());
+        }
+    };
+    let target_canon = match async_fs::canonicalize(&target_path).await {
+        Ok(path) => path,
+        // A dangling link is harmless: the original archive would have left a
+        // symlink whose target does not exist either.
+        Err(err) => {
+            log::warn!(
+                "materialize_link: link target {target_path:?} does not exist ({err}), skipping {link_path:?}"
+            );
+            return Ok(());
+        }
+    };
+    if !target_canon.starts_with(&root_canon) {
+        log::warn!(
+            "materialize_link: link target {target_path:?} escapes the extraction root, skipping {link_path:?}"
+        );
+        return Ok(());
+    }
+
+    copy_recursively(&target_canon, &dest).await
+}
+
+#[cfg(target_env = "ohos")]
+async fn copy_recursively(src: &Path, dst: &Path) -> Result<()> {
+    // Iterative traversal: a recursive async fn would need boxing, and an
+    // explicit stack is just as clear.
+    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+    while let Some((src, dst)) = stack.pop() {
+        let metadata = async_fs::metadata(&src)
+            .await
+            .with_context(|| format!("reading metadata of {src:?}"))?;
+        if metadata.is_dir() {
+            async_fs::create_dir_all(&dst)
+                .await
+                .with_context(|| format!("creating directory {dst:?}"))?;
+            let mut entries = async_fs::read_dir(&src)
+                .await
+                .with_context(|| format!("reading directory {src:?}"))?;
+            while let Some(entry) = entries.next().await {
+                let entry = entry.with_context(|| format!("reading entry in {src:?}"))?;
+                stack.push((entry.path(), dst.join(entry.file_name())));
+            }
+        } else {
+            if let Some(parent) = dst.parent() {
+                async_fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("creating parent directory {parent:?}"))?;
+            }
+            async_fs::copy(&src, &dst)
+                .await
+                .with_context(|| format!("copying {src:?} to {dst:?}"))?;
+        }
+    }
     Ok(())
 }
 

@@ -8,6 +8,8 @@ use agent_client_protocol::schema::{
     v1::{self as acp, ErrorCode},
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, JsonRpcResponse, Lines, Responder};
+#[cfg(target_env = "ohos")]
+use agent_client_protocol::UntypedMessage;
 use anyhow::anyhow;
 use async_channel;
 use collections::{HashMap, HashSet};
@@ -24,7 +26,7 @@ use remote::remote_client::Interactive;
 use serde::Deserialize;
 use settings::{AgentConfigOptionValue, SettingsStore};
 use std::path::PathBuf;
-use std::process::{ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::{any::Any, cell::RefCell, collections::VecDeque};
@@ -32,7 +34,7 @@ use task::{Shell, ShellBuilder, SpawnInTerminal};
 use thiserror::Error;
 use util::ResultExt as _;
 use util::path_list::PathList;
-use util::process::Child;
+use util::process::{Child, Stdio};
 
 use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, AsyncApp, Entity, SharedString, Subscription, Task, WeakEntity};
@@ -703,7 +705,7 @@ fn connect_client_future(
         }};
     }
 
-    Client
+    let builder = Client
         .builder()
         .name(name)
         // --- Request handlers (agent→client) ---
@@ -751,7 +753,20 @@ fn connect_client_future(
         .on_receive_notification(
             on_notification!(handle_complete_elicitation),
             agent_client_protocol::on_receive_notification!(),
-        )
+        );
+
+    // Agents may emit vendor-namespaced notifications that have no typed handler.
+    // The SDK drops any notification it cannot route, so register a catch-all
+    // *last*: every typed handler is tried first and only unmatched notifications
+    // fall through, where sign-in URLs are normalised into the standard URL
+    // elicitation flow. See `handle_ext_notification`.
+    #[cfg(target_env = "ohos")]
+    let builder = builder.on_receive_notification(
+        on_notification!(handle_ext_notification),
+        agent_client_protocol::on_receive_notification!(),
+    );
+
+    builder
         .connect_with(
             transport,
             move |connection: ConnectionTo<Agent>| async move {
@@ -4717,6 +4732,105 @@ fn handle_create_elicitation(
                 acp::Error::invalid_params().data("unknown elicitation scope"),
             );
         }
+    }
+}
+
+/// One vendor notification that carries a sign-in URL.
+///
+/// ACP already has a standard way to hand a URL to the user: the URL mode of
+/// `elicitation/create`. Agents that predate it, or that bypass it, publish the
+/// URL through a vendor-namespaced notification instead, which this client has
+/// no typed handler for. Each row below maps one such notification onto the
+/// standard flow, so supporting another vendor is a data change, not a new code
+/// path.
+#[cfg(target_env = "ohos")]
+struct ExtUrlRoute {
+    /// Notification method emitted by the agent.
+    method: &'static str,
+    /// Field holding the URL inside the notification params.
+    url_key: &'static str,
+    /// Message shown on the elicitation card.
+    message: &'static str,
+}
+
+#[cfg(target_env = "ohos")]
+const EXT_URL_ROUTES: &[ExtUrlRoute] = &[ExtUrlRoute {
+    method: "_codebuddy.ai/authUrl",
+    url_key: "authUrl",
+    message: "Sign in to continue. Your browser will open the agent's sign-in page.",
+}];
+
+/// Request id used for URL elicitations the client injects on its own. It only
+/// participates in `cancel_request` matching, never in what the card renders.
+#[cfg(target_env = "ohos")]
+const EXT_URL_REQUEST_ID: &str = "ext-notification";
+
+/// Fallback for ACP notifications that no typed handler claims.
+///
+/// Agents are free to emit vendor-namespaced notifications, but the SDK silently
+/// drops anything it cannot route to a registered handler. This catch-all is
+/// registered last in the chain, so typed handlers always win; it turns the
+/// sign-in URLs described by [`EXT_URL_ROUTES`] into standard URL elicitations,
+/// so they reuse the same card, the same host presentation and the same browser
+/// hand-off as an agent that calls `elicitation/create` directly. The URL is
+/// logged as well, so sign-in can still be completed from another machine when
+/// no browser is available on this one.
+#[cfg(target_env = "ohos")]
+fn handle_ext_notification(
+    notification: UntypedMessage,
+    cx: &mut AsyncApp,
+    ctx: &ClientContext,
+) {
+    let Some(route) = EXT_URL_ROUTES
+        .iter()
+        .find(|route| route.method == notification.method.as_str())
+    else {
+        return;
+    };
+
+    let Some(url) = notification
+        .params
+        .get(route.url_key)
+        .and_then(|value| value.as_str())
+    else {
+        log::warn!(
+            "{} sent without a string `{}` field",
+            notification.method,
+            route.url_key
+        );
+        return;
+    };
+
+    log::info!("external sign-in URL from {}: {url}", notification.method);
+    request_url_elicitation(url.to_string(), route.message, ctx, cx);
+}
+
+/// Normalises a vendor sign-in URL into the standard ACP URL-elicitation flow.
+///
+/// The card is injected locally, so no agent will ever send `elicitation/complete`
+/// for it: it disappears once the agent is authenticated and the view stops
+/// rendering the unauthenticated state. URLs that are not HTTP(S) are rejected by
+/// [`ElicitationStore`]'s own validation rather than by a check here.
+#[cfg(target_env = "ohos")]
+fn request_url_elicitation(
+    url: String,
+    message: &str,
+    ctx: &ClientContext,
+    cx: &mut AsyncApp,
+) {
+    let request = acp::CreateElicitationRequest::new(
+        acp::ElicitationUrlMode::new(
+            acp::ElicitationRequestScope::new(acp::RequestId::Str(EXT_URL_REQUEST_ID.to_string())),
+            acp::ElicitationId::new(format!("ext-url-{}", uuid::Uuid::new_v4())),
+            url,
+        ),
+        message,
+    );
+
+    let store = ctx.request_elicitations.clone();
+    let result = store.update(cx, |store, cx| store.request_elicitation_with_id(request, cx));
+    if let Err(error) = result {
+        log::warn!("rejected external sign-in URL: {error}");
     }
 }
 

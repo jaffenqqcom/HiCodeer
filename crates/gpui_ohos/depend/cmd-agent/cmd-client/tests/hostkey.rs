@@ -1,6 +1,6 @@
 //! Host-key round-trip sanity: the public half parsed from an OpenSSH public
 //! line must equal the public half derived from the matching OpenSSH private
-//! file. Reads real ssh-keygen outputs from `ZCODERD_KEY_DIR`.
+//! file. Reads real ssh-keygen outputs from `KEY_DIR_ENV`.
 
 use russh::keys::ssh_key::{PrivateKey, PublicKey};
 
@@ -10,7 +10,7 @@ fn read_file(path: &str) -> String {
 
 #[test]
 fn mgmt_host_key_roundtrip() {
-    let dir = std::env::var("ZCODERD_KEY_DIR").expect("set ZCODERD_KEY_DIR");
+    let dir = std::env::var("HICODEERD_KEY_DIR").expect("set HICODEERD_KEY_DIR");
     let private_txt = read_file(&format!("{dir}/mgmt_host_key"));
     let public_txt = read_file(&format!("{dir}/mgmt_host_key.pub"));
 

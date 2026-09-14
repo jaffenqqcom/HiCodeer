@@ -17,7 +17,7 @@ interface OpenWithParams {
 }
 
 /**
- * Forwards file URIs the system asked zcoder to open (double-click / "open with")
+ * Forwards file URIs the system asked the host application to open (double-click / "open with")
  * to Rust via the synchronous main-thread bridge. Rust resolves them to paths and
  * opens them in the active window, reusing the same path the file-drop uses.
  */

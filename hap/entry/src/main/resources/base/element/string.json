@@ -10,7 +10,15 @@
     },
     {
       "name": "EntryAbility_label",
-      "value": "zcoder"
+      "value": "HiCodeer"
+    },
+    {
+      "name": "set_home_directory_button",
+      "value": "Pick up"
+    },
+    {
+      "name": "set_home_directory_hint",
+      "value": "Set Home Directory of HiCodeer"
     },
     {
       "name": "perm_auth_reason",

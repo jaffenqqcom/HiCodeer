@@ -57,6 +57,12 @@ pub(crate) struct OhosWindow {
     background_executor: BackgroundExecutor,
     key_repeat: Rc<RefCell<Option<KeyRepeatState>>>,
     window_alive: Rc<Cell<bool>>,
+    /// Whether this window currently holds keyboard focus. Auto-repeat must also
+    /// stop on focus loss: the key-up that ends a repeat is never delivered once
+    /// another window takes focus (e.g. the system file picker), so waiting for
+    /// it would repeat forever. Mirrors gpui_linux, whose Wayland repeat task
+    /// requires `keyboard_focused_window.is_some()`.
+    active: Rc<Cell<bool>>,
     pinch_accumulator: Rc<Cell<f32>>,
     keyboard_visible: Rc<Cell<bool>>,
     /// Whether the ArkTS IME session is actually bound. Tracked separately from
@@ -535,6 +541,7 @@ impl OhosWindow {
             background_executor,
             key_repeat: Rc::new(RefCell::new(None)),
             window_alive: Rc::new(Cell::new(true)),
+            active: Rc::new(Cell::new(true)),
             pinch_accumulator: Rc::new(Cell::new(0.0)),
             keyboard_visible: Rc::new(Cell::new(false)),
             ime_attached: Rc::new(Cell::new(false)),
@@ -1503,6 +1510,7 @@ impl OhosWindow {
                 self.handle_input_event(input_event);
             }
             Event::GainedFocus => {
+                self.active.set(true);
                 let mut callback = self.callbacks.borrow_mut().active_status_change.take();
                 if let Some(ref mut cb) = callback {
                     cb(true);
@@ -1523,6 +1531,11 @@ impl OhosWindow {
                 self.show_keyboard_if_needed();
             }
             Event::LostFocus => {
+                // The key-up that ends auto-repeat is never delivered once another
+                // window takes focus (e.g. the system file picker), so repeat has to
+                // stop here instead of waiting for a key-up that never arrives.
+                self.active.set(false);
+                self.end_key_repeat();
                 self.cancel_momentum();
                 self.reset_touch_velocity();
                 self.reset_touch_state();
@@ -2049,11 +2062,15 @@ impl OhosWindow {
         let key_repeat = self.key_repeat.clone();
         let callbacks = self.callbacks.clone();
         let window_alive = self.window_alive.clone();
+        let active = self.active.clone();
         let background_executor = self.background_executor.clone();
         self.foreground_executor
             .spawn(async move {
                 background_executor.timer(KEY_REPEAT_DELAY).await;
-                while window_alive.get() && Self::repeat_active(&key_repeat, code, generation) {
+                while active.get()
+                    && window_alive.get()
+                    && Self::repeat_active(&key_repeat, code, generation)
+                {
                     Self::dispatch_repeat_key_down(&callbacks, &keystroke);
                     background_executor.timer(KEY_REPEAT_INTERVAL).await;
                 }

@@ -5,7 +5,7 @@ use client::{Client, TelemetrySettings, UserStore, zed_urls};
 use cloud_api_types::Plan;
 use collections::HashMap;
 use fs::Fs;
-use gpui::{Action, Animation, AnimationExt, App, Entity, IntoElement, TaskExt, pulsating_between};
+use gpui::{Action, Animation, AnimationExt, App, Entity, IntoElement, ReadGlobal, TaskExt, pulsating_between};
 use project::agent_server_store::AllAgentServersSettings;
 use project::project_settings::ProjectSettings;
 use project::{AgentRegistryStore, RegistryAgent};
@@ -21,10 +21,10 @@ use ui::{
 };
 use vim_mode_setting::VimModeSetting;
 
-use crate::{
-    ImportCursorSettings, ImportVsCodeSettings, SettingsImportState,
-    theme_preview::{ThemePreviewStyle, ThemePreviewTile},
-};
+use crate::theme_preview::{ThemePreviewStyle, ThemePreviewTile};
+
+#[cfg(not(target_env = "ohos"))]
+use crate::{ImportCursorSettings, ImportVsCodeSettings, SettingsImportState};
 
 const LIGHT_THEMES: [&str; 3] = ["One Light", "Ayu Light", "Gruvbox Light"];
 const DARK_THEMES: [&str; 3] = ["One Dark", "Ayu Dark", "Gruvbox Dark"];
@@ -474,6 +474,7 @@ fn render_worktree_auto_trust_switch(tab_index: &mut isize, cx: &mut App) -> imp
     .tooltip(Tooltip::text(tooltip_description))
 }
 
+#[cfg(not(target_env = "ohos"))]
 fn render_setting_import_button(
     tab_index: isize,
     label: SharedString,
@@ -499,6 +500,7 @@ fn render_setting_import_button(
         })
 }
 
+#[cfg(not(target_env = "ohos"))]
 fn render_import_settings_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement {
     let import_state = SettingsImportState::global(cx);
     let imports: [(SharedString, &dyn Action, bool); 2] = [
@@ -534,6 +536,11 @@ fn render_import_settings_section(tab_index: &mut isize, cx: &mut App) -> impl I
                 ),
         )
         .child(h_flex().gap_1().child(vscode).child(cursor))
+}
+
+#[cfg(not(target_env = "ohos"))]
+fn render_settings_section(tab_index: &mut isize, cx: &mut App) -> impl IntoElement {
+    render_import_settings_section(tab_index, cx)
 }
 
 pub(crate) const FEATURED_AGENT_IDS: &[&str] =
@@ -715,13 +722,16 @@ fn render_ai_section(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoE
 pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -> impl IntoElement {
     let mut tab_index = 0;
 
-    v_flex()
+    let basics_page = v_flex()
         .id("basics-page")
         .gap_6()
         .child(render_theme_section(&mut tab_index, cx))
         .child(render_base_keymap_section(&mut tab_index, cx))
-        .child(render_ai_section(user_store, cx))
-        .child(render_import_settings_section(&mut tab_index, cx))
+        .child(render_ai_section(user_store, cx));
+    // The settings (import) section is desktop-only; OHOS has no VS Code / Cursor to import.
+    #[cfg(not(target_env = "ohos"))]
+    let basics_page = basics_page.child(render_settings_section(&mut tab_index, cx));
+    basics_page
         .child(render_vim_mode_switch(&mut tab_index, cx))
         .child(render_worktree_auto_trust_switch(&mut tab_index, cx))
         .child(Divider::horizontal().color(ui::DividerColor::BorderVariant))

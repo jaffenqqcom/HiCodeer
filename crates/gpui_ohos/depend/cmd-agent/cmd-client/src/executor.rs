@@ -1,4 +1,4 @@
-//! Remote command execution over the zcoderd SSH connection pool.
+//! Remote command execution over the daemon SSH connection pool.
 //!
 //! `SshCommandExecutor` implements the self-contained `RemoteCommandExecutor`
 //! contract. Each spawn allocates a pooled SSH connection, opens a session
@@ -17,8 +17,11 @@ use smol::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::command;
+use crate::endpoint::CommandEndpoint;
 use crate::pool::{Pool, SshSession};
-use crate::types::{ExecSpec, ExitFuture, RemoteChild, RemoteCommandExecutor, Signal};
+use crate::types::{
+    ExecSpec, ExitFuture, RemoteChild, RemoteCommandExecutor, ShellPtyFuture, Signal,
+};
 
 /// Bytes read from the socketpair per select iteration.
 const IO_CHUNK_SIZE: usize = 8192;
@@ -70,22 +73,38 @@ pub struct SshCommandExecutor {
 }
 
 impl SshCommandExecutor {
-    /// Creates the pool, starts the management bootstrap thread (4023 ->
-    /// dynamic command keys -> pool config) and returns the executor.
-    pub fn new(mgmt_client_priv_pem: String, mgmt_host_pub_pem: String) -> std::io::Result<Self> {
+    /// Creates the pool, starts the management bootstrap thread against
+    /// `endpoint` (dynamic command keys -> pool config) and returns the
+    /// executor.
+    ///
+    /// One identity is minted here for the executor's whole life and presented
+    /// on every connection, so the daemon can tell this instance's process tree
+    /// from a predecessor's (see `protocol::new_client_id`).
+    pub fn new(
+        endpoint: CommandEndpoint,
+        mgmt_client_priv_pem: String,
+        mgmt_host_pub_pem: String,
+    ) -> std::io::Result<Self> {
         let pool = Pool::new()?;
         let executor = Self {
             pool: pool.clone(),
             sessions: Mutex::new(HashMap::new()),
             next_session: AtomicU64::new(1),
         };
+        let client_id = crate::protocol::new_client_id();
         // Bootstrap thread: re-fetch the dynamic command keys and reconfigure
-        // the pool whenever zcoderd restarts. Runs off the calling thread.
+        // the pool whenever the daemon restarts. Runs off the calling thread.
         let bootstrap_pool = pool.clone();
         std::thread::Builder::new()
             .name("cmd-client-bootstrap".to_string())
             .spawn(move || {
-                crate::bootstrap::start(bootstrap_pool, mgmt_client_priv_pem, mgmt_host_pub_pem);
+                crate::bootstrap::start(
+                    bootstrap_pool,
+                    endpoint,
+                    mgmt_client_priv_pem,
+                    mgmt_host_pub_pem,
+                    client_id,
+                );
             })
             .map_err(std::io::Error::other)?;
         Ok(executor)
@@ -104,9 +123,12 @@ impl RemoteCommandExecutor for SshCommandExecutor {
         let (stderr_reader, stderr_pump) = UnixStream::pair()?;
         let (stdin_pump, stdin_writer) = UnixStream::pair()?;
 
-        let stdout: Box<dyn AsyncRead + Unpin + Send> = Box::new(smol::Async::new(stdout_reader)?);
-        let stderr: Box<dyn AsyncRead + Unpin + Send> = Box::new(smol::Async::new(stderr_reader)?);
-        let stdin: Box<dyn AsyncWrite + Unpin + Send> = Box::new(smol::Async::new(stdin_writer)?);
+        let stdout: Box<dyn AsyncRead + Unpin + Send + Sync> =
+            Box::new(smol::Async::new(stdout_reader)?);
+        let stderr: Box<dyn AsyncRead + Unpin + Send + Sync> =
+            Box::new(smol::Async::new(stderr_reader)?);
+        let stdin: Box<dyn AsyncWrite + Unpin + Send + Sync> =
+            Box::new(smol::Async::new(stdin_writer)?);
 
         let state = Arc::new(SessionState::new());
         self.sessions
@@ -128,7 +150,7 @@ impl RemoteCommandExecutor for SshCommandExecutor {
     }
 
     fn signal(&self, session_id: u64, signal: Signal) -> std::io::Result<()> {
-        // Signal the recorded process group via the reserved command; zcoderd
+        // Signal the recorded process group via the reserved command; the daemon
         // kills the whole group (`kill(-pgid, sig)`).
         let command = crate::protocol::signal_command(session_id, signal.code());
         let conn = self.pool.allocate()?;
@@ -150,6 +172,33 @@ impl RemoteCommandExecutor for SshCommandExecutor {
             .cloned()?;
         let exit = state.exit.lock().unwrap_or_else(|poison| poison.into_inner());
         *exit
+    }
+
+    fn open_shell_pty<'a>(&self, cols: u32, rows: u32, cwd: Option<&'a str>) -> ShellPtyFuture<'a> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let command = crate::pty::shell_command(cwd);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let allocate_pool = pool.clone();
+            // Connection allocation blocks (bounded retry budget), so it runs on
+            // a blocking worker instead of stalling the runtime; the pty setup
+            // itself is async and stays on the pool runtime.
+            pool.runtime().spawn(async move {
+                let result =
+                    match tokio::task::spawn_blocking(move || allocate_pool.allocate()).await {
+                        Ok(Ok(conn)) => {
+                            crate::pty::open_shell_pty(conn, cols, rows, &command).await
+                        }
+                        Ok(Err(err)) => Err(err),
+                        Err(join) => Err(std::io::Error::other(format!(
+                            "shell pty allocate task: {join}"
+                        ))),
+                    };
+                let _ = tx.send(result);
+            });
+            rx.await
+                .map_err(|_| std::io::Error::other("shell pty setup task dropped"))?
+        })
     }
 
     fn wait_exit_async(&self, session_id: u64) -> ExitFuture<'_> {
@@ -189,6 +238,17 @@ impl RemoteCommandExecutor for SshCommandExecutor {
 }
 
 impl SshCommandExecutor {
+    /// Runs one short shell command synchronously on the pool and waits for its
+    /// exit status. Used for guest-side housekeeping (mkdir + virtiofs mount,
+    /// guest clock sync) from a non-command context without going through the
+    /// global executor (which would recurse into `spawn`). Blocks the calling
+    /// thread for up to the pool's allocate budget, so call it from a background
+    /// thread, never from a tokio runtime or the GPUI main thread.
+    pub fn run_shell(&self, command: &str) -> std::io::Result<()> {
+        let conn = self.pool.allocate()?;
+        self.pool.runtime().block_on(run_ssh_command(conn, command))
+    }
+
     /// Drops a session entry once its terminal exit has been consumed by a
     /// waiter. Repeated removals are a no-op.
     fn remove_session(&self, session_id: u64) {
@@ -321,7 +381,7 @@ async fn pump(
                     Some(ChannelMsg::Eof) => {
                         // The remote side has no more stdout/stderr data, but
                         // the exit-status message for a finished command is sent
-                        // AFTER this EOF: zcoderd EOFs on a closed child stdout
+                        // AFTER this EOF: the daemon EOFs on a closed child stdout
                         // pipe, then reports the exit status once the child is
                         // reaped. Breaking here made every quick command resolve
                         // with exit_code=None. Keep looping until the
@@ -340,7 +400,7 @@ async fn pump(
                 match read {
                     Ok(0) => {
                         // Send the channel EOF per the SSH standard: the caller
-                        // (util) closed its stdin, so zcoderd must learn that
+                        // (util) closed its stdin, so the daemon must learn that
                         // and enter its normal error handling instead of a
                         // long-lived LSP blocking forever waiting for input.
                         stdin_open = false;

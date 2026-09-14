@@ -104,7 +104,7 @@ pub struct NativeRunningKernel {
 impl Debug for NativeRunningKernel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunningKernel")
-            .field("process", &*self.process)
+            .field("process", &self.process)
             .finish()
     }
 }
@@ -121,6 +121,8 @@ impl NativeRunningKernel {
         cx: &mut App,
     ) -> Task<Result<Box<dyn RunningKernel>>> {
         window.spawn(cx, async move |cx| {
+            use util::process::Stdio;
+
             let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
             let ports = peek_ports(ip).await?;
 
@@ -150,9 +152,9 @@ impl NativeRunningKernel {
 
             let mut process = util::process::Child::spawn(
                 cmd,
-                std::process::Stdio::piped(),
-                std::process::Stdio::piped(),
-                std::process::Stdio::piped(),
+                Stdio::piped(),
+                Stdio::piped(),
+                Stdio::piped(),
             )?;
 
             let session_id = Uuid::new_v4().to_string();

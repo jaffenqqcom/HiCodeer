@@ -39,6 +39,8 @@ export interface AbilityInitContext {
   prefPath?: string;
   preferredLocales?: string;
   moduleName?: string;
+  /** Resolved home directory (`<picked root>/HiCodeer`); empty when unset. */
+  homeDirectory?: string;
   resourceManager?: resourceManager.ResourceManager;
 }
 
