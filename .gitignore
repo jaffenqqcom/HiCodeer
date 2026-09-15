@@ -77,3 +77,4 @@ build/
 Cargo.lock
 hap/cerfile/
 
+hap/entry/hnp/arm64-v8a/hicodeerd.hnp

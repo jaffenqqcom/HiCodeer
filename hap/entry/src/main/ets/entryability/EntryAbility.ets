@@ -7,7 +7,7 @@ import { FileDropPlugin } from '@ohos-rs/ability-plugin-filedrop';
 import { OpenWithPlugin } from '@ohos-rs/ability-plugin-openwith';
 import { ImePlugin } from '@ohos-rs/ability-plugin-ime';
 import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
-import { Want, AbilityConstant } from '@kit.AbilityKit';
+import { Want, AbilityConstant, ConfigurationConstant } from '@kit.AbilityKit';
 import common from '@ohos.app.ability.common';
 import hilog from '@ohos.hilog';
 import window from '@ohos.window';
@@ -47,6 +47,15 @@ export default class EntryAbility extends NativeAbility {
     // launch_app -> start_zed_main, which must already know the user's data root.
     this.holdNativeLoad();
     super.onCreate(want, launchParam);
+    // Declare that the app follows the system dark/light mode. Without this the configuration
+    // forwarded to Rust only ever reports "not set", so the theme never tracks the system.
+    // Native module init is queued behind nativeLoadGate, so this lands before the init
+    // context is read.
+    try {
+      this.context.setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'setColorMode(COLOR_MODE_NOT_SET) failed: %{public}s', String(error));
+    }
     openWith.openFromWant(want);
   }
 

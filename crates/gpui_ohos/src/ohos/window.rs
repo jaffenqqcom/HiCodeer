@@ -13,9 +13,9 @@ use std::{
 use anyhow::Result;
 use futures::channel::oneshot;
 use openharmony_ability::{
-    AvoidAreaType, AxisEventData, AxisToolType, DeviceModifiers, Event, ImeEvent, InputEvent,
-    MouseAction, MouseEventData, MouseButton as DeviceMouseButton, OpenHarmonyApp, ScrollPhase,
-    xcomponent::{Action, KeyCode, KeyEventData, TouchEvent, TouchEventData},
+    AvoidAreaType, AxisEventData, AxisToolType, ColorMode, DeviceModifiers, Event, ImeEvent,
+    InputEvent, MouseAction, MouseEventData, MouseButton as DeviceMouseButton, OpenHarmonyApp,
+    ScrollPhase, xcomponent::{Action, KeyCode, KeyEventData, TouchEvent, TouchEventData},
 };
 use openharmony_ability_plugin_ime::ImeExt;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -40,11 +40,26 @@ use crate::{
 /// windows stop generating redraw events entirely.
 static PENDING_REDRAW: AtomicBool = AtomicBool::new(false);
 
+/// Maps the OHOS configuration color mode to the GPUI window appearance. `NoSet` means the
+/// platform reported no color mode; the historical light appearance is kept rather than
+/// guessing.
+pub(crate) fn appearance_from_mode(color_mode: ColorMode) -> WindowAppearance {
+    match color_mode {
+        ColorMode::Dark => WindowAppearance::Dark,
+        ColorMode::Light | ColorMode::NoSet => WindowAppearance::Light,
+    }
+}
+
 pub(crate) struct OhosWindow {
     handle: crate::AnyWindowHandle,
     app: Rc<RefCell<Option<OpenHarmonyApp>>>,
     bounds: RefCell<Bounds<Pixels>>,
     scale: RefCell<f32>,
+    /// Last color mode observed in the platform configuration. Compared on
+    /// `Event::ConfigChanged` so only an actual dark/light switch reports an appearance change.
+    /// Cached rather than re-read from the app: `appearance()` is queried while rendering, and
+    /// `OpenHarmonyApp::config()` clones the whole configuration.
+    color_mode: RefCell<ColorMode>,
     keyboard_overlap_device_px: Cell<i32>,
     safe_area_avoidance_enabled: Cell<bool>,
     last_emitted_resize: RefCell<Option<ResizeCallbackState>>,
@@ -507,6 +522,11 @@ impl OhosWindow {
             .as_ref()
             .map(|a| a.scale() as f32)
             .unwrap_or(1.0);
+        let color_mode = app
+            .borrow()
+            .as_ref()
+            .map(|a| a.config().color_mode)
+            .unwrap_or(ColorMode::NoSet);
         let bounds = Bounds::new(point(px(0.0), px(0.0)), params.bounds.size);
         // Don't create renderer immediately - native_window may not be available yet.
         // Renderer will be initialized lazily in draw() or when SurfaceCreate event is received.
@@ -517,6 +537,7 @@ impl OhosWindow {
             app: app.clone(),
             bounds: RefCell::new(bounds),
             scale: RefCell::new(scale),
+            color_mode: RefCell::new(color_mode),
             keyboard_overlap_device_px: Cell::new(0),
             safe_area_avoidance_enabled: Cell::new(true),
             last_emitted_resize: RefCell::new(None),
@@ -1581,6 +1602,29 @@ impl OhosWindow {
                     self.request_frame(true);
                 }
                 self.refresh_ime_cursor();
+                // The shared configuration was already replaced before this event was dispatched,
+                // so the cached mode is the only record of the previous appearance. Report a real
+                // switch through the GPUI appearance channel, which reloads the theme for
+                // `ThemeAppearanceMode::System`.
+                let new_color_mode = self
+                    .app
+                    .borrow()
+                    .as_ref()
+                    .map(|a| a.config().color_mode)
+                    .unwrap_or(ColorMode::NoSet);
+                if *self.color_mode.borrow() != new_color_mode {
+                    *self.color_mode.borrow_mut() = new_color_mode;
+                    // Taken out before the call so the callback cannot observe a live borrow of
+                    // the callback table (mirrors the should_close path below).
+                    let mut appearance_callback =
+                        self.callbacks.borrow_mut().appearance_changed.take();
+                    if let Some(callback) = appearance_callback.as_mut() {
+                        callback();
+                    }
+                    if appearance_callback.is_some() {
+                        self.callbacks.borrow_mut().appearance_changed = appearance_callback;
+                    }
+                }
             }
             Event::WindowDestroy => {
                 self.cancel_momentum();
@@ -2773,7 +2817,7 @@ impl PlatformWindow for OhosWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        appearance_from_mode(*self.color_mode.borrow())
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {

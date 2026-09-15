@@ -311,7 +311,7 @@ cd <工程根> && ./script/bundle-ohos          # 默认 debug
 ```
 
 - **禁止手拼 cargo / 手动 export 环境变量**（本机无 cargo/rustc）
-- 本机与 VM `172.16.100.2` **共享磁盘**（`/storage/Users/currentUser/` == VM `/mnt/linux_share/`），编译实际在 VM 上跑
+- 本机与 VM `172.16.105.2` **共享磁盘**（`/storage/Users/currentUser/` == VM `/mnt/linux_share/`），编译实际在 VM 上跑
 - skill：`zcoder-build`
 
 ### 装机
@@ -379,7 +379,7 @@ python3 ~/.workbuddy/skills/zcoder-install/scripts/install_via_vm.py
 
 ## 10. 环境与路径陷阱
 
-- **本机 ↔ VM 同盘**：`/storage/Users/currentUser/` == VM `/mnt/linux_share/`，改动实时可见，无需同步。VM 登录 `ssh user@172.16.100.2`；OHOS 无 sshpass ⇒ 用 pty 驱动 ssh 的脚本（如 `.workbuddy/tmp/vm_run.py`）
+- **本机 ↔ VM 同盘**：`/storage/Users/currentUser/` == VM `/mnt/linux_share/`，改动实时可见，无需同步。VM 登录 `ssh user@172.16.105.2`；OHOS 无 sshpass ⇒ 用 pty 驱动 ssh 的脚本（如 `.workbuddy/tmp/vm_run.py`）
 - **共享盘上的 `.codebuddy/` 与 `.workbuddy/` 都归 WorkBuddy**，不是设备侧 codebuddy 的 ⇒ 拿它们推断设备侧登录态会得出**错误结论**（本项目踩过）。设备侧子进程的 `$HOME/.codebuddy` 在它自己的 mount namespace 里，外部读不到
 - **`/data/storage/el2/...` 是 per-uid bind mount**：同一字符串不同 uid 指向不同目录
 - **抓取产物 / 日志不要写进工作区**：fs 事件 → git 刷新 → 更多日志 → CPU 风暴（实测约 8-12 次 git/秒）。写到 `.workbuddy/tmp/` 之外或 VM `/tmp`

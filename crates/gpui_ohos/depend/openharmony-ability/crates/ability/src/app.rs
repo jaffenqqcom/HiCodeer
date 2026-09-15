@@ -31,6 +31,8 @@ pub struct AbilityInitContext {
     pub base_path: Option<String>,
     pub pref_path: Option<String>,
     pub preferred_locales: Option<String>,
+    /// OHOS `Configuration.colorMode` at init time: -1 not set, 0 dark, 1 light.
+    pub color_mode: Option<i32>,
     pub module_name: Option<String>,
     /// Home directory (`<picked root>/HiCodeer`) resolved by the ets side before
     /// the native module loaded. Empty/absent means no directory was chosen.
@@ -47,6 +49,7 @@ impl AbilityInitContext {
             base_path: context.get("basePath")?,
             pref_path: context.get("prefPath")?,
             preferred_locales: context.get("preferredLocales")?,
+            color_mode: context.get("colorMode")?,
             module_name: context.get("moduleName")?,
             home_directory: context.get("homeDirectory")?,
         })
@@ -293,6 +296,17 @@ impl OpenHarmonyAppInner {
     }
 
     pub fn set_init_context(&mut self, context: AbilityInitContext) {
+        // The Ability reports `Configuration.colorMode` only when the configuration updates,
+        // never at startup. Seed it from the init context so the first window already knows the
+        // system appearance instead of staying light until the first configuration update.
+        if let Some(color_mode) = context.color_mode.map(crate::ColorMode::from) {
+            if matches!(color_mode, crate::ColorMode::NoSet) {
+                log::warn!(
+                    "set_init_context: colorMode not set; system appearance unknown, falling back to light"
+                );
+            }
+            self.configuration.color_mode = color_mode;
+        }
         self.init_context = context;
     }
 }

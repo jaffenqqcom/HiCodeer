@@ -144,6 +144,7 @@ export class NativeAbility extends UIAbility {
       basePath: context?.filesDir ?? "",
       prefPath: context?.filesDir ?? "",
       preferredLocales: context?.config?.language ?? "",
+      colorMode: context?.config?.colorMode ?? -1,
       moduleName,
       homeDirectory: this.homeDirectory,
       resourceManager: context?.resourceManager,

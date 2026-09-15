@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Result;
 use futures::channel::oneshot;
-use openharmony_ability::{Event, InputEvent, OpenHarmonyApp, path_from_uri};
+use openharmony_ability::{ColorMode, Event, InputEvent, OpenHarmonyApp, path_from_uri};
 use openharmony_ability_plugin_cursor::{CursorBridgePlugin, CursorExt};
 use openharmony_ability_plugin_files::{
     FileDialogOptions, FilesBridgePlugin, FilesExt, dialog_type,
@@ -30,7 +30,7 @@ use crate::{
 
 use super::{
     dispatcher::OhosDispatcher, display::OhosDisplay, text_system::OhosTextSystem,
-    wgpu_context::WgpuContext, window::OhosWindow,
+    wgpu_context::WgpuContext, window::{OhosWindow, appearance_from_mode},
 };
 
 pub(crate) struct OhosPlatform {
@@ -551,7 +551,13 @@ impl Platform for OhosPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        let color_mode = self
+            .app
+            .borrow()
+            .as_ref()
+            .map(|app| app.config().color_mode)
+            .unwrap_or(ColorMode::NoSet);
+        appearance_from_mode(color_mode)
     }
 
     fn open_url(&self, url: &str) {
