@@ -646,24 +646,40 @@ impl Child {
     }
 
     pub async fn output(mut self) -> io::Result<Output> {
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stdout) = self.stdout.take() {
-            stdout.read_to_end(&mut stdout_buf).await?;
-        }
-        if let Some(mut stderr) = self.stderr.take() {
-            stderr.read_to_end(&mut stderr_buf).await?;
-        }
-        // Borrow (not move) `self.kind`: `Child` implements `Drop`, so a field of
-        // a Drop type cannot be moved out by value; `&mut` matching is all that
-        // status()/wait_exit_async() need here.
-        let status = match &mut self.kind {
-            ChildKind::Remote { session_id, executor } => {
-                let exit_code = executor.wait_exit_async(*session_id).await?;
-                status_from_code(exit_code)
+        // Close stdin before waiting: `output` consumes the child and can never
+        // feed it, so a command that reads stdin must see EOF or it blocks
+        // forever. On the remote path the daemon only forwards that EOF once
+        // this side drops its stdin end, so keeping it open hangs the child and
+        // this future with it.
+        self.stdin.take();
+
+        let status = self.status();
+
+        let stdout = self.stdout.take();
+        let stdout_future = async move {
+            let mut data = Vec::new();
+            if let Some(mut stdout) = stdout {
+                stdout.read_to_end(&mut data).await?;
             }
-            ChildKind::Local { child } => child.status().await?,
+            io::Result::Ok(data)
         };
+
+        let stderr = self.stderr.take();
+        let stderr_future = async move {
+            let mut data = Vec::new();
+            if let Some(mut stderr) = stderr {
+                stderr.read_to_end(&mut data).await?;
+            }
+            io::Result::Ok(data)
+        };
+
+        // Read both streams concurrently: reading them one after the other
+        // deadlocks, because the relay blocks on a full stderr pipe while the
+        // caller is still waiting for stdout to reach EOF.
+        let (stdout_buf, stderr_buf) =
+            futures_lite::future::try_zip(stdout_future, stderr_future).await?;
+        let status = status.await?;
+
         Ok(Output {
             status,
             stdout: stdout_buf,
