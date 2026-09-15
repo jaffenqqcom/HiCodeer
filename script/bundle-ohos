@@ -463,6 +463,63 @@ JSON
   echo "[hicodeer-ohos-build] Assembling hicodeerd.hnp (hnpcli) ..."
   rm -f "$HNP_SRC_DIR/hicodeerd.hnp"
   $NO_SHIM "$HNPCLI" pack -i "$STAGE_DIR/hicodeerd" -o "$HNP_SRC_DIR"
+
+  # hnpcli records each entry's permission by stat() on the staged file
+  # (hnp_zip.c ZipAddFile). The staging tree lives on /storage, which is hmdfs:
+  # that filesystem keeps only the owner bits, rewrites the group bits and
+  # forces the other bits to zero -- chmod 755 and chmod 777 both yield 0770
+  # there. The on-device installer decides the extracted mode from the other
+  # execute bit alone (hnp_zip.c HnpUnZipForFile: mode & S_IXOTH ? 0755 : 0744),
+  # so every executable packed from this host lands as 0744 and is not runnable
+  # by anyone other than the package owner. Rewrite the recorded permission for
+  # the entries whose staged source is owner-executable, so the package carries
+  # the mode the chmod calls above intend. Only the central directory carries
+  # the unix mode (minizip reads external_fa from there), so the local headers,
+  # the entry data and their CRCs stay untouched.
+  python3 - "$HNP_SRC_DIR/hicodeerd.hnp" "$STAGE_DIR" <<'PY'
+import os
+import struct
+import sys
+
+hnp_path, stage_dir = sys.argv[1], sys.argv[2]
+
+CENTRAL_DIRECTORY_SIG = b"PK\x01\x02"
+END_OF_CENTRAL_DIRECTORY_SIG = b"PK\x05\x06"
+UNIX_MODE_OFFSET = 38
+OWNER_EXECUTE_BIT = 0o100
+EXECUTABLE_MODE = 0o100755
+
+with open(hnp_path, "rb") as hnp_file:
+    archive = bytearray(hnp_file.read())
+
+end_of_central_directory = archive.rfind(END_OF_CENTRAL_DIRECTORY_SIG)
+if end_of_central_directory < 0:
+    sys.exit("hnp: end of central directory not found: %s" % hnp_path)
+
+entry_count = struct.unpack_from("<H", archive, end_of_central_directory + 10)[0]
+offset = struct.unpack_from("<I", archive, end_of_central_directory + 16)[0]
+
+for _ in range(entry_count):
+    if archive[offset:offset + 4] != CENTRAL_DIRECTORY_SIG:
+        sys.exit("hnp: malformed central directory entry at %d: %s" % (offset, hnp_path))
+    name_length = struct.unpack_from("<H", archive, offset + 28)[0]
+    extra_length = struct.unpack_from("<H", archive, offset + 30)[0]
+    comment_length = struct.unpack_from("<H", archive, offset + 32)[0]
+    entry_name = bytes(archive[offset + 46:offset + 46 + name_length]).decode()
+    if not entry_name.endswith("/"):
+        staged_source = os.path.join(stage_dir, entry_name)
+        if not os.path.exists(staged_source):
+            sys.exit("hnp: no staged source for entry %s: %s" % (entry_name, staged_source))
+        if os.stat(staged_source).st_mode & OWNER_EXECUTE_BIT:
+            recorded = struct.unpack_from("<I", archive, offset + UNIX_MODE_OFFSET)[0]
+            struct.pack_into("<I", archive, offset + UNIX_MODE_OFFSET,
+                             (EXECUTABLE_MODE << 16) | (recorded & 0xFFFF))
+    offset += 46 + name_length + extra_length + comment_length
+
+with open(hnp_path, "wb") as hnp_file:
+    hnp_file.write(archive)
+PY
+
   if [ ! -f "$HNP_SRC_DIR/hicodeerd.hnp" ]; then
     echo "[hicodeer-ohos-build] ERROR: hnpcli did not produce $HNP_SRC_DIR/hicodeerd.hnp" >&2
     exit 1
