@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+# 调用方的终端可能把 rm/unlink/rmdir 换成了包装函数（以 BASH_FUNC_* 导出），并把 BASH_ENV
+# 指向一个每启动一层子 shell 就重新 source 的脚本。函数优先级高于 PATH，所以改 PATH 没用；
+# 只清函数也不够，下个子 shell 会被 BASH_ENV 装回来，两条必须都清。若包装器的 shebang 指向
+# 本机不存在的解释器，脚本会在第一次调用 rm 时以 126 静默退出、且看不出错在哪，故放在最前。
+unset BASH_ENV
+unset -f rm unlink rmdir 2>/dev/null || true
+
 # Function for displaying help info
 help_info() {
   echo "
@@ -16,6 +23,9 @@ Options:
   --hap-only        Skip Rust builds; only run ohpm install + hvigor assembleHap
   --rebuild-golden  Force a rebuild of the guest golden disk (also done
                     automatically when guest-init is newer than the golden)
+  --check-tls       On HarmonyOS only: verify the compile-time TLS shim
+                    against a probe that needs more pthread keys than the
+                    platform has, then exit without building anything.
   -h, --help        Display this help and exit.
 
 The command backend is the on-device hicodeerd server: this script cross-compiles
@@ -29,6 +39,7 @@ the same device as the host app (no VM / QEMU backend).
 IS_RELEASE=false
 MODE="all"
 REBUILD_GOLDEN=false
+CHECK_TLS=false
 CARGO_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -48,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       REBUILD_GOLDEN=true
       shift
       ;;
+    --check-tls)
+      CHECK_TLS=true
+      shift
+      ;;
     --)
       shift
       break
@@ -64,19 +79,95 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ==================== 路径配置 ====================
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"            # .../zcoder/script
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"           # .../zcoder
+# ==================== 平台探测 ====================
+# HarmonyOS 本机用 harmonybrew 工具链做原生编译；openEuler VM 用交叉编译工具链。
+# 判据：.harmonybrew/bin/brew 仅本机存在且稳定。
+if [ -x "$HOME/.harmonybrew/bin/brew" ]; then
+  BUILD_PLATFORM="harmonyos"
+else
+  BUILD_PLATFORM="openeuler"
+fi
+
+# ==================== 项目路径（一般不随系统变化） ====================
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"            # .../HiCodeer/script
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"           # .../HiCodeer
 HAP_DIR="$PROJECT_ROOT/hap"
 
-TOOLCHAIN="/mnt/linux_share/workspace/commandline-linux-arm64"
-NODE_CMD="$TOOLCHAIN/tool/node/bin/node"
-HVIGORW_JS="$TOOLCHAIN/hvigor/bin/hvigorw.js"
-export DEVECO_SDK_HOME="$TOOLCHAIN/sdk"
-export OHOS_BASE_SDK_HOME="$TOOLCHAIN/sdk"
-export HARMONYBREW_SDK="$TOOLCHAIN/sdk"
-OHPM_CMD="$TOOLCHAIN/ohpm/bin/ohpm"
-SDK_LLVM_BIN="$TOOLCHAIN/sdk/default/openharmony/native/llvm/bin"
+# 编译期临时目录钉在构建目录内。本机的 /tmp 是只读的 erofs，clang 建不出临时文件就会直接
+# 失败（"unable to make temporary file: Read-only file system"）；而 TMPDIR 一旦继承自
+# 调用方，换个终端跑就是另一套环境，cargo 会因此判脏重编。固定下来两件事一起解决。
+export TMPDIR="$PROJECT_ROOT/target/tmp"
+mkdir -p "$TMPDIR"
+
+# ==================== 工具链与路径配置（换系统只改这一块） ====================
+# 所有编译器 / 打包工具 / SDK / 签名 / hnpcli / shim 的路径都集中在此，按
+# BUILD_PLATFORM 分流；其它段落只引用这里的变量，不在别处硬编码路径。
+if [ "$BUILD_PLATFORM" = "harmonyos" ]; then
+  # 本机：harmonybrew 提供 rustup/ohos-sdk 原生编译，commandline-ohos 提供打包工具
+  BREW_PREFIX="$HOME/.harmonybrew"
+  OHOS_SDK_ROOT="$("$BREW_PREFIX/bin/brew" --prefix ohos-sdk 2>/dev/null || echo "$BREW_PREFIX/opt/ohos-sdk")"
+  TOOLCHAIN="$HOME/workspace/commandline-ohos"
+  # 编译器 / 链接器（OHOS 原生 clang）
+  SDK_LLVM_BIN="$OHOS_SDK_ROOT/native/llvm/bin"
+  SDK_NATIVE="$OHOS_SDK_ROOT/native"
+  # 打包工具
+  NODE_CMD="$TOOLCHAIN/node.org/node_22.7.0/bin/node"
+  HVIGORW_JS="$TOOLCHAIN/hvigor.org/hvigor_1.0.0/bin/hvigorw.js"
+  OHPM_CMD="$TOOLCHAIN/ohpm.org/ohpm_1.1/bin/ohpm"
+  NODE_BIN_DIR="$TOOLCHAIN/node.org/node_22.7.0/bin"
+  OHPM_BIN_DIR="$TOOLCHAIN/ohpm.org/ohpm_1.1/bin"
+  # SDK / 签名 / hnpcli
+  export DEVECO_SDK_HOME="$TOOLCHAIN/sdk.org/sdk_1.0.0"
+  export OHOS_BASE_SDK_HOME="$TOOLCHAIN/sdk.org/sdk_1.0.0"
+  export HARMONYBREW_SDK="$TOOLCHAIN/sdk.org/sdk_1.0.0"
+  SIGN_TOOL_JAR="$TOOLCHAIN/sdk.org/sdk_1.0.0/default/openharmony/toolchains/lib/hap-sign-tool.jar"
+  HNPCLI="$TOOLCHAIN/sdk.org/sdk_1.0.0/default/openharmony/toolchains/hnpcli"
+  # TLS shim（绕过 libc 128 pthread key 上限；rustc/cargo 编译期用）。
+  # 仓库里只留源码，产物 .so 落 cargo 的 scratch 目录（路径在下方 SHIM 段拼出），
+  # 与 target 同在 <项目根>/target/ohos 下，不给仓库添噪声。
+  SHIM_C="$SCRIPT_DIR/ohos-tls-shim.c"
+  SHIM_SO=""
+  SHIM_NAME="ohos-tls-shim"
+  # shim 只作用于编译进程，不能扩散到 hvigor/hnpcli/java，故这些步骤前卸掉 LD_PRELOAD
+  NO_SHIM="env -u LD_PRELOAD"
+  # 本机工具链上 PATH。rustup 的 cargo/rustc 是 shim，落在 opt/rustup/bin（都是指向
+  # rustup 的符号链接），而 brew/bin 里只有 rustup 本体 —— 漏掉前者，脚本会在第一次
+  # 调 cargo 时就 command not found。git/coreutils/strip/make 等由 brew/bin 提供。
+  export PATH="$BREW_PREFIX/opt/rustup/bin:$BREW_PREFIX/bin:$PATH"
+else
+  TOOLCHAIN="/mnt/linux_share/workspace/commandline-linux-arm64"
+  SDK_LLVM_BIN="$TOOLCHAIN/sdk/default/openharmony/native/llvm/bin"
+  SDK_NATIVE="$TOOLCHAIN/sdk/default/openharmony/native"
+  NODE_CMD="$TOOLCHAIN/tool/node/bin/node"
+  HVIGORW_JS="$TOOLCHAIN/hvigor/bin/hvigorw.js"
+  OHPM_CMD="$TOOLCHAIN/ohpm/bin/ohpm"
+  NODE_BIN_DIR="$TOOLCHAIN/tool/node/bin"
+  OHPM_BIN_DIR="$TOOLCHAIN/ohpm/bin"
+  export DEVECO_SDK_HOME="$TOOLCHAIN/sdk"
+  export OHOS_BASE_SDK_HOME="$TOOLCHAIN/sdk"
+  export HARMONYBREW_SDK="$TOOLCHAIN/sdk"
+  SIGN_TOOL_JAR="$TOOLCHAIN/sdk/default/openharmony/toolchains/lib/hap-sign-tool.jar"
+  HNPCLI="$TOOLCHAIN/sdk/default/openharmony/toolchains/hnpcli"
+  # virtiofs 元数据 shim（放行共享盘 EPERM）；随交叉工具链走，就地复用它的产物
+  SHIM_C="$TOOLCHAIN/tool/shim/ohos-meta-shim.c"
+  SHIM_SO="$TOOLCHAIN/tool/shim/ohos-meta-shim.so"
+  SHIM_NAME="ohos-meta-shim"
+  NO_SHIM=""
+fi
+echo "[hicodeer-ohos-build] BUILD_PLATFORM=$BUILD_PLATFORM"
+
+# ==================== hvigor 的模块解析路径 ====================
+# hvigor 载入项目 hvigorfile.ts 时要 require('@ohos/hvigor-ohos-plugin')，node 从该文件所在
+# 目录起按 node_modules 逐级向上找；而工具链把插件放在 hvigor 安装目录的同级，两处都不在查找
+# 路径上，于是直接报 "Cannot find module '@ohos/hvigor-ohos-plugin'"。这里在构建目录内造一份
+# @ohos 软链，用 NODE_PATH 指过去（hvigor 只把它自己算出的路径追加在 NODE_PATH 前面，不覆盖），
+# 免得往工程里塞 node_modules。插件与 hvigor 同级，故从 hvigorw.js 反推安装根。
+HVIGOR_HOME_DIR="$(cd "$(dirname "$HVIGORW_JS")/.." && pwd)"
+HVIGOR_MOD_DIR="$PROJECT_ROOT/target/hvigor-node-modules"
+mkdir -p "$HVIGOR_MOD_DIR/@ohos"
+ln -sfn "$HVIGOR_HOME_DIR/hvigor" "$HVIGOR_MOD_DIR/@ohos/hvigor"
+ln -sfn "$HVIGOR_HOME_DIR/hvigor-ohos-plugin" "$HVIGOR_MOD_DIR/@ohos/hvigor-ohos-plugin"
+export NODE_PATH="$HVIGOR_MOD_DIR${NODE_PATH:+:$NODE_PATH}"
 
 OHOS_TARGET="aarch64-unknown-linux-ohos"
 CRATE="launch-zed"
@@ -89,19 +180,10 @@ if [ "$IS_RELEASE" = true ]; then
   BUILD_MODE="release"
 fi
 
-# ==================== virtiofs 元数据 shim（LD_PRELOAD 放行 EPERM） ====================
-# 共享盘（virtiofs）对非 root 的 fchmod/fchown/utimensat/copy_file_range 返回
-# EPERM。此 shim 在真实调用仅因 EPERM 失败时返回成功（copy_file_range 则改为
-# ENOSYS 触发调用方降级到 read/write），使 cargo 与 hvigor 的产物可直接写共享盘
-# （无需 bind mount，与 DevEco Studio 共用同一份 build 输出）。本地文件系统不受影响。
-SHIM_C="$TOOLCHAIN/tool/shim/ohos-meta-shim.c"
-SHIM_SO="$TOOLCHAIN/tool/shim/ohos-meta-shim.so"
-if [ ! -f "$SHIM_SO" ] || [ "$SHIM_C" -nt "$SHIM_SO" ]; then
-  echo "[hicodeer-ohos-build] 编译 virtiofs meta shim -> $SHIM_SO"
-  gcc -shared -fPIC -o "$SHIM_SO" "$SHIM_C" -ldl
-fi
-export LD_PRELOAD="$SHIM_SO${LD_PRELOAD:+:$LD_PRELOAD}"
-echo "[hicodeer-ohos-build] LD_PRELOAD=$SHIM_SO"
+# ==================== 平台相关 shim（LD_PRELOAD） ====================
+# 源码路径与名字已在顶部工具链配置块按平台设定；编译与 LD_PRELOAD 挂载放到 cargo
+# target 目录确定之后（见下方 SHIM 段）—— HarmonyOS 的垫片产物就落在那个 scratch
+# 目录里。两个 shim 都只作用于编译进程，hvigor/hnpcli/java 调用前用 $NO_SHIM 卸掉。
 
 # ==================== Cargo build（OHOS 交叉编译） ====================
 # 工具链版本：本仓根 rust-toolchain.toml 指定 1.97.1。此前该工具链组件损坏
@@ -109,6 +191,17 @@ echo "[hicodeer-ohos-build] LD_PRELOAD=$SHIM_SO"
 # 1.97.1 组件已补全（rustup toolchain install 修复），且 merman 0.7.0 声明
 # rust-version="1.95"，必须用 ≥1.95 的工具链，故恢复使用 1.97.1。
 export RUSTUP_TOOLCHAIN=1.97.1
+
+# 本机是自举编译：rustc 的 host 三元组必须就等于目标三元组。装错工具链（例如 host
+# 是 gnu 的那份）时当场报清楚，而不是拖到链接期才炸。VM 走交叉编译，不适用此断言。
+if [ "$BUILD_PLATFORM" = "harmonyos" ]; then
+  RS_HOST="$(rustc -vV | sed -n 's/^host: //p')"
+  if [ "$RS_HOST" != "$OHOS_TARGET" ]; then
+    echo "[hicodeer-ohos-build] ERROR: rustc host='$RS_HOST'，期望 '$OHOS_TARGET'；本机路径要求原生工具链" >&2
+    exit 1
+  fi
+  echo "[hicodeer-ohos-build] rustc $(rustc -V) (host $RS_HOST)"
+fi
 # 用 commandline-linux-arm64 的 clang wrapper（系统 clang-17 + OHOS target + sysroot）
 export CC_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/clang"
 export CXX_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/clang++"
@@ -117,38 +210,71 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER="$SDK_LLVM_BIN/clang"
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_CXX="$SDK_LLVM_BIN/clang++"
 
 # 完全脱离旧 SDK：覆盖用户 shell 残留的 OHOS 环境变量
-SDK_NATIVE="$TOOLCHAIN/sdk/default/openharmony/native"
+# SDK_NATIVE 已在上方平台分支中按平台设定（VM 用交叉 SDK，本机用 harmonybrew ohos-sdk）
 export OHOS_NDK_HOME="$SDK_NATIVE"
 export CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_ohos="$SDK_NATIVE/build/cmake/ohos.toolchain.cmake"
-# aws-lc-sys 等 C crate 用 Unix Makefiles generator，需要 make 而非 ninja
-export CMAKE_MAKE_PROGRAM="/usr/bin/make"
+# aws-lc-sys 等 C crate 用 Unix Makefiles generator，需要 make 而非 ninja。
+# 路径不能写死 /usr/bin/make：HarmonyOS 本机没有这个路径，make 由 harmonybrew 提供，
+# 故按 PATH 解析，解析不到再退回惯用路径。
+MAKE_CMD="$(command -v make 2>/dev/null || true)"
+if [ -z "$MAKE_CMD" ] && [ -x /usr/bin/make ]; then
+  MAKE_CMD="/usr/bin/make"
+fi
+if [ -z "$MAKE_CMD" ]; then
+  echo "[hicodeer-ohos-build] ERROR: make 不在 PATH；本机需 'brew install make'" >&2
+  exit 1
+fi
+export CMAKE_MAKE_PROGRAM="$MAKE_CMD"
 
 # 某些 C crate（zstd-sys/gettext-sys 等）需要额外 C 宏；
 # clang-17 把 incompatible-function-pointer-types 当错误，必须显式关闭
 export CFLAGS_aarch64_unknown_linux_ohos="-DZSTD_NOVMS -D__ANDROID__ -Wno-incompatible-function-pointer-types"
 export RANLIB_aarch64_unknown_linux_ohos="$SDK_LLVM_BIN/llvm-ranlib"
 
-# Rust 编译产物放本地磁盘 $HOME/rust-target：virtiofs 共享盘不支持硬链接，
-# cargo 退化为逐文件拷贝，拖慢编译。同一 checkout 共用一个 target 子目录，
-# 由 cargo 按 <triple>/<profile> 自动隔离。当前用户直接创建（无 sudo、
-# 无 bind mount）。只动 rust 的 target；hap 的 build（hap/entry/build）由
-# hvigor 管理，不受影响。
-RUST_TARGET_ROOT="${HOME}/rust-target"
+# Rust 编译产物一律留在本项目内：<项目根>/target/ohos。该路径被 .gitignore 的
+# "**/target" 覆盖，既不外泄 git 状态，也不往 $HOME 或工作区外丢东西。同一 checkout
+# 共用一个 target 子目录，由 cargo 按 <triple>/<profile> 自动隔离。当前用户直接创建
+# （无 sudo、无 bind mount）。只动 rust 的 target；hap 的 build（hap/entry/build）
+# 由 hvigor 管理，不受影响。
+# 注：本机 /storage 是本地盘，硬链接正常；若在 VM 侧落到 virtiofs 共享盘上，该文件
+# 系统不支持硬链接，cargo 会退化为逐文件拷贝（更慢）。
+RUST_TARGET_ROOT="$PROJECT_ROOT/target/ohos"
 # Unique per source checkout: parallel builds of different the host application copies must
 # not share a cargo target dir (cargo locks it and fingerprints collide).
 PROJECT_NAME="$(basename "$PROJECT_ROOT")"
 PROJECT_HASH="$(printf '%s' "$PROJECT_ROOT" | sha256sum | cut -c1-8)"
-# Every dir this checkout stages under $HOME/rust-target uses this prefix: the
-# project name keeps the paths readable, the hash keeps different checkouts of
-# the same project apart.
+# Every dir this checkout stages under target/ohos uses this prefix: the project
+# name keeps the paths readable, the hash keeps different checkouts of the same
+# project apart.
 TARGET_PREFIX="${PROJECT_NAME}-${PROJECT_HASH}"
 # Single shared cargo target dir for this checkout. launch-zed, hicodeerd
 # (OHOS) and hicodeerd (guest linux-gnu) all build into it; cargo keeps their
 # units apart by <triple>/<profile>. Created as the current user: no sudo, no
-# bind mount. It lives under $HOME, which always supports hard links (the
-# virtiofs share does not, so cargo had to copy every file instead).
+# bind mount. It lives inside the project tree, so nothing lands outside it.
 SHARED_TARGET_DIR="$RUST_TARGET_ROOT/${TARGET_PREFIX}-target"
 mkdir -p "$SHARED_TARGET_DIR"
+
+# ==================== 编译期 shim（LD_PRELOAD） ====================
+# 两个平台的 shim 都只作用于编译进程；hvigor/hnpcli/java 调用前用 $NO_SHIM 卸掉
+# （见各自调用处）。HarmonyOS 的 TLS 垫片编译产物写进 cargo 的 scratch 目录 ——
+# 与 target 同在 <项目根>/target/ohos 下，仓库里只留源码，不给 git 状态添噪声。
+SCRATCH_DIR="$SHARED_TARGET_DIR/ohos-harmony"
+mkdir -p "$SCRATCH_DIR"
+if [ -z "$SHIM_SO" ]; then
+  SHIM_SO="$SCRATCH_DIR/$SHIM_NAME.so"
+fi
+if [ ! -f "$SHIM_SO" ] || [ "$SHIM_C" -nt "$SHIM_SO" ]; then
+  echo "[hicodeer-ohos-build] 编译 $SHIM_NAME -> $SHIM_SO"
+  if [ "$BUILD_PLATFORM" = "harmonyos" ]; then
+    "$SDK_LLVM_BIN/clang" -shared -fPIC -O2 -o "$SHIM_SO" "$SHIM_C" -ldl
+  else
+    gcc -shared -fPIC -o "$SHIM_SO" "$SHIM_C" -ldl
+  fi
+fi
+# 纯赋值而非追加外部值：垫片只服务于本脚本的编译进程，外部若挂着别的 preload 会混进来，
+# 既污染编译结果，又让 cargo 的构建环境随终端漂移。
+export LD_PRELOAD="$SHIM_SO"
+echo "[hicodeer-ohos-build] LD_PRELOAD=$SHIM_SO ($SHIM_NAME)"
 
 # needs_strip <elf> — success when the file still carries a symbol table or
 # DWARF sections. One engine lib (libz.so) ships pre-stripped; rewriting it on
@@ -177,6 +303,58 @@ if [ "$IS_RELEASE" = true ]; then
   export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 else
   export CARGO_PROFILE_DEV_CODEGEN_UNITS=16
+fi
+
+# ==================== TLS 垫片自检（--check-tls） ====================
+# 造一个 thread_local 数量远超平台上限的探针：OHOS 的 libc 只给 128 个 pthread key，
+# 而 std 在这个 target 上用 pthread key 实现 thread_local!，所以不带垫片跑必然
+# "out of TLS keys"，带垫片跑必须算出正确和。用来在漫长编译之前先把垫片证实/证伪，
+# 免得把垫片问题误判成代码问题。只在 --check-tls 时执行，正文流程不跑。
+TLS_PROBE_THREAD_LOCALS=200
+# 探针把 0..N-1 累加，期望和 = N*(N-1)/2
+TLS_PROBE_EXPECTED_SUM=$(( TLS_PROBE_THREAD_LOCALS * (TLS_PROBE_THREAD_LOCALS - 1) / 2 ))
+TLS_PROBE_RS="$SCRATCH_DIR/tls_probe.rs"
+TLS_PROBE_BIN="$SCRATCH_DIR/tls_probe"
+
+run_tls_check() {
+  if [ "$BUILD_PLATFORM" != "harmonyos" ]; then
+    echo "[hicodeer-ohos-build] ERROR: --check-tls 只对本机 TLS 垫片有意义（当前平台 $BUILD_PLATFORM）" >&2
+    exit 1
+  fi
+  echo "[hicodeer-ohos-build] TLS 自检：生成含 $TLS_PROBE_THREAD_LOCALS 个 thread_local 的探针"
+  python3 - "$TLS_PROBE_RS" "$TLS_PROBE_THREAD_LOCALS" <<'PY'
+import sys
+
+path, count = sys.argv[1], int(sys.argv[2])
+lines = ["use std::cell::Cell;"]
+for i in range(count):
+    lines.append("thread_local!(static TL_%d: Cell<u32> = const { Cell::new(%d) });" % (i, i))
+lines.append("fn main() {")
+lines.append("    let mut sum: u32 = 0;")
+for i in range(count):
+    lines.append("    TL_%d.with(|c| { sum = sum.wrapping_add(c.get()); });" % i)
+lines.append('    println!("sum={sum}");')
+lines.append("}")
+with open(path, "w") as handle:
+    handle.write("\n".join(lines) + "\n")
+PY
+  rustc "$TLS_PROBE_RS" -o "$TLS_PROBE_BIN"
+
+  NO_SHIM_RESULT="$(LD_PRELOAD="" "$TLS_PROBE_BIN" 2>&1 || true)"
+  SHIM_RESULT="$(LD_PRELOAD="$SHIM_SO" "$TLS_PROBE_BIN" 2>&1 || true)"
+  echo "[hicodeer-ohos-build] 不带垫片 -> ${NO_SHIM_RESULT:-<无输出>}"
+  echo "[hicodeer-ohos-build] 带垫片   -> ${SHIM_RESULT:-<无输出>}"
+
+  if [ "$SHIM_RESULT" != "sum=$TLS_PROBE_EXPECTED_SUM" ]; then
+    echo "[hicodeer-ohos-build] ERROR: 垫片自检失败，期望 'sum=$TLS_PROBE_EXPECTED_SUM'，实得 '${SHIM_RESULT:-<无输出>}'" >&2
+    exit 1
+  fi
+  echo "[hicodeer-ohos-build] 垫片自检通过"
+}
+
+if [ "$CHECK_TLS" = true ]; then
+  run_tls_check
+  exit 0
 fi
 
 cd "$PROJECT_ROOT"
@@ -273,14 +451,18 @@ JSON
   cp "$KEYS_DIR/mgmt_client_key" "$HAP_RESFILE_DIR/hicodeerd-mgmt/mgmt-client-key"
   chmod 600 "$HAP_RESFILE_DIR/hicodeerd-mgmt/mgmt-client-key"
 
-  # Assemble the daemon HNP with the official OpenHarmony packer (hnpcli). The SDK
-  # hnpcli is x86-64 only; this toolchain ships a box64 wrapper at the same
-  # path, so call it like a native binary. hnpcli reads the package name/version
-  # from the staged hnp.json and emits <name>.hnp into -o.
-  HNPCLI="$TOOLCHAIN/sdk/default/openharmony/toolchains/hnpcli"
+  # 用官方 OpenHarmony 打包工具 hnpcli 装配 daemon HNP。hnpcli 路径已在平台分支设定
+  # （本机为 commandline-ohos 的 OHOS 原生版；VM 为交叉 SDK 的 box64 包装版），此处不再重定义。
+  # hnpcli 从 staged hnp.json 读取包名/版本，向 -o 输出 <name>.hnp。
+  # HNPCLI 已在平台分支中按平台设定（本机用 commandline-ohos 的 OHOS 原生版，
+  # VM 用交叉 SDK 的 box64 包装版），此处不再重定义。
+  if [ ! -x "$HNPCLI" ]; then
+    echo "[hicodeer-ohos-build] ERROR: hnpcli 不可用 ($HNPCLI)；HarmonyOS 本机需先编译 OHOS 原生版 hnpcli 放入 commandline-ohos 对应目录" >&2
+    exit 1
+  fi
   echo "[hicodeer-ohos-build] Assembling hicodeerd.hnp (hnpcli) ..."
   rm -f "$HNP_SRC_DIR/hicodeerd.hnp"
-  "$HNPCLI" pack -i "$STAGE_DIR/hicodeerd" -o "$HNP_SRC_DIR"
+  $NO_SHIM "$HNPCLI" pack -i "$STAGE_DIR/hicodeerd" -o "$HNP_SRC_DIR"
   if [ ! -f "$HNP_SRC_DIR/hicodeerd.hnp" ]; then
     echo "[hicodeer-ohos-build] ERROR: hnpcli did not produce $HNP_SRC_DIR/hicodeerd.hnp" >&2
     exit 1
@@ -307,51 +489,61 @@ if [ "$MODE" != "hap" ]; then
   # that entirely (verified: statically linked, no PT_INTERP, no .dynamic
   # section). The target-scoped RUSTFLAGS keep the flag off the build scripts
   # and every other crate in the dependency graph.
-  GUEST_TARGET="aarch64-unknown-linux-gnu"
-  GUEST_TARGET_DIR="$SHARED_TARGET_DIR"
-  echo "[hicodeer-ohos-build] Building hicodeerd (guest $GUEST_TARGET, static) ..."
-  CARGO_TARGET_DIR="$GUEST_TARGET_DIR" \
-  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo build --release --manifest-path "$DAEMON_MANIFEST" --target "$GUEST_TARGET" -j "$NPROC" \
-    || echo "[hicodeer-ohos-build] WARNING: guest hicodeerd build failed (guest may be unavailable)" >&2
-  GUEST_BIN="$GUEST_TARGET_DIR/$GUEST_TARGET/release/hicodeerd"
-  if [ -x "$GUEST_BIN" ]; then
-    mkdir -p "$HAP_RESFILE_DIR/qemu-guest"
-    cp "$GUEST_BIN" "$HAP_RESFILE_DIR/qemu-guest/hicodeerd"
-    chmod 755 "$HAP_RESFILE_DIR/qemu-guest/hicodeerd"
+  # 仅 openEuler VM 能原生编 guest（需 gnu 工具链）；HarmonyOS 本机不重打。
+  if [ "$BUILD_PLATFORM" = "openeuler" ]; then
+    GUEST_TARGET="aarch64-unknown-linux-gnu"
+    GUEST_TARGET_DIR="$SHARED_TARGET_DIR"
+    echo "[hicodeer-ohos-build] Building hicodeerd (guest $GUEST_TARGET, static) ..."
+    CARGO_TARGET_DIR="$GUEST_TARGET_DIR" \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+crt-static" \
+      cargo build --release --manifest-path "$DAEMON_MANIFEST" --target "$GUEST_TARGET" -j "$NPROC" \
+      || echo "[hicodeer-ohos-build] WARNING: guest hicodeerd build failed (guest may be unavailable)" >&2
+    GUEST_BIN="$GUEST_TARGET_DIR/$GUEST_TARGET/release/hicodeerd"
+    if [ -x "$GUEST_BIN" ]; then
+      mkdir -p "$HAP_RESFILE_DIR/qemu-guest"
+      cp "$GUEST_BIN" "$HAP_RESFILE_DIR/qemu-guest/hicodeerd"
+      chmod 755 "$HAP_RESFILE_DIR/qemu-guest/hicodeerd"
+    else
+      echo "[hicodeer-ohos-build] WARNING: guest hicodeerd binary missing: $GUEST_BIN" >&2
+    fi
   else
-    echo "[hicodeer-ohos-build] WARNING: guest hicodeerd binary missing: $GUEST_BIN" >&2
+    echo "[hicodeer-ohos-build] HarmonyOS 本机跳过 guest hicodeerd 编译（需 openEuler gnu 工具链）；QEMU guest 模式本机不可用"
   fi
 
   # 1b) Golden mother disk. Built from qemu-mngt/goldendisk when absent or when
   # --rebuild-golden was passed; a failed build aborts the whole bundle so the
   # HAP never ships a stale or missing golden.
-  GOLDEN_DEST="$HAP_RESFILE_DIR/qemu-guest/golden.qcow2"
-  GOLDEN_SCRIPT="$PROJECT_ROOT/crates/gpui_ohos/depend/qemu-mngt/goldendisk/build-golden.sh"
-  GOLDEN_CACHE="$RUST_TARGET_ROOT/${TARGET_PREFIX}-golden"
-  # A golden built before the latest guest-init edit still carries the old boot
-  # scripts under /usr/lib/qemu-init, and nothing at runtime can tell: the guest
-  # would silently come up with a stale init and the daemon would never start.
-  # The check is one stat per boot script (a few ms in total), so an out-of-date
-  # golden is rebuilt rather than shipped. --rebuild-golden still forces one.
-  GUEST_INIT_DIR="$PROJECT_ROOT/crates/gpui_ohos/depend/qemu-mngt/guest-init"
-  GOLDEN_STALE=false
-  if [ -f "$GOLDEN_DEST" ] && [ -d "$GUEST_INIT_DIR" ] \
-     && [ -n "$(find "$GUEST_INIT_DIR" -type f -newer "$GOLDEN_DEST" 2>/dev/null)" ]; then
-    GOLDEN_STALE=true
-  fi
-  if [ "$REBUILD_GOLDEN" = "true" ] || [ ! -f "$GOLDEN_DEST" ] || [ "$GOLDEN_STALE" = "true" ]; then
-    if [ "$GOLDEN_STALE" = "true" ] && [ "$REBUILD_GOLDEN" != "true" ]; then
-      echo "[hicodeer-ohos-build] guest-init is newer than golden.qcow2; rebuilding the golden"
+  # 仅 openEuler VM 能构建 golden（build-golden.sh 需交叉环境）；HarmonyOS 本机不重打。
+  if [ "$BUILD_PLATFORM" = "openeuler" ]; then
+    GOLDEN_DEST="$HAP_RESFILE_DIR/qemu-guest/golden.qcow2"
+    GOLDEN_SCRIPT="$PROJECT_ROOT/crates/gpui_ohos/depend/qemu-mngt/goldendisk/build-golden.sh"
+    GOLDEN_CACHE="$RUST_TARGET_ROOT/${TARGET_PREFIX}-golden"
+    GUEST_INIT_DIR="$PROJECT_ROOT/crates/gpui_ohos/depend/qemu-mngt/guest-init"
+    GOLDEN_STALE=false
+    if [ -f "$GOLDEN_DEST" ] && [ -d "$GUEST_INIT_DIR" ] \
+       && [ -n "$(find "$GUEST_INIT_DIR" -type f -newer "$GOLDEN_DEST" 2>/dev/null)" ]; then
+      GOLDEN_STALE=true
     fi
-    echo "[hicodeer-ohos-build] Building guest golden disk -> $GOLDEN_DEST"
-    if ! bash "$GOLDEN_SCRIPT" "$GOLDEN_DEST" "$GOLDEN_CACHE"; then
-      echo "[hicodeer-ohos-build] ERROR: golden disk build failed; aborting" >&2
-      exit 1
+    if [ "$REBUILD_GOLDEN" = "true" ] || [ ! -f "$GOLDEN_DEST" ] || [ "$GOLDEN_STALE" = "true" ]; then
+      if [ "$GOLDEN_STALE" = "true" ] && [ "$REBUILD_GOLDEN" != "true" ]; then
+        echo "[hicodeer-ohos-build] guest-init is newer than golden.qcow2; rebuilding the golden"
+      fi
+      echo "[hicodeer-ohos-build] Building guest golden disk -> $GOLDEN_DEST"
+      if ! bash "$GOLDEN_SCRIPT" "$GOLDEN_DEST" "$GOLDEN_CACHE"; then
+        echo "[hicodeer-ohos-build] ERROR: golden disk build failed; aborting" >&2
+        exit 1
+      fi
+      echo "[hicodeer-ohos-build] NOTE: an already-installed app keeps its old working disk; uninstall before reinstalling"
+    else
+      echo "[hicodeer-ohos-build] golden.qcow2 present and newer than guest-init (pass --rebuild-golden to force)"
     fi
-    echo "[hicodeer-ohos-build] NOTE: an already-installed app keeps its old working disk; uninstall before reinstalling"
   else
-    echo "[hicodeer-ohos-build] golden.qcow2 present and newer than guest-init (pass --rebuild-golden to force)"
+    GOLDEN_DEST="$HAP_RESFILE_DIR/qemu-guest/golden.qcow2"
+    if [ -f "$GOLDEN_DEST" ]; then
+      echo "[hicodeer-ohos-build] 复用仓库预置 golden.qcow2（本机不重打）"
+    else
+      echo "[hicodeer-ohos-build] WARNING: 本机无 golden.qcow2 且不可构建，QEMU guest 模式将不可用" >&2
+    fi
   fi
 
   # 2) Guest management key pair, independent from the on-device daemon keys. The
@@ -478,10 +670,10 @@ ohpm_links_missing() {
 }
 if ohpm_links_missing; then
   echo "[hicodeer-ohos-build] ohpm install (top-level) ..."
-  PATH="$TOOLCHAIN/tool/node/bin:$TOOLCHAIN/ohpm/bin:$PATH" \
+  PATH="$NODE_BIN_DIR:$OHPM_BIN_DIR:$PATH" \
     bash -c "cd '$HAP_DIR' && '$OHPM_CMD' install --all"
   echo "[hicodeer-ohos-build] ohpm install (entry) ..."
-  PATH="$TOOLCHAIN/tool/node/bin:$TOOLCHAIN/ohpm/bin:$PATH" \
+  PATH="$NODE_BIN_DIR:$OHPM_BIN_DIR:$PATH" \
     bash -c "cd '$HAP_DIR/entry' && '$OHPM_CMD' install"
 fi
 
@@ -492,7 +684,7 @@ rm -f "$CXX_DIR/.ninja_log" "$CXX_DIR/.ninja_deps" 2>/dev/null || true
 # ==================== hvigor assembleHap ====================
 cd "$HAP_DIR"   # hvigor 必须在 HAP 工程根目录运行（找 hvigor-config.json5 / build-profile.json5）
 # 停止旧 daemon：hvigor daemon 常驻并缓存启动时的环境变量（DEVECO_SDK_HOME 等）
-"$NODE_CMD" "$HVIGORW_JS" --stop-daemon 2>/dev/null || true
+$NO_SHIM "$NODE_CMD" "$HVIGORW_JS" --stop-daemon 2>/dev/null || true
 
 echo "=== HAP Build ==="
 echo "Project : $HAP_DIR"
@@ -501,7 +693,7 @@ echo "SDK     : $DEVECO_SDK_HOME"
 echo "Mode    : $BUILD_MODE"
 echo ""
 
-"$NODE_CMD" "$HVIGORW_JS" \
+$NO_SHIM "$NODE_CMD" "$HVIGORW_JS" \
   --mode module \
   -p product=default \
   -p buildMode="$BUILD_MODE" \
@@ -519,7 +711,6 @@ echo ""
   # hap/entry/hnp/arm64-v8a/<pkg>.hnp 追加进 HAP，再用调试证书整体重签。
   # 载荷缺失 / 证书未配齐都会显式报错，不产出“看似可装”的包。
   HNP_SRC_DIR="$HAP_DIR/entry/hnp/arm64-v8a"
-  SIGN_TOOL_JAR="$TOOLCHAIN/sdk/default/openharmony/toolchains/lib/hap-sign-tool.jar"
   if [ -d "$HNP_SRC_DIR" ] && ls "$HNP_SRC_DIR"/*.hnp >/dev/null 2>&1; then
     # Prefer the bare hvigor unsigned.hap. The *unsigned*.hap glob also matched
     # the derived -packed/-signed copies (already hnp-injected), which appended
@@ -587,13 +778,23 @@ PY
     fi
     SIGNED_HAP="${UNSIGNED_HAP%.hap}-signed.hap"
     echo "[hicodeer-ohos-build] sign-app -> $SIGNED_HAP"
-    java -jar "$SIGN_TOOL_JAR" sign-app \
+    $NO_SHIM java -jar "$SIGN_TOOL_JAR" sign-app \
       -keyAlias "$OHOS_SIGN_ALIAS" -signAlg SHA256withECDSA -mode localSign \
       -appCertFile "$OHOS_SIGN_CER" -profileFile "$OHOS_SIGN_P7B" -keystoreFile "$OHOS_SIGN_P12" \
       -inFile "$PACKED_HAP" -outFile "$SIGNED_HAP" \
       -keyPwd "$OHOS_SIGN_PWD" -keystorePwd "$OHOS_SIGN_PWD" -signCode 1 -profileSigned 1
     # 稳定产物路径给 install_run.sh（其指向 outputs/default/entry-default-signed.hap）
     cp -f "$SIGNED_HAP" "$HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
+    # 校验签名（与 build-harmony.sh 对齐，防止产出不可装的包）
+    VERIFY_CHAIN="$(mktemp -t hicodeer-certchain.XXXXXX.cer)"
+    VERIFY_PROFILE="$(mktemp -t hicodeer-profile.XXXXXX.p7b)"
+    if ! $NO_SHIM java -jar "$SIGN_TOOL_JAR" verify-app -inFile "$SIGNED_HAP" \
+          -outCertChain "$VERIFY_CHAIN" -outProfile "$VERIFY_PROFILE"; then
+      rm -f "$VERIFY_CHAIN" "$VERIFY_PROFILE"
+      echo "[hicodeer-ohos-build] ERROR: 签名校验失败: $SIGNED_HAP" >&2
+      exit 1
+    fi
+    rm -f "$VERIFY_CHAIN" "$VERIFY_PROFILE"
     echo "[hicodeer-ohos-build] INSTALLABLE (with hnp): $HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
   else
     echo "[hicodeer-ohos-build] WARN: $HNP_SRC_DIR 无 .hnp 载荷，HAP 将不含本机 git/ssh（本地路由会报缺工具）" >&2
