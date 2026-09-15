@@ -104,25 +104,25 @@ pub async fn make_file_executable(path: &Path) -> std::io::Result<()> {
 
 #[cfg(target_env = "ohos")]
 /// Set the permissions for the given path so that the file becomes executable.
-/// On OHOS the file lives on the VM (commands run there), so the chmod is
-/// executed on the VM through the cmd-agent.
+/// The chmod must run locally: the file was written by this process inside its
+/// own sandbox, and the tools that later execute it (git/ssh/curl are private
+/// HNP binaries forked in the same sandbox) share that view of it. Routing the
+/// chmod through `crate::command` would instead reach the command daemon, which
+/// runs under a different uid and cannot see this sandbox, so the chmod would
+/// fail on a path that is perfectly valid here.
 pub async fn make_file_executable(path: &Path) -> std::io::Result<()> {
-    let output = crate::command::new_command("chmod")
-        .arg("+x")
-        .arg(path)
-        .output()
-        .await?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "chmod +x failed on the VM: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        ))
+    let result = fs::set_permissions(
+        path,
+        <fs::Permissions as fs::unix::PermissionsExt>::from_mode(0o755),
+    )
+    .await;
+    if let Err(error) = &result {
+        log::error!(
+            "util::fs::make_file_executable: chmod 0o755 failed for {}: {error}",
+            path.display()
+        );
     }
+    result
 }
 
 #[cfg(not(unix))]
