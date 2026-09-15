@@ -167,14 +167,14 @@ export class ImePlugin extends AsyncPluginBase {
   /**
    * Binds the system IME, retrying while the edit box has not taken focus yet.
    *
-   * Concurrent callers share a single attempt, and a completed binding is a
-   * no-op, so it is safe for Rust to re-issue `attach` on every focus/cursor
-   * transition without piling up duplicate IME callbacks.
+   * Concurrent callers share a single attempt. A request that arrives while the
+   * binding is already marked attached still has to re-bind: hiding the window
+   * (minimize) makes the system drop the session while `this.attached` stays
+   * true, so short-circuiting here would report success without restoring the
+   * keyboard. Registration of the IME callbacks stays guarded separately by
+   * `callbacksRegistered`, so re-binding never stacks a second handler set.
    */
   private attach(): Promise<boolean> {
-    if (this.attached) {
-      return Promise.resolve(true);
-    }
     if (this.attachInFlight) {
       return this.attachInFlight;
     }
