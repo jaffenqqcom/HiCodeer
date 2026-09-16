@@ -77,10 +77,6 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: auto ("on" on macOS, "off" otherwise)
     pub when_closing_with_no_tabs: Option<CloseWindowWhenNoItems>,
-    /// The language used for the Zed interface.
-    ///
-    /// Default: zh-CN
-    pub ui_language: Option<UiLanguage>,
     /// Whether to optimize Zed's interface for assistive technology such as
     /// screen readers.
     ///
@@ -389,41 +385,6 @@ pub enum CloseWindowWhenNoItems {
     CloseWindow,
     /// Leave the window open when there are no tabs
     KeepWindowOpen,
-}
-
-/// The language used for the Zed interface.
-#[derive(
-    Copy,
-    Clone,
-    PartialEq,
-    Default,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    Debug,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum UiLanguage {
-    /// Use the Simplified Chinese UI.
-    #[default]
-    #[serde(rename = "zh-CN")]
-    Chinese,
-    /// Use the English UI.
-    #[serde(rename = "en")]
-    English,
-}
-
-impl UiLanguage {
-    /// Returns the rust-i18n locale tag for this UI language.
-    pub fn locale_tag(&self) -> &'static str {
-        match self {
-            UiLanguage::Chinese => "zh-CN",
-            UiLanguage::English => "en",
-        }
-    }
 }
 
 impl CloseWindowWhenNoItems {

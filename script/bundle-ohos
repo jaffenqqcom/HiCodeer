@@ -92,6 +92,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"            # .../HiCodeer/script
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"           # .../HiCodeer
 HAP_DIR="$PROJECT_ROOT/hap"
+# daemon 载荷目录（入库）：垫片源码与编出的 .so 同居于此，打包时进 HNP 的
+# <pkg>/shim/，运行时由 daemon 从自身 /proc/self/exe 推出的包根取用（见
+# hicodeerd/src/shim.rs）。定义在平台配置段之前 —— 该段的 SHIM_C 要引用它。
+DAEMON_SHIM_DIR="$PROJECT_ROOT/crates/gpui_ohos/depend/cmd-agent/hicodeerd/shim"
 
 # 编译期临时目录钉在构建目录内。本机的 /tmp 是只读的 erofs，clang 建不出临时文件就会直接
 # 失败（"unable to make temporary file: Read-only file system"）；而 TMPDIR 一旦继承自
@@ -123,11 +127,11 @@ if [ "$BUILD_PLATFORM" = "harmonyos" ]; then
   SIGN_TOOL_JAR="$TOOLCHAIN/sdk.org/sdk_1.0.0/default/openharmony/toolchains/lib/hap-sign-tool.jar"
   HNPCLI="$TOOLCHAIN/sdk.org/sdk_1.0.0/default/openharmony/toolchains/hnpcli"
   # TLS shim（绕过 libc 128 pthread key 上限；rustc/cargo 编译期用）。
-  # 仓库里只留源码，产物 .so 落 cargo 的 scratch 目录（路径在下方 SHIM 段拼出），
-  # 与 target 同在 <项目根>/target/ohos 下，不给仓库添噪声。
-  SHIM_C="$SCRIPT_DIR/ohos-tls-shim.c"
+  # 源码入库在 $DAEMON_SHIM_DIR；产物先落 cargo 的 scratch 目录（路径在下方 SHIM 段
+  # 拼出，与 target 同在 <项目根>/target/ohos 下），再同步一份入库充当 HNP 载荷。
+  SHIM_C="$DAEMON_SHIM_DIR/musllib-shim.c"
   SHIM_SO=""
-  SHIM_NAME="ohos-tls-shim"
+  SHIM_NAME="musllib-shim"
   # shim 只作用于编译进程，不能扩散到 hvigor/hnpcli/java，故这些步骤前卸掉 LD_PRELOAD
   NO_SHIM="env -u LD_PRELOAD"
   # 本机工具链上 PATH。rustup 的 cargo/rustc 是 shim，落在 opt/rustup/bin（都是指向
@@ -257,7 +261,13 @@ mkdir -p "$SHARED_TARGET_DIR"
 # ==================== 编译期 shim（LD_PRELOAD） ====================
 # 两个平台的 shim 都只作用于编译进程；hvigor/hnpcli/java 调用前用 $NO_SHIM 卸掉
 # （见各自调用处）。HarmonyOS 的 TLS 垫片编译产物写进 cargo 的 scratch 目录 ——
-# 与 target 同在 <项目根>/target/ohos 下，仓库里只留源码，不给 git 状态添噪声。
+# 与 target 同在 <项目根>/target/ohos 下；另同步一份到 $DAEMON_SHIM_DIR（入库），
+# 它就是打包进 HNP 的那一份。
+#
+# TLS 垫片在载荷里恒用 musllib-shim 这个名字：openeuler 侧 $SHIM_NAME 是
+# ohos-meta-shim（宿主 glibc 版，给交叉工具链用），绝不能混进设备上的 HNP。
+DAEMON_TLS_SHIM_FILE="musllib-shim.so"
+DAEMON_NODE_SHIM_FILE="shim.js"
 SCRATCH_DIR="$SHARED_TARGET_DIR/ohos-harmony"
 mkdir -p "$SCRATCH_DIR"
 if [ -z "$SHIM_SO" ]; then
@@ -269,6 +279,17 @@ if [ ! -f "$SHIM_SO" ] || [ "$SHIM_C" -nt "$SHIM_SO" ]; then
     "$SDK_LLVM_BIN/clang" -shared -fPIC -O2 -o "$SHIM_SO" "$SHIM_C" -ldl
   else
     gcc -shared -fPIC -o "$SHIM_SO" "$SHIM_C" -ldl
+  fi
+fi
+# 把刚编好的本机产物同步到入库副本，使它与 $SHIM_C 不会静默漂移（改了 .c 就会在
+# git status 里显形）。入库的这份就是 HNP 载荷的输入。
+# 只同步 harmonyos 平台：openeuler 侧那份由 gcc 编出、是 glibc 版本，不能给 OHOS 用。
+if [ "$BUILD_PLATFORM" = "harmonyos" ]; then
+  DAEMON_TLS_SHIM="$DAEMON_SHIM_DIR/$DAEMON_TLS_SHIM_FILE"
+  if ! cmp -s "$SHIM_SO" "$DAEMON_TLS_SHIM"; then
+    cp "$SHIM_SO" "$DAEMON_TLS_SHIM"
+    chmod 644 "$DAEMON_TLS_SHIM"
+    echo "[hicodeer-ohos-build] 同步 HNP 载荷垫片 -> $DAEMON_TLS_SHIM"
   fi
 fi
 # 纯赋值而非追加外部值：垫片只服务于本脚本的编译进程，外部若挂着别的 preload 会混进来，
@@ -430,16 +451,24 @@ if [ "$MODE" != "hap" ]; then
   ssh-keygen -t ed25519 -N '' -f "$KEYS_DIR/mgmt_host_key" -q
   ssh-keygen -t ed25519 -N '' -f "$KEYS_DIR/mgmt_client_key" -q
 
-  # Stage the public-HNP payload: <pkg>/bin/<daemon binary> + <pkg>/conf/<server keys>.
+  # Stage the public-HNP payload: <pkg>/bin/<daemon binary>, <pkg>/conf/<server
+  # keys> and <pkg>/shim/<preloads>.
   STAGE_DIR="$RUST_TARGET_ROOT/${TARGET_PREFIX}-hicodeerd-stage"
-  mkdir -p "$STAGE_DIR/hicodeerd/bin" "$STAGE_DIR/hicodeerd/conf"
+  mkdir -p "$STAGE_DIR/hicodeerd/bin" "$STAGE_DIR/hicodeerd/conf" "$STAGE_DIR/hicodeerd/shim"
   cp "$DAEMON_BIN" "$STAGE_DIR/hicodeerd/bin/hicodeerd"
   chmod 755 "$STAGE_DIR/hicodeerd/bin/hicodeerd"
   cp "$KEYS_DIR/mgmt_host_key" "$STAGE_DIR/hicodeerd/conf/mgmt_host_key"
   cp "$KEYS_DIR/mgmt_client_key.pub" "$STAGE_DIR/hicodeerd/conf/authorized_keys"
   chmod 600 "$STAGE_DIR/hicodeerd/conf/mgmt_host_key"
-  # The Node preload is compiled into the daemon and re-materialised at runtime
-  # under the data root, so the package carries no copy of it.
+  # The preloads travel inside the package so the system installs them: the
+  # daemon addresses them at <pkg>/shim/ from its own /proc/self/exe, and nothing
+  # is written at runtime. Only the read bit matters -- the mode they land with is
+  # decided by the installer from the zip entry (0744 here, see the permission
+  # rewrite below), and a shared object is mapped without an execute bit. The two
+  # payloads are staged by name, so the TLS shim's .c source -- which shares that
+  # directory -- never ships.
+  cp "$DAEMON_SHIM_DIR/$DAEMON_NODE_SHIM_FILE" "$STAGE_DIR/hicodeerd/shim/$DAEMON_NODE_SHIM_FILE"
+  cp "$DAEMON_SHIM_DIR/$DAEMON_TLS_SHIM_FILE" "$STAGE_DIR/hicodeerd/shim/$DAEMON_TLS_SHIM_FILE"
   cat > "$STAGE_DIR/hicodeerd/hnp.json" <<'JSON'
 {"type":"hnp-config","name":"hicodeerd","version":"0.1.0","install":{}}
 JSON

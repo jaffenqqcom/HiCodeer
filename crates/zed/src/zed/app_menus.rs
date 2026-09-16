@@ -1,82 +1,58 @@
 use collab_ui::collab_panel;
 use gpui::{App, Menu, MenuItem, OsAction};
 use release_channel::ReleaseChannel;
-use settings::Settings;
 use terminal_view::terminal_panel;
-use workspace::WorkspaceSettings;
 use zed_actions::{Quit, assistant, debug_panel, dev, git_panel, project_panel};
-use zed_i18n::t;
 
 pub fn app_menus(cx: &mut App) -> Vec<Menu> {
-    // 初始化 i18n,并按解析后的 ui_language 设置切换界面语言。
-    // 每次重建菜单(含语言切换后触发 reload_keymaps)都会重新应用,
-    // 从而保证语言设置能即时生效。
-    // 使用 try_get:若 settings 尚未注册(极早期的启动阶段),回退默认语言 zh-CN。
-    zed_i18n::init();
-    let ui_language = WorkspaceSettings::try_get(cx)
-        .map(|settings| settings.ui_language)
-        .unwrap_or_default();
-    zed_i18n::set_locale(ui_language.locale_tag());
     let mut view_items = vec![
         MenuItem::action(
-            t!("app_menus.view.zoom_in"),
+            "Zoom In",
             zed_actions::IncreaseBufferFontSize { persist: false },
         ),
         MenuItem::action(
-            t!("app_menus.view.zoom_out"),
+            "Zoom Out",
             zed_actions::DecreaseBufferFontSize { persist: false },
         ),
         MenuItem::action(
-            t!("app_menus.view.reset_zoom"),
+            "Reset Zoom",
             zed_actions::ResetBufferFontSize { persist: false },
         ),
         MenuItem::action(
-            t!("app_menus.view.reset_all_zoom"),
+            "Reset All Zoom",
             zed_actions::ResetAllZoom { persist: false },
         ),
         MenuItem::separator(),
-        MenuItem::action(t!("app_menus.view.toggle_left_dock"), workspace::ToggleLeftDock),
-        MenuItem::action(t!("app_menus.view.toggle_right_dock"), workspace::ToggleRightDock),
-        MenuItem::action(
-            t!("app_menus.view.toggle_bottom_dock"),
-            workspace::ToggleBottomDock,
-        ),
-        MenuItem::action(t!("app_menus.view.toggle_all_docks"), workspace::ToggleAllDocks),
+        MenuItem::action("Toggle Left Dock", workspace::ToggleLeftDock),
+        MenuItem::action("Toggle Right Dock", workspace::ToggleRightDock),
+        MenuItem::action("Toggle Bottom Dock", workspace::ToggleBottomDock),
+        MenuItem::action("Toggle All Docks", workspace::ToggleAllDocks),
         MenuItem::submenu(Menu {
-            name: t!("app_menus.view.editor_layout").into(),
+            name: "Editor Layout".into(),
             disabled: false,
             items: vec![
-                MenuItem::action(t!("app_menus.view.split_up"), workspace::SplitUp::default()),
-                MenuItem::action(
-                    t!("app_menus.view.split_down"),
-                    workspace::SplitDown::default(),
-                ),
-                MenuItem::action(
-                    t!("app_menus.view.split_left"),
-                    workspace::SplitLeft::default(),
-                ),
-                MenuItem::action(
-                    t!("app_menus.view.split_right"),
-                    workspace::SplitRight::default(),
-                ),
+                MenuItem::action("Split Up", workspace::SplitUp::default()),
+                MenuItem::action("Split Down", workspace::SplitDown::default()),
+                MenuItem::action("Split Left", workspace::SplitLeft::default()),
+                MenuItem::action("Split Right", workspace::SplitRight::default()),
             ],
         }),
         MenuItem::separator(),
-        MenuItem::action(t!("app_menus.view.project_panel"), project_panel::ToggleFocus),
-        MenuItem::action(t!("app_menus.view.outline_panel"), outline_panel::ToggleFocus),
-        MenuItem::action(t!("app_menus.view.collab_panel"), collab_panel::ToggleFocus),
-        MenuItem::action(t!("app_menus.view.terminal_panel"), terminal_panel::Toggle),
-        MenuItem::action(t!("app_menus.view.debugger_panel"), debug_panel::ToggleFocus),
-        MenuItem::action(t!("app_menus.view.agent_panel"), assistant::ToggleFocus),
-        MenuItem::action(t!("app_menus.view.git_panel"), git_panel::ToggleFocus),
+        MenuItem::action("Project Panel", project_panel::ToggleFocus),
+        MenuItem::action("Outline Panel", outline_panel::ToggleFocus),
+        MenuItem::action("Collab Panel", collab_panel::ToggleFocus),
+        MenuItem::action("Terminal Panel", terminal_panel::Toggle),
+        MenuItem::action("Debugger Panel", debug_panel::ToggleFocus),
+        MenuItem::action("Agent Panel", assistant::ToggleFocus),
+        MenuItem::action("Git Panel", git_panel::ToggleFocus),
         MenuItem::separator(),
-        MenuItem::action(t!("app_menus.view.diagnostics"), diagnostics::Deploy),
+        MenuItem::action("Diagnostics", diagnostics::Deploy),
         MenuItem::separator(),
     ];
 
     if ReleaseChannel::try_global(cx) == Some(ReleaseChannel::Dev) {
         view_items.push(MenuItem::action(
-            t!("app_menus.view.toggle_gpui_inspector"),
+            "Toggle GPUI Inspector",
             dev::ToggleInspector,
         ));
         view_items.push(MenuItem::separator());
@@ -84,360 +60,261 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
 
     vec![
         Menu {
-            name: t!("app_menus.zed_title").into(),
+            name: "Zed".into(),
             disabled: false,
             items: vec![
-                MenuItem::action(t!("app_menus.zed.about"), zed_actions::About),
-                MenuItem::action(t!("app_menus.zed.check_for_updates"), auto_update::Check),
+                MenuItem::action("About Zed", zed_actions::About),
+                MenuItem::action("Check for Updates", auto_update::Check),
                 MenuItem::separator(),
-                MenuItem::submenu(Menu::new(t!("app_menus.zed.settings")).items([
-                    MenuItem::action(t!("app_menus.zed.open_settings"), zed_actions::OpenSettings),
-                    MenuItem::action(
-                        t!("app_menus.zed.open_settings_file"),
-                        super::OpenSettingsFile,
-                    ),
-                    MenuItem::action(
-                        t!("app_menus.zed.open_project_settings"),
-                        zed_actions::OpenProjectSettings,
-                    ),
-                    MenuItem::action(
-                        t!("app_menus.zed.open_project_settings_file"),
-                        super::OpenProjectSettingsFile,
-                    ),
-                    MenuItem::action(
-                        t!("app_menus.zed.open_default_settings"),
-                        super::OpenDefaultSettings,
-                    ),
+                MenuItem::submenu(Menu::new("Settings").items([
+                    MenuItem::action("Open Settings", zed_actions::OpenSettings),
+                    MenuItem::action("Open Settings File", super::OpenSettingsFile),
+                    MenuItem::action("Open Project Settings", zed_actions::OpenProjectSettings),
+                    MenuItem::action("Open Project Settings File", super::OpenProjectSettingsFile),
+                    MenuItem::action("Open Default Settings", super::OpenDefaultSettings),
                     MenuItem::separator(),
-                    MenuItem::action(t!("app_menus.zed.open_keymap"), zed_actions::OpenKeymap),
-                    MenuItem::action(
-                        t!("app_menus.zed.open_keymap_file"),
-                        zed_actions::OpenKeymapFile,
-                    ),
-                    MenuItem::action(
-                        t!("app_menus.zed.open_default_key_bindings"),
-                        zed_actions::OpenDefaultKeymap,
-                    ),
+                    MenuItem::action("Open Keymap", zed_actions::OpenKeymap),
+                    MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
+                    MenuItem::action("Open Default Key Bindings", zed_actions::OpenDefaultKeymap),
                     MenuItem::separator(),
                     MenuItem::action(
-                        t!("app_menus.zed.select_theme"),
+                        "Select Theme...",
                         zed_actions::theme_selector::Toggle::default(),
                     ),
                     MenuItem::action(
-                        t!("app_menus.zed.select_icon_theme"),
+                        "Select Icon Theme...",
                         zed_actions::icon_theme_selector::Toggle::default(),
                     ),
                 ])),
                 MenuItem::separator(),
                 #[cfg(target_os = "macos")]
-                MenuItem::os_submenu(t!("app_menus.zed.services"), gpui::SystemMenuType::Services),
+                MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action(t!("app_menus.zed.extensions"), zed_actions::Extensions::default()),
+                MenuItem::action("Extensions", zed_actions::Extensions::default()),
                 #[cfg(all(not(target_os = "windows"), not(target_env = "ohos")))]
-                MenuItem::action(t!("app_menus.zed.install_cli"), install_cli::InstallCliBinary),
+                MenuItem::action("Install CLI", install_cli::InstallCliBinary),
                 MenuItem::separator(),
                 #[cfg(target_os = "macos")]
-                MenuItem::action(t!("app_menus.zed.hide_zed"), super::Hide),
+                MenuItem::action("Hide Zed", super::Hide),
                 #[cfg(target_os = "macos")]
-                MenuItem::action(t!("app_menus.zed.hide_others"), super::HideOthers),
+                MenuItem::action("Hide Others", super::HideOthers),
                 #[cfg(target_os = "macos")]
-                MenuItem::action(t!("app_menus.zed.show_all"), super::ShowAll),
+                MenuItem::action("Show All", super::ShowAll),
                 MenuItem::separator(),
-                MenuItem::action(t!("app_menus.zed.quit"), Quit),
+                MenuItem::action("Quit Zed", Quit),
             ],
         },
         Menu {
-            name: t!("app_menus.file_title").into(),
+            name: "File".into(),
             disabled: false,
             items: vec![
-                MenuItem::action(t!("app_menus.file.new"), workspace::NewFile),
-                MenuItem::action(t!("app_menus.file.new_window"), workspace::NewWindow),
+                MenuItem::action("New", workspace::NewFile),
+                MenuItem::action("New Window", workspace::NewWindow),
                 MenuItem::separator(),
                 #[cfg(not(target_os = "macos"))]
-                MenuItem::action(t!("app_menus.file.open_file"), workspace::OpenFiles),
-                MenuItem::action(t!("app_menus.file.open_folder"), workspace::Open::default()),
-                MenuItem::action(t!("app_menus.file.open_recent"), zed_actions::OpenRecent::default()),
+                MenuItem::action("Open File...", workspace::OpenFiles),
                 MenuItem::action(
-                    t!("app_menus.file.open_remote"),
-                    zed_actions::OpenRemote::default(),
+                    if cfg!(not(target_os = "macos")) {
+                        "Open Folder..."
+                    } else {
+                        "Open…"
+                    },
+                    workspace::Open::default(),
                 ),
+                MenuItem::action("Open Recent…", zed_actions::OpenRecent::default()),
+                MenuItem::action("Open Remote…", zed_actions::OpenRemote::default()),
+                MenuItem::separator(),
+                MenuItem::action("Add Folder to Project…", workspace::AddFolderToProject),
+                MenuItem::separator(),
+                MenuItem::action("Save", workspace::Save { save_intent: None }),
+                MenuItem::action("Save As…", workspace::SaveAs),
+                MenuItem::action("Save All", workspace::SaveAll { save_intent: None }),
                 MenuItem::separator(),
                 MenuItem::action(
-                    t!("app_menus.file.add_folder_to_project"),
-                    workspace::AddFolderToProject,
-                ),
-                MenuItem::separator(),
-                MenuItem::action(t!("app_menus.file.save"), workspace::Save { save_intent: None }),
-                MenuItem::action(t!("app_menus.file.save_as"), workspace::SaveAs),
-                MenuItem::action(
-                    t!("app_menus.file.save_all"),
-                    workspace::SaveAll { save_intent: None },
-                ),
-                MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.file.close_editor"),
+                    "Close Editor",
                     workspace::CloseActiveItem {
                         save_intent: None,
                         close_pinned: true,
                     },
                 ),
-                MenuItem::action(t!("app_menus.file.close_project"), workspace::CloseProject),
-                MenuItem::action(t!("app_menus.file.close_window"), workspace::CloseWindow),
+                MenuItem::action("Close Project", workspace::CloseProject),
+                MenuItem::action("Close Window", workspace::CloseWindow),
             ],
         },
         Menu {
-            name: t!("app_menus.edit_title").into(),
+            name: "Edit".into(),
             disabled: false,
             items: vec![
-                MenuItem::os_action(
-                    t!("app_menus.edit.undo"),
-                    editor::actions::Undo,
-                    OsAction::Undo,
-                ),
-                MenuItem::os_action(
-                    t!("app_menus.edit.redo"),
-                    editor::actions::Redo,
-                    OsAction::Redo,
-                ),
+                MenuItem::os_action("Undo", editor::actions::Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", editor::actions::Redo, OsAction::Redo),
                 MenuItem::separator(),
-                MenuItem::os_action(t!("app_menus.edit.cut"), editor::actions::Cut, OsAction::Cut),
-                MenuItem::os_action(
-                    t!("app_menus.edit.copy"),
-                    editor::actions::Copy,
-                    OsAction::Copy,
-                ),
-                MenuItem::action(t!("app_menus.edit.copy_and_trim"), editor::actions::CopyAndTrim),
-                MenuItem::os_action(
-                    t!("app_menus.edit.paste"),
-                    editor::actions::Paste,
-                    OsAction::Paste,
-                ),
+                MenuItem::os_action("Cut", editor::actions::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", editor::actions::Copy, OsAction::Copy),
+                MenuItem::action("Copy and Trim", editor::actions::CopyAndTrim),
+                MenuItem::os_action("Paste", editor::actions::Paste, OsAction::Paste),
                 MenuItem::separator(),
-                MenuItem::action(t!("app_menus.edit.find"), search::buffer_search::Deploy::find()),
-                MenuItem::action(
-                    t!("app_menus.edit.find_in_project"),
-                    workspace::DeploySearch::default(),
-                ),
+                MenuItem::action("Find", search::buffer_search::Deploy::find()),
+                MenuItem::action("Find in Project", workspace::DeploySearch::default()),
                 MenuItem::separator(),
                 MenuItem::action(
-                    t!("app_menus.edit.toggle_line_comment"),
+                    "Toggle Line Comment",
                     editor::actions::ToggleComments::default(),
                 ),
             ],
         },
         Menu {
-            name: t!("app_menus.selection_title").into(),
+            name: "Selection".into(),
             disabled: false,
             items: vec![
                 MenuItem::os_action(
-                    t!("app_menus.selection.select_all"),
+                    "Select All",
                     editor::actions::SelectAll,
                     OsAction::SelectAll,
                 ),
+                MenuItem::action("Expand Selection", editor::actions::SelectLargerSyntaxNode),
+                MenuItem::action("Shrink Selection", editor::actions::SelectSmallerSyntaxNode),
+                MenuItem::action("Select Next Sibling", editor::actions::SelectNextSyntaxNode),
                 MenuItem::action(
-                    t!("app_menus.selection.expand_selection"),
-                    editor::actions::SelectLargerSyntaxNode,
-                ),
-                MenuItem::action(
-                    t!("app_menus.selection.shrink_selection"),
-                    editor::actions::SelectSmallerSyntaxNode,
-                ),
-                MenuItem::action(
-                    t!("app_menus.selection.select_next_sibling"),
-                    editor::actions::SelectNextSyntaxNode,
-                ),
-                MenuItem::action(
-                    t!("app_menus.selection.select_previous_sibling"),
+                    "Select Previous Sibling",
                     editor::actions::SelectPreviousSyntaxNode,
                 ),
                 MenuItem::separator(),
                 MenuItem::action(
-                    t!("app_menus.selection.add_cursor_above"),
+                    "Add Cursor Above",
                     editor::actions::AddSelectionAbove {
                         skip_soft_wrap: true,
                     },
                 ),
                 MenuItem::action(
-                    t!("app_menus.selection.add_cursor_below"),
+                    "Add Cursor Below",
                     editor::actions::AddSelectionBelow {
                         skip_soft_wrap: true,
                     },
                 ),
                 MenuItem::action(
-                    t!("app_menus.selection.select_next_occurrence"),
+                    "Select Next Occurrence",
                     editor::actions::SelectNext {
                         replace_newest: false,
                     },
                 ),
                 MenuItem::action(
-                    t!("app_menus.selection.select_previous_occurrence"),
+                    "Select Previous Occurrence",
                     editor::actions::SelectPrevious {
                         replace_newest: false,
                     },
                 ),
-                MenuItem::action(
-                    t!("app_menus.selection.select_all_occurrences"),
-                    editor::actions::SelectAllMatches,
-                ),
+                MenuItem::action("Select All Occurrences", editor::actions::SelectAllMatches),
                 MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.selection.move_line_up"),
-                    editor::actions::MoveLineUp,
-                ),
-                MenuItem::action(
-                    t!("app_menus.selection.move_line_down"),
-                    editor::actions::MoveLineDown,
-                ),
-                MenuItem::action(
-                    t!("app_menus.selection.duplicate_selection"),
-                    editor::actions::DuplicateLineDown,
-                ),
+                MenuItem::action("Move Line Up", editor::actions::MoveLineUp),
+                MenuItem::action("Move Line Down", editor::actions::MoveLineDown),
+                MenuItem::action("Duplicate Selection", editor::actions::DuplicateLineDown),
             ],
         },
         Menu {
-            name: t!("app_menus.view_title").into(),
+            name: "View".into(),
             disabled: false,
             items: view_items,
         },
         Menu {
-            name: t!("app_menus.go_title").into(),
+            name: "Go".into(),
             disabled: false,
             items: vec![
-                MenuItem::action(t!("app_menus.go.back"), workspace::GoBack),
-                MenuItem::action(t!("app_menus.go.forward"), workspace::GoForward),
+                MenuItem::action("Back", workspace::GoBack),
+                MenuItem::action("Forward", workspace::GoForward),
                 MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.go.command_palette"),
-                    zed_actions::command_palette::Toggle,
-                ),
+                MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
                 MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.go.go_to_file"),
-                    workspace::ToggleFileFinder::default(),
-                ),
+                MenuItem::action("Go to File...", workspace::ToggleFileFinder::default()),
                 // MenuItem::action("Go to Symbol in Project", project_symbols::Toggle),
                 MenuItem::action(
-                    t!("app_menus.go.go_to_symbol"),
+                    "Go to Symbol in Editor...",
                     zed_actions::outline::ToggleOutline,
                 ),
-                MenuItem::action(
-                    t!("app_menus.go.go_to_line"),
-                    editor::actions::ToggleGoToLine,
-                ),
+                MenuItem::action("Go to Line/Column...", editor::actions::ToggleGoToLine),
                 MenuItem::separator(),
                 MenuItem::action(
-                    t!("app_menus.go.go_to_definition"),
+                    "Go to Definition",
                     editor::actions::GoToDefinition::default(),
                 ),
+                MenuItem::action("Go to Declaration", editor::actions::GoToDeclaration),
+                MenuItem::action("Go to Type Definition", editor::actions::GoToTypeDefinition),
                 MenuItem::action(
-                    t!("app_menus.go.go_to_declaration"),
-                    editor::actions::GoToDeclaration,
-                ),
-                MenuItem::action(
-                    t!("app_menus.go.go_to_type_definition"),
-                    editor::actions::GoToTypeDefinition,
-                ),
-                MenuItem::action(
-                    t!("app_menus.go.find_all_references"),
+                    "Find All References",
                     editor::actions::FindAllReferences::default(),
                 ),
                 MenuItem::separator(),
+                MenuItem::action("Next Problem", editor::actions::GoToDiagnostic::default()),
                 MenuItem::action(
-                    t!("app_menus.go.next_problem"),
-                    editor::actions::GoToDiagnostic::default(),
-                ),
-                MenuItem::action(
-                    t!("app_menus.go.previous_problem"),
+                    "Previous Problem",
                     editor::actions::GoToPreviousDiagnostic::default(),
                 ),
             ],
         },
         Menu {
-            name: t!("app_menus.run_title").into(),
+            name: "Run".into(),
             disabled: false,
             items: vec![
                 MenuItem::action(
-                    t!("app_menus.run.spawn_task"),
+                    "Spawn Task",
                     zed_actions::Spawn::ViaModal {
                         reveal_target: None,
                     },
                 ),
-                MenuItem::action(t!("app_menus.run.start_debugger"), debugger_ui::Start),
+                MenuItem::action("Start Debugger", debugger_ui::Start),
                 MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.run.edit_tasks_json"),
-                    zed_actions::OpenProjectTasks,
-                ),
-                MenuItem::action(
-                    t!("app_menus.run.edit_debug_json"),
-                    zed_actions::OpenProjectDebugTasks,
-                ),
+                MenuItem::action("Edit tasks.json…", zed_actions::OpenProjectTasks),
+                MenuItem::action("Edit debug.json…", zed_actions::OpenProjectDebugTasks),
                 MenuItem::separator(),
-                MenuItem::action(t!("app_menus.run.continue"), debugger_ui::Continue),
-                MenuItem::action(t!("app_menus.run.step_over"), debugger_ui::StepOver),
-                MenuItem::action(t!("app_menus.run.step_into"), debugger_ui::StepInto),
-                MenuItem::action(t!("app_menus.run.step_out"), debugger_ui::StepOut),
+                MenuItem::action("Continue", debugger_ui::Continue),
+                MenuItem::action("Step Over", debugger_ui::StepOver),
+                MenuItem::action("Step Into", debugger_ui::StepInto),
+                MenuItem::action("Step Out", debugger_ui::StepOut),
                 MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.run.toggle_breakpoint"),
-                    editor::actions::ToggleBreakpoint,
-                ),
-                MenuItem::action(
-                    t!("app_menus.run.edit_breakpoint"),
-                    editor::actions::EditLogBreakpoint,
-                ),
-                MenuItem::action(
-                    t!("app_menus.run.clear_all_breakpoints"),
-                    debugger_ui::ClearAllBreakpoints,
-                ),
+                MenuItem::action("Toggle Breakpoint", editor::actions::ToggleBreakpoint),
+                MenuItem::action("Edit Breakpoint", editor::actions::EditLogBreakpoint),
+                MenuItem::action("Clear All Breakpoints", debugger_ui::ClearAllBreakpoints),
             ],
         },
         Menu {
-            name: t!("app_menus.window_title").into(),
+            name: "Window".into(),
             disabled: false,
             items: vec![
-                MenuItem::action(t!("app_menus.window.minimize"), super::Minimize),
-                MenuItem::action(t!("app_menus.window.zoom"), super::Zoom),
+                MenuItem::action("Minimize", super::Minimize),
+                MenuItem::action("Zoom", super::Zoom),
                 MenuItem::separator(),
             ],
         },
         Menu {
-            name: t!("app_menus.help_title").into(),
+            name: "Help".into(),
             disabled: false,
             items: vec![
                 MenuItem::action(
-                    t!("app_menus.help.release_notes"),
+                    "View Release Notes Locally",
                     auto_update_ui::ViewReleaseNotesLocally,
                 ),
-                MenuItem::action(t!("app_menus.help.telemetry"), zed_actions::OpenTelemetryLog),
-                MenuItem::action(t!("app_menus.help.licenses"), zed_actions::OpenLicenses),
-                MenuItem::action(t!("app_menus.help.welcome"), onboarding::ShowWelcome),
+                MenuItem::action("View Telemetry", zed_actions::OpenTelemetryLog),
+                MenuItem::action("View Dependency Licenses", zed_actions::OpenLicenses),
+                MenuItem::action("Show Welcome", onboarding::ShowWelcome),
+                MenuItem::separator(),
+                MenuItem::action("File Bug Report...", zed_actions::feedback::FileBugReport),
+                MenuItem::action("Request Feature...", zed_actions::feedback::RequestFeature),
+                MenuItem::action("Email Us...", zed_actions::feedback::EmailZed),
                 MenuItem::separator(),
                 MenuItem::action(
-                    t!("app_menus.help.bug_report"),
-                    zed_actions::feedback::FileBugReport,
-                ),
-                MenuItem::action(
-                    t!("app_menus.help.request_feature"),
-                    zed_actions::feedback::RequestFeature,
-                ),
-                MenuItem::action(t!("app_menus.help.email"), zed_actions::feedback::EmailZed),
-                MenuItem::separator(),
-                MenuItem::action(
-                    t!("app_menus.help.documentation"),
+                    "Documentation",
                     super::OpenBrowser {
                         url: "https://zed.dev/docs".into(),
                     },
                 ),
-                MenuItem::action(t!("app_menus.help.repository"), feedback::OpenZedRepo),
+                MenuItem::action("Zed Repository", feedback::OpenZedRepo),
                 MenuItem::action(
-                    t!("app_menus.help.twitter"),
+                    "Zed Twitter",
                     super::OpenBrowser {
                         url: "https://twitter.com/zeddotdev".into(),
                     },
                 ),
                 MenuItem::action(
-                    t!("app_menus.help.join_team"),
+                    "Join the Team",
                     super::OpenBrowser {
                         url: "https://zed.dev/jobs".into(),
                     },

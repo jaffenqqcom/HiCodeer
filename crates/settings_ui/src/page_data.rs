@@ -140,23 +140,6 @@ fn general_page(cx: &App) -> SettingsPage {
         vec![
             SettingsPageItem::SectionHeader("General Settings"),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "界面语言",
-                description: "选择 Zed 界面的显示语言（中文 / English）。切换后立即生效；如部分界面未刷新，重启应用即可。",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("ui_language"),
-                    pick: |settings_content| settings_content.workspace.ui_language.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.workspace.ui_language = value;
-                    },
-                }),
-                metadata: Some(Box::new(SettingsFieldMetadata {
-                    should_do_titlecase: Some(false),
-                    ..Default::default()
-                })),
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
                 title: "Accessible Mode",
                 description: "Optimize Zed's interface for assistive technology such as screen readers. When enabled, otherwise-collapsed controls stay expanded and keyboard-reachable.",
                 field: Box::new(SettingField {

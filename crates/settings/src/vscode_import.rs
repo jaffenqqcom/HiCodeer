@@ -1072,7 +1072,6 @@ impl VsCodeSettings {
                     CloseWindowWhenNoItems::KeepWindowOpen
                 }
             }),
-            ui_language: None,
             zoomed_padding: None,
             focus_follows_mouse: None,
         }

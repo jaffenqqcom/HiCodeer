@@ -42,7 +42,8 @@
 | `node/` | `node_runtime.rs:643` | 受管 Node 容器 | 语言服务与 agent 都不用系统 node，用这份 |
 | `node/<dist>/` | `node_runtime.rs:644` | Node 发行版解包目录 | 形如 `node-v24.11.0-linux-arm64/`，内含 `bin/node`、`bin/npm`、`lib/node_modules/npm/` |
 | `node/cache/` | `node_runtime.rs:654` `:916` | npm 包缓存与日志 | `_cacache/`、`_logs/`、`_update-notifier-last-checked`；Node 重装时整目录删除重建 |
-| `node/shim/` | `shim.rs:36`（`shim.js`） | **守护进程**写入的 Node 预载 | 经 `NODE_OPTIONS=--require` 注入每个 node 子进程；守护进程每次派生前 `stat` 自愈重写（`shim.rs:148`） |
+
+> `node/` 下的一切都会在 Node 重装时被整目录删除重建，所以守护进程写入的东西一律放在 `node/` **之外**（见下一节）。
 
 ## 4. 守护进程侧（`hicodeerd`，uid 20020117）
 
@@ -52,7 +53,8 @@
 | `tmp/shim-trace.log` | `shim/shim.js` | 垫片诊断轨迹 | **仅**在"需要签名的宿主"上、且发生异常时写；正常路径不落盘 |
 | `logs/hicodeerd.log` | `logger.rs`（`attach_file`） | 守护进程日志镜像 | **仅 `--log` 启动时**创建。内容与 hilog 同源，多一列本地时间（`MM-DD HH:MM:SS 级别 消息`），便于事后读取 |
 
-守护进程**不写**应用那些目录，只写 `node/shim/`、`tmp/`、`logs/` 三处。
+守护进程**不写**应用那些目录，只写 `tmp/`、`logs/` 两处。垫片不在此列：它们随
+daemon 的 HNP 包分发，装在包内 `<pkg>/shim/`，见第 6 节。
 
 ## 5. 可清理性
 
@@ -61,7 +63,6 @@
 | `tmp/` | 无副作用，下次启动重建；仅丢失在跑的临时文件 |
 | `logs/hicodeerd.log` | 无副作用（`--log` 时重建） |
 | `node/cache/` | 仅丢 npm 缓存，下次安装重新下载 |
-| `node/shim/` | 无副作用，守护进程派生前自愈重写 |
 | `node/<dist>/` | Node 运行时丢失，下次启动重新下载解包 |
 | `languages/` | 语言服务丢失，打开对应文件时按需重下（`eslint.rs:116` 一类逻辑会整目录清空重下） |
 | `cache/` | 无副作用 |
@@ -76,3 +77,14 @@
 - 语言服务/Node 工具链问题的成因链：`../../bugfix/2026-09-14-ohos-node-npm-toolchain.md`
 - 本文改动（2026-09-14）：新增 `logs/hicodeerd.log`；`tmp/shim-trace.log` 的写入条件收紧为
   「仅在需要签名的宿主上、异常路径」。
+- 本文改动（2026-09-16）：垫片**不再落在数据根**。两个垫片（Node 的 `shim.js`、musl libc
+  pthread key 的 `musllib-shim.so`）改为随 daemon 的 HNP 包分发：打包时进 `<pkg>/shim/`，
+  由系统安装，运行时 daemon 从自身 `/proc/self/exe` 推出的包根取用，并进程级导出
+  `NODE_OPTIONS` / `LD_PRELOAD` 供所有子进程继承（见 `hicodeerd/src/shim.rs`）。理由：
+  数据根是用户可见、用户可删的目录，垫片放那里既可能被误删，也让 daemon 依赖对它的写权限；
+  包内载荷由系统整体安装与替换，无运行时写入。因此上文原先记录的 `node/shim/` 已不存在。
+- 本文改动（2026-09-16）：TLS 垫片改称 `musllib-shim`（它垫的是 musl libc 的 pthread key
+  上限，`ohos-tls` 名不副实）。源码入库于 `hicodeerd/shim/musllib-shim.c`，
+  `script/bundle-ohos` 用 OHOS SDK clang 编出同目录的 `musllib-shim.so`；改 `.c` 即自动重编
+  并同步刷新该产物（脚本 SHIM 段）。`script/ohos-tls-shim.c` 保留为 warp-ohos 上游
+  （`warp/script/ohos/ohos-tls-shim.c`）的逐字节镜像副本，仅供对比，不再参与编译。
