@@ -84,7 +84,6 @@ use crate::zed::{CrashHandler, OpenRequestKind, eager_load_active_theme_and_icon
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(not(target_env = "ohos"))]
 fn build_application() -> Application {
     let platform = gpui_platform::current_platform(false);
     if std::env::var("ZED_EXPERIMENTAL_A11Y").as_deref() == Ok("1") {
@@ -92,14 +91,6 @@ fn build_application() -> Application {
     } else {
         Application::new_inaccessible(platform)
     }
-}
-
-#[cfg(target_env = "ohos")]
-fn build_application() -> Application {
-    // OhosPlatform owns the OpenHarmonyApp (picked up from the global set by
-    // launch-zed's launch_app); gpui is never handed the platform app.
-    let platform = gpui_platform::current_platform(false);
-    Application::with_platform(platform)
 }
 
 fn files_not_created_on_launch(errors: HashMap<io::ErrorKind, Vec<&Path>>) {
@@ -212,72 +203,21 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
 }
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
-/// Records the resolved data root so the next launch's ets-side check can find it
-/// without touching `paths` (which must not be initialized before it is set).
+// The OHOS build pulls this file into the library target (`include!` in `lib.rs`)
+// and calls the entry point from `launch-zed`, so it has to be public there. Every
+// other platform compiles the file as a plain binary, whose entry point stays
+// private.
 #[cfg(target_env = "ohos")]
-const HOME_DIRECTORY_RECORD_FILE: &str = "custom_data_dir";
-
-#[cfg(target_env = "ohos")]
-pub fn start_zed_main(base_path: Option<String>, home_directory: Option<String>) {
-    zlog::ohos::direct_hilog_info("hicodeer-boot", "[boot] start_zed_main entered");
-    let base_path = base_path.filter(|path| !path.is_empty());
-    let home_directory = home_directory.filter(|path| !path.is_empty());
-
-    match resolve_home_directory(home_directory.as_deref()) {
-        Some(home_directory) => {
-            let data_dir = paths::set_custom_data_dir(&home_directory);
-            if let Some(base_path) = base_path.as_deref() {
-                write_home_directory_record(base_path, &data_dir.to_string_lossy());
-            }
-        }
-        None => {
-            // No usable home directory (none chosen, or it became unreachable):
-            // fall back to the sandbox so the app still starts.
-            log::warn!("start_zed_main: no usable home directory; falling back to the sandbox");
-            if let Some(base_path) = base_path {
-                // Product data subdirectory (not `zed`): the QEMU guest mounts the whole
-                // sandbox, so downloaded programs live under this directory of base_path.
-                let data_dir = PathBuf::from(base_path).join("hicodeer");
-                if let Some(data_dir) = data_dir.to_str() {
-                    paths::set_custom_data_dir(data_dir);
-                }
-            }
-        }
-    }
-    main();
+pub fn main() {
+    zed_main();
 }
 
-/// Resolves the directory to use as the data root. Prefers the user home
-/// directory: re-activates its picker grant and makes sure it exists first.
-/// Returns `None` when it cannot be used, so the caller falls back to the sandbox
-/// instead of letting `set_custom_data_dir` panic on an unreachable path.
-#[cfg(target_env = "ohos")]
-fn resolve_home_directory(home_directory: Option<&str>) -> Option<String> {
-    let home_directory = home_directory?;
-    // The ets side persisted the picker grant when the user chose the directory;
-    // re-activate it for this launch so the sandbox keeps read/write access.
-    let authorized = ohos_file_geturi::ensure_root_authorized(home_directory);
-    let authorized = authorized.to_str()?;
-    match std::fs::create_dir_all(authorized) {
-        Ok(()) => Some(authorized.to_owned()),
-        Err(err) => {
-            log::error!("start_zed_main: home directory {authorized} is unusable: {err}");
-            None
-        }
-    }
-}
-
-/// Writes the resolved data root to `<base_path>/custom_data_dir`. Idempotent:
-/// the ets side writes the same value when the user picks a directory.
-#[cfg(target_env = "ohos")]
-fn write_home_directory_record(base_path: &str, home_directory: &str) {
-    let record = PathBuf::from(base_path).join(HOME_DIRECTORY_RECORD_FILE);
-    if let Err(err) = std::fs::write(&record, home_directory) {
-        log::error!("start_zed_main: write {} failed: {err}", record.display());
-    }
-}
-
+#[cfg(not(target_env = "ohos"))]
 fn main() {
+    zed_main();
+}
+
+fn zed_main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
 
     // If this process was re-executed as a Linux sandbox helper, run that mode
@@ -372,26 +312,14 @@ fn main() {
 
     zlog::init();
 
-    #[cfg(not(target_env = "ohos"))]
-    {
-        if stdout_is_a_pty() {
+    if stdout_is_a_pty() {
+        zlog::init_output_stdout();
+    } else {
+        let result = zlog::init_output_file(paths::log_file(), Some(paths::old_log_file()));
+        if let Err(err) = result {
+            eprintln!("Could not open log file: {}... Defaulting to stdout", err);
             zlog::init_output_stdout();
-        } else {
-            let result = zlog::init_output_file(paths::log_file(), Some(paths::old_log_file()));
-            if let Err(err) = result {
-                eprintln!("Could not open log file: {}... Defaulting to stdout", err);
-                zlog::init_output_stdout();
-            };
-        }
-    }
-    #[cfg(target_env = "ohos")]
-    {
-        // OHOS: logs are redirected to hilog by zlog, so skip file/stdout output initialization;
-        // emit a boot confirmation log directly to hilog to verify the redirection chain works.
-        zlog::ohos::direct_hilog_info(
-            "hicodeer-boot",
-            "zlog redirected to hilog, file logging skipped on OHOS",
-        );
+        };
     }
     ztracing::init();
 

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use openharmony_ability_derive::ability;
 
 /// Environment variable carrying the app sandbox's `files/` directory.
@@ -37,7 +39,72 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     start_daemon_client(&app);
     // Launch Zed with only the information it truly needs: the sandbox base path
     // and the home directory the ets side resolved before this native module loaded.
-    zed::start_zed_main(app.base_path(), app.home_directory());
+    start_zed_main(app.base_path(), app.home_directory());
+}
+
+/// Records the resolved data root so the next launch's ets-side check can find it
+/// without touching `paths` (which must not be initialized before it is set).
+const HOME_DIRECTORY_RECORD_FILE: &str = "custom_data_dir";
+
+/// Resolves the data root, publishes it to `paths`, then enters Zed's own `main`.
+///
+/// Zed is entered through `zed::main` rather than a bespoke entry point so the
+/// whole upstream start-up path (argument parsing, single-instance check, logging
+/// setup) stays in charge; only the data root differs from a desktop launch.
+fn start_zed_main(base_path: Option<String>, home_directory: Option<String>) {
+    // Must be set before `zed::main` runs: upstream selects the accessible
+    // application only when this is "1", and the OHOS platform has no
+    // accessibility backend - so the flag keeps that upstream shape.
+    std::env::set_var("ZED_EXPERIMENTAL_A11Y", "1");
+    let base_path = base_path.filter(|path| !path.is_empty());
+    let home_directory = home_directory.filter(|path| !path.is_empty());
+
+    match resolve_home_directory(home_directory.as_deref()) {
+        Some(home_directory) => {
+            let data_dir = paths::set_custom_data_dir(&home_directory);
+            if let Some(base_path) = base_path.as_deref() {
+                write_home_directory_record(base_path, &data_dir.to_string_lossy());
+            }
+        }
+        None => {
+            // No usable home directory (none chosen, or it became unreachable):
+            // fall back to the sandbox so the app still starts.
+            log::warn!("start_zed_main: no usable home directory; falling back to the sandbox");
+            if let Some(base_path) = base_path {
+                // Product data subdirectory (not `zed`): the QEMU guest mounts the whole
+                // sandbox, so downloaded programs live under this directory of base_path.
+                let data_dir = PathBuf::from(base_path).join("hicodeer");
+                if let Some(data_dir) = data_dir.to_str() {
+                    paths::set_custom_data_dir(data_dir);
+                }
+            }
+        }
+    }
+    zed::main();
+}
+
+/// Resolves the directory to use as the data root. Prefers the user home
+/// directory and makes sure it exists first. Returns `None` when it cannot be
+/// used, so the caller falls back to the sandbox instead of letting
+/// `set_custom_data_dir` panic on an unreachable path.
+fn resolve_home_directory(home_directory: Option<&str>) -> Option<String> {
+    let home_directory = home_directory?;
+    match std::fs::create_dir_all(home_directory) {
+        Ok(()) => Some(home_directory.to_owned()),
+        Err(err) => {
+            log::error!("start_zed_main: home directory {home_directory} is unusable: {err}");
+            None
+        }
+    }
+}
+
+/// Writes the resolved data root to `<base_path>/custom_data_dir`. Idempotent:
+/// the ets side writes the same value when the user picks a directory.
+fn write_home_directory_record(base_path: &str, home_directory: &str) {
+    let record = PathBuf::from(base_path).join(HOME_DIRECTORY_RECORD_FILE);
+    if let Err(err) = std::fs::write(&record, home_directory) {
+        log::error!("start_zed_main: write {} failed: {err}", record.display());
+    }
 }
 
 /// Pins the process environment that alacritty's terminal shell discovery

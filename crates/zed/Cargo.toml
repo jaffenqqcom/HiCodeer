@@ -246,7 +246,6 @@ gpui = { workspace = true, features = [
 [target.'cfg(target_env = "ohos")'.dependencies]
 gpui = { workspace = true, default-features = false, features = ["profiler"] }
 gpui_platform = { workspace = true, features = ["font-kit"] }
-ohos-file-geturi = { path = "../gpui_ohos/depend/ohos-file-geturi" }
 
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
 gpui_platform = { workspace = true, features = ["screen-capture", "font-kit", "wayland", "x11"] }

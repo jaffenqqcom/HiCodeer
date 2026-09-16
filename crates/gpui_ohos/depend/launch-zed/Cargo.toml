@@ -26,6 +26,10 @@ zlog = { path = "../../../zlog" }
 gpui_ohos = { path = "../.." }
 openharmony-ability = { path = "../openharmony-ability/crates/ability" }
 openharmony-ability-derive = { path = "../openharmony-ability/crates/derive" }
+# Link-time shim for the path-taking libc calls. Its `__wrap_*` symbols are what
+# build.rs redirects `open`/`stat`/... to, so the crate has to stay linked into
+# the final cdylib even though no Rust code calls into it.
+ohos-libc-shim = { path = "../ohos-libc-shim" }
 cmd-client = { path = "../cmd-agent/cmd-client", optional = true }
 # qemu_debug_assertions is deliberately NOT enabled by default: it forwards the
 # guest serial console (QEMU stdout/stderr) into hilog, which blocks the TCG
@@ -34,6 +38,7 @@ cmd-client = { path = "../cmd-agent/cmd-client", optional = true }
 qemu-manager = { path = "../qemu-mngt/qemuctrl", optional = true, features = ["qemu_debug_assertions"] }
 gpui_ohos_linker.workspace = true
 util = { path = "../../../util" }
+paths = { path = "../../../paths" }
 log = "0.4"
 libc = "0.2"
 smol.workspace = true

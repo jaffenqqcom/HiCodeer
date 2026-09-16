@@ -1,3 +1,9 @@
+// Keeps `ohos-libc-shim` linked into the final cdylib: the `__wrap_*` symbols
+// in it are where build.rs redirects the path-taking libc calls, and no Rust
+// code calls into the crate directly.
+#[cfg(target_env = "ohos")]
+use ohos_libc_shim as _;
+
 mod launch_app;
 
 // OHOS: command-backend selection (on-device daemon vs QEMU guest) plus QEMU boot

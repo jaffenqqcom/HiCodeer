@@ -102,7 +102,7 @@ members = [
     "crates/gpui_ohos",
     "crates/gpui_ohos/depend/gpui_ohos_linker",
     "crates/gpui_ohos/depend/launch-zed",
-    "crates/gpui_ohos/depend/ohos-file-geturi",
+    "crates/gpui_ohos/depend/ohos-libc-shim",
     "crates/gpui_platform",
     "crates/gpui_tokio",
     "crates/gpui_util",

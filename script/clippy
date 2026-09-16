@@ -17,7 +17,6 @@ if [[ ! " $* " == *" -p "* && ! " $* " == *" --package "* ]]; then
             --exclude launch-zed \
             --exclude gpui_ohos \
             --exclude gpui_ohos_linker \
-            --exclude ohos-file-geturi \
             --exclude qemu-ssh-agent \
             --exclude qemu-ssh-agent-linker
     fi

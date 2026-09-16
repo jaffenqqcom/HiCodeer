@@ -107,10 +107,6 @@ zeroize.workspace = true
 zlog.workspace = true
 ztracing.workspace = true
 
-[target.'cfg(target_env = "ohos")'.dependencies]
-# openharmony-ability = { path = "../gpui_ohos/depend/openharmony-ability/crates/ability" } // only ensure_root_authorized was used; moved to ohos-file-geturi
-ohos-file-geturi = { path = "../gpui_ohos/depend/ohos-file-geturi" }
-
 [dev-dependencies]
 client = { workspace = true, features = ["test-support"] }
 encoding_rs.workspace = true

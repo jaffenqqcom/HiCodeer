@@ -10780,8 +10780,10 @@ dependencies = [
  "napi-build-ohos",
  "napi-derive-ohos",
  "napi-ohos",
+ "ohos-libc-shim",
  "openharmony-ability",
  "openharmony-ability-derive",
+ "paths",
  "qemu-manager",
  "smol",
  "util",
@@ -13264,13 +13266,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohos-file-geturi"
-version = "0.1.0"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "ohos-image-native-sys"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13306,6 +13301,13 @@ name = "ohos-input-method-sys"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8686bdd6249bc09b0789e09d35886563811d9a8dce9d05361d33122648eeb3e"
+
+[[package]]
+name = "ohos-libc-shim"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "ohos-native-buffer-sys"
@@ -15467,7 +15469,6 @@ dependencies = [
  "lsp",
  "markdown",
  "node_runtime",
- "ohos-file-geturi",
  "parking_lot",
  "path",
  "paths",
@@ -24387,7 +24388,6 @@ dependencies = [
  "markdown",
  "menu",
  "node_runtime",
- "ohos-file-geturi",
  "parking_lot",
  "postage",
  "pretty_assertions",
@@ -24954,7 +24954,6 @@ dependencies = [
  "miniprofiler_ui",
  "node_runtime",
  "notifications",
- "ohos-file-geturi",
  "onboarding",
  "outline",
  "outline_panel",

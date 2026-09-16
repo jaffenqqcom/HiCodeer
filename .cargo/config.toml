@@ -18,10 +18,20 @@ rustflags = [
 
 # Force GLES backend for OHOS since Vulkan doesn't support VK_KHR_dynamic_rendering
 # This applies to all OHOS targets (e.g., aarch64-unknown-linux-ohos)
+#
+# rustix_use_libc: OHOS reports target_os = "linux", so rustix picks its
+# linux_raw backend and issues syscalls through inline `svc` assembly, which
+# bypasses the libc entry points entirely. That makes the libc-level shim in
+# `crates/gpui_ohos/depend/ohos-libc-shim` unable to see rustix's file
+# accesses. This cfg (a documented rustix switch, also used for Android and
+# miri) selects rustix's libc backend instead, routing those calls through
+# `openat`/`stat`/... so the shim can re-activate the picker grant and retry.
 [target.'cfg(target_env = "ohos")']
 rustflags = [
     "--cfg",
     "gles",
+    "--cfg",
+    "rustix_use_libc",
 ]
 
 # Also configure for the specific OHOS target triple if needed
@@ -29,6 +39,8 @@ rustflags = [
 rustflags = [
     "--cfg",
     "gles",
+    "--cfg",
+    "rustix_use_libc",
     "-C",
     "target-feature=+fp16",
 ]
