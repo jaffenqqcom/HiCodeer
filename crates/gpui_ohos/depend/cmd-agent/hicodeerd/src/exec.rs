@@ -410,7 +410,6 @@ pub async fn spawn_command(
     // Bin entries need nothing here: npm builds them itself, and the preload
     // (see `shim`) substitutes a real file wherever this filesystem refuses
     // the link.
-    crate::shim::apply(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {

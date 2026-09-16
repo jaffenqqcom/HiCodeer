@@ -8,7 +8,7 @@
 //! current one.
 //!
 //! The client appends the directory it works in, which this side adopts for the
-//! programs it spawns -- see `session_tmp` and `shim`. That is the only
+//! programs it spawns -- see `session_tmp`. That is the only
 //! path by which the daemon learns the directory: it runs under its own account
 //! and cannot read the host application's environment, so the request has to
 //! carry it.
@@ -101,7 +101,6 @@ impl server::Handler for ManagementHandler {
                     // Arrives on every poll; the adoption itself happens once.
                     let root = Path::new(&root);
                     crate::session_tmp::adopt(root);
-                    crate::shim::adopt(root);
                     // The root is also where this run's log file goes.
                     crate::logger::attach_file(root);
                 }

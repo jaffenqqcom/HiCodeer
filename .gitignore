@@ -78,3 +78,4 @@ Cargo.lock
 hap/cerfile/
 
 hap/entry/hnp/arm64-v8a/hicodeerd.hnp
+crates/gpui_ohos/depend/cmd-agent/hicodeerd/shim/musllib-shim.so

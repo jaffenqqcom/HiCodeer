@@ -241,7 +241,6 @@ pub async fn run_pty_shell(
     if !term.is_empty() {
         cmd.env("TERM", term);
     }
-    crate::shim::apply(&mut cmd);
     // SAFETY: the closure runs in the forked child before exec and only calls
     // async-signal-safe libc functions; `slave_fd` stays open in the child
     // until exec (it is still referenced by the stdio setup).

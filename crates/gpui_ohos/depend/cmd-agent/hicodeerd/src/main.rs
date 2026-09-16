@@ -94,25 +94,44 @@ fn print_help() {
     println!("  --help  Print this help and exit.");
 }
 
+/// Root of the package this executable was installed into: the directory that
+/// carries `bin/` and the rest of the payload, one level above the executable.
+/// Reading `/proc/self/exe` follows any exec symlink to the real installed
+/// layout, which is what `conf` and the preloads are addressed relative to.
+///
+/// On OHOS that is the version directory of this daemon's HNP
+/// (`<pkg>.org/<pkg>_<version>/`), which the system installs and replaces as a
+/// whole; inside the guest it is the `qemu` directory the host stages.
+pub(crate) fn package_root() -> std::io::Result<PathBuf> {
+    // `/proc/self/exe` is the reliable source: it follows the exec symlink to
+    // the real installed layout. Some hosts do not mount procfs, so fall back to
+    // asking the runtime rather than assuming either one works.
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(exe) => exe,
+        Err(err) => {
+            log::warn!("daemon: read /proc/self/exe failed ({err}); asking the runtime instead");
+            std::env::current_exe()?
+        }
+    };
+    let bin_dir = exe
+        .parent()
+        .ok_or_else(|| std::io::Error::other("executable has no parent dir"))?;
+    bin_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| std::io::Error::other("bin dir has no parent dir"))
+}
+
 /// Resolves the directory holding the fixed management keys: `CONF_DIR_ENV`
-/// when set, otherwise `<hnp-package-root>/conf` (a `conf` directory next to
-/// the `bin` that contains this executable). Resolving `/proc/self/exe` follows
-/// any exec symlink to the real package layout.
+/// when set, otherwise `<package root>/conf` (a `conf` directory next to the
+/// `bin` that contains this executable).
 fn conf_dir() -> std::io::Result<PathBuf> {
     if let Some(dir) = std::env::var_os(CONF_DIR_ENV) {
         let path = PathBuf::from(dir);
         return Ok(path);
     }
-    let exe = std::fs::read_link("/proc/self/exe")
-        .unwrap_or_else(|_| std::env::current_exe().expect("current_exe"));
-    let bin_dir = exe
-        .parent()
-        .ok_or_else(|| std::io::Error::other("executable has no parent dir"))?;
     // The HNP layout is <pkg>/bin/<daemon binary> + <pkg>/conf/... .
-    let pkg_root = bin_dir
-        .parent()
-        .ok_or_else(|| std::io::Error::other("bin dir has no parent dir"))?;
-    Ok(pkg_root.join("conf"))
+    Ok(package_root()?.join("conf"))
 }
 
 /// Loads the fixed management host private key and the authorized management
@@ -146,6 +165,10 @@ fn read_mgmt_keys(conf: &Path) -> Result<(PrivateKey, PublicKey), String> {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let conf = conf_dir()?;
+    // Exports the preloads every program spawned from here on has to inherit.
+    // Resolved from the package root, so it needs nothing from a client. A
+    // package that ships no preloads leaves the environment untouched.
+    shim::install();
     let (mgmt_host_key, mgmt_authorized) = read_mgmt_keys(&conf)?;
 
     // Dynamic keys for this run's command listener (never persisted).

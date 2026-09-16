@@ -1,153 +1,142 @@
-//! Preload that keeps spawned Node.js processes working on hosts that depart
-//! from a mainstream Linux userland.
+//! Preloads that repair host defects in the programs this daemon spawns.
 //!
-//! Some Node tooling assumes a familiar platform and fails outright here: an
-//! OHOS app or service runs under a uid no account database entry covers, so
-//! `os.userInfo()` throws `ERR_SYSTEM_ERROR`, and `process.platform` is reported
-//! as `openharmony`, which tools that switch on it treat as fatal. Both are
-//! repaired by one preload script.
+//! Two files ship inside the daemon's own package, in `<pkg>/shim/` beside
+//! `bin/` and `conf/`. Because they travel in the package, the system installs
+//! them and replaces them on every reinstall, and nothing at runtime writes,
+//! checks or heals a copy of its own.
 //!
-//! That script is `shim.js`, and it is the only preload -- `include_str!` pulls
-//! it into this executable, so the file ships with the binary rather than beside
-//! it. Add new host fixes inside that script instead of adding a second shim:
-//! the script's own header explains why. Do not reintroduce a per-bug file here
-//! or in `shim/`.
+//! [`install`] resolves that directory from the package root -- see
+//! `crate::package_root` -- and exports the two variables that make every later
+//! child carry the preloads. Both consumers read their variable from the
+//! environment at exec time, so the preloads reach command exec, PTY shells and
+//! any spawn site added later without a per-call hook.
 //!
-//! The script is re-materialised under the user data root, which the host
-//! application and the guest VM both see at the same absolute path -- that
-//! makes it reachable whichever system the daemon runs on. Children receive it
-//! through `NODE_OPTIONS` unconditionally: the preload calls the real
-//! implementation first and only substitutes when that call fails, so on hosts
-//! where nothing is wrong it is a no-op.
+//! - `NODE_OPTIONS=--require <pkg>/shim/shim.js`. The script's own header
+//!   details what it repairs; in short, an OHOS app runs under a uid no account
+//!   database entry covers, so `os.userInfo()` throws `ERR_SYSTEM_ERROR`,
+//!   `process.platform` is reported as `openharmony`, which tooling that
+//!   switches on it treats as fatal, and the install tree's filesystem refuses
+//!   symlinks, which stops `npm install` when it builds `node_modules/.bin`.
+//! - `LD_PRELOAD=<pkg>/shim/musllib-shim.so`. The platform's libc caps pthread
+//!   keys at `PTHREAD_KEYS_MAX` (128) per process, and the
+//!   `aarch64-unknown-linux-ohos` target does not enable native thread-local
+//!   storage, so Rust's std implements `thread_local!` on top of those keys --
+//!   one key per variable in the whole process. Any program that loads enough
+//!   Rust code at once (a language server, a build) therefore runs out of keys
+//!   and aborts with "out of TLS keys". The preload interposes the pthread TLS
+//!   entry points and serves a virtual key space from a single real key, which
+//!   removes the ceiling for every process it is loaded into.
 //!
-//! The data root is not guessed here. It arrives with the management bootstrap
-//! request -- the same one that carries the session temporary directory --
-//! because the daemon runs under its own account and cannot read the host
-//! application's environment.
+//! A preload that is absent is reported and left out of the environment rather
+//! than named in it: both consumers treat an unusable entry as fatal to their
+//! own startup -- the loader refuses an `LD_PRELOAD` it cannot open, and Node
+//! refuses a `--require` naming a missing file -- which is worse than the
+//! defects this works around.
+//!
+//! Only the OHOS build ships the payload: both defects are properties of the
+//! OHOS runtime, and the guest runs a full Linux userland that exhibits
+//! neither. The guest build therefore finds an empty directory and carries on.
+//! No preload is required for the daemon to serve: nothing here returns an
+//! error, and every unusable preload is reported and skipped the same way a
+//! missing one is.
 
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::Path;
 
-/// Preload script, compiled in so no side file has to travel with the binary.
-const SHIM_SOURCE: &str = include_str!("../shim/shim.js");
-/// File name of the preload.
-const SHIM_FILE: &str = "shim.js";
-/// Where the preload lives under the data root.
-const SHIM_SUBDIR: &str = "node/shim";
+/// Directory under the package root holding the preloads.
+const SHIM_SUBDIR: &str = "shim";
+/// Node preload, loaded through `--require`.
+const NODE_SHIM_FILE: &str = "shim.js";
+/// Shared-object preload, loaded through `LD_PRELOAD`.
+const TLS_SHIM_FILE: &str = "musllib-shim.so";
 /// Env var Node reads its default command-line flags from.
 const NODE_OPTIONS_ENV: &str = "NODE_OPTIONS";
-/// Env var carrying the username the preload reports.
+/// Node flag that loads a script before the program Node was asked to run.
+const NODE_OPTIONS_REQUIRE: &str = "--require";
+/// Env var the dynamic loader reads its preload list from.
+const LD_PRELOAD_ENV: &str = "LD_PRELOAD";
+/// Env var carrying the username the Node preload reports.
 const SHIM_USER_ENV: &str = "HICODEERD_OSUSER";
-/// Username the preload reports when `SHIM_USER_ENV` is unset.
+/// Username the Node preload reports when `SHIM_USER_ENV` is unset.
 const SHIM_USER: &str = "hicodeer";
 
-/// Where the preload ended up, plus the `NODE_OPTIONS` value that loads it.
-struct Resolved {
-    path: PathBuf,
-    node_options: String,
-}
-
-/// Set the first time a client reports its root. Later reports repeat the same
-/// value on the bootstrap poll, so the work below runs exactly once.
-static RESOLVED: OnceLock<Resolved> = OnceLock::new();
-
-/// Materialises the preload under the root a connected client reported and
-/// caches the `NODE_OPTIONS` value children must inherit.
-///
-/// A root that cannot hold the preload is left unrecorded rather than recorded
-/// as a failure: exporting a `NODE_OPTIONS` naming a file that is not there
-/// would stop every Node process from starting at all, which is worse than the
-/// bugs this works around. The next poll retries.
-pub(crate) fn adopt(root: &Path) {
-    if RESOLVED.get().is_some() {
-        return;
-    }
-    let path = root.join(SHIM_SUBDIR).join(SHIM_FILE);
-    let Some(node_options) = place_and_build(&path) else {
-        log::warn!("shim: cannot place {SHIM_FILE} under {}", root.display());
-        return;
+/// Exports the environment that makes every program spawned from here on carry
+/// both preloads. A preload that cannot be used is reported and skipped; the
+/// daemon keeps serving either way.
+pub fn install() {
+    let directory = match crate::package_root() {
+        Ok(root) => root.join(SHIM_SUBDIR),
+        Err(err) => {
+            log::warn!("shim: cannot resolve the package root: {err}");
+            return;
+        }
     };
-    if RESOLVED.set(Resolved { path, node_options }).is_err() {
-        log::warn!("shim: adopted more than once, keeping the first value");
+
+    let node_shim = directory.join(NODE_SHIM_FILE);
+    match expressible(&node_shim) {
+        Some(path) => {
+            append_env(NODE_OPTIONS_ENV, &format!("{NODE_OPTIONS_REQUIRE} {path}"));
+            // The preload reports this instead of the account database entry
+            // this process does not have.
+            std::env::set_var(SHIM_USER_ENV, SHIM_USER);
+        }
+        None => {
+            log::warn!(
+                "shim: no Node preload at {}; Node children keep the platform defects",
+                node_shim.display()
+            );
+        }
+    }
+
+    let tls_shim = directory.join(TLS_SHIM_FILE);
+    match expressible(&tls_shim) {
+        Some(path) => {
+            append_env(LD_PRELOAD_ENV, &path);
+        }
+        None => {
+            log::warn!(
+                "shim: no TLS preload at {}; children keep the pthread key ceiling",
+                tls_shim.display()
+            );
+        }
     }
 }
 
-/// Adds the preload to a child's environment; no-op only when no usable
-/// location was found. Silent on the happy path -- [`place_and_build`] warns
-/// for the cases worth knowing about.
-pub fn apply(cmd: &mut tokio::process::Command) {
-    if let Some(resolved) = RESOLVED.get() {
-        // The data root doubles as the Node scratch area, and the managed
-        // runtime wipes that area when it re-fetches Node. Re-checking here
-        // keeps `NODE_OPTIONS` from naming a file that just disappeared, which
-        // would stop the child from starting at all.
-        ensure_placed(&resolved.path);
-        cmd.env(NODE_OPTIONS_ENV, &resolved.node_options);
-        cmd.env(SHIM_USER_ENV, SHIM_USER);
-    }
-}
-
-/// Writes the compiled-in preload to `path` and returns the `NODE_OPTIONS`
-/// value that loads it, or `None` when that path cannot be used.
-fn place_and_build(path: &Path) -> Option<String> {
-    // Never poison NODE_OPTIONS with a path Node cannot load: an unusable
-    // `--require` stops every Node process in the session from starting at all,
-    // which is worse than the bugs this works around.
-    let shim = match path.to_str() {
-        Some(shim) => shim,
+/// Returns the path in a form the consumer's variable can carry, or `None` when
+/// the file is not there or the variable cannot express the path.
+///
+/// Both consumers split their variable on whitespace and offer no quoting, so a
+/// path containing whitespace cannot be written down at all; a path that is not
+/// valid UTF-8 cannot either. Absence is left to the caller to report, so that
+/// each preload is described in its own terms.
+fn expressible(path: &Path) -> Option<String> {
+    let text = match path.to_str() {
+        Some(text) => text,
         None => {
             log::warn!("shim: {path:?} is not valid UTF-8, skipping it");
             return None;
         }
     };
-    // Node splits NODE_OPTIONS on whitespace and offers no quoting, so a path
-    // containing whitespace cannot be expressed at all.
-    if shim.contains(char::is_whitespace) {
-        log::warn!("shim: {shim} contains whitespace, skipping it");
+    if text.contains(char::is_whitespace) {
+        log::warn!("shim: {text} contains whitespace, skipping it");
         return None;
     }
-    if !write_if_stale(path) {
+    if !path.is_file() {
         return None;
     }
-
-    let mut value = std::env::var(NODE_OPTIONS_ENV).unwrap_or_default();
-    if !value.contains(shim) {
-        if !value.is_empty() {
-            value.push(' ');
-        }
-        value.push_str("--require ");
-        value.push_str(shim);
-    }
-    Some(value)
+    Some(text.to_string())
 }
 
-/// Writes the preload unless the file already holds exactly that content.
-/// Returns whether the file is in place afterwards.
-fn write_if_stale(path: &Path) -> bool {
-    let fresh = std::fs::read(path).is_ok_and(|current| current == SHIM_SOURCE.as_bytes());
-    if fresh {
-        return true;
+/// Appends `addition` to the whitespace-separated `variable` unless the value
+/// already carries it: a preload inherited from the parent keeps working, and
+/// naming the same entry twice would only lengthen the value.
+fn append_env(variable: &str, addition: &str) {
+    let mut value = std::env::var(variable).unwrap_or_default();
+    if value.contains(addition) {
+        return;
     }
-    if let Some(dir) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            log::warn!("shim: create {}: {err}", dir.display());
-            return false;
-        }
+    if !value.is_empty() {
+        value.push(' ');
     }
-    match std::fs::write(path, SHIM_SOURCE) {
-        Ok(()) => true,
-        Err(err) => {
-            log::warn!("shim: write {}: {err}", path.display());
-            false
-        }
-    }
-}
-
-/// In-flight repair, cheap enough to run per child: a single `stat` decides
-/// whether the preload is still there, and only a miss costs a rewrite.
-fn ensure_placed(path: &Path) {
-    let present = std::fs::metadata(path).is_ok_and(|meta| meta.len() == SHIM_SOURCE.len() as u64);
-    if !present {
-        write_if_stale(path);
-    }
+    value.push_str(addition);
+    std::env::set_var(variable, value);
 }
