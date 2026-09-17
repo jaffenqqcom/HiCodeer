@@ -600,15 +600,15 @@ impl Platform for OhosPlatform {
         // GPUI PathPromptOptions -> OHOS dialog mapping:
         //   directories=true -> open-folder picker (DocumentSelectMode.FOLDER)
         //   directories=false -> open-file picker (DocumentSelectMode.FILE)
-        // `allow_many` always mirrors `multiple`: the OHOS picker supports multi-selection
-        // for both files and folders (folder multi-select via maxSelectNumber on API 23+,
-        // and via allowsMulFolderSelection on API 26+).
+        // `allow_many` mirrors `multiple` for files only: folder dialogs always ask for a single
+        // directory, matching the setup page's picker (the ArkTS plugin honours the flags it gets).
         let dialog_type = if options.directories {
             dialog_type::OPEN_FOLDER
         } else {
             dialog_type::OPEN_FILE
         };
-        let dialog_options = FileDialogOptions::new(dialog_type).allow_many(options.multiple);
+        let allow_many = options.multiple && !options.directories;
+        let dialog_options = FileDialogOptions::new(dialog_type).allow_many(allow_many);
         self.foreground_executor.spawn(async move {
             match app.show_file_dialog(dialog_options).await {
                 Ok(response) => {

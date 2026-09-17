@@ -3639,6 +3639,13 @@ impl Workspace {
             open_mode = OpenMode::Activate;
         }
 
+        // [ohos] Rendering goes through a single XComponent surface and the platform refuses to
+        // open a second window, so a requested new window has to land in the current one.
+        #[cfg(target_env = "ohos")]
+        if open_mode == OpenMode::NewWindow {
+            open_mode = OpenMode::Activate;
+        }
+
         let app_state = self.app_state.clone();
 
         cx.spawn(async move |_, cx| {

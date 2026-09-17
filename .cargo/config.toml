@@ -16,8 +16,14 @@ rustflags = [
     "target-feature=+crt-static", # This fixes the linking issue when compiling livekit on Windows
 ]
 
-# Force GLES backend for OHOS since Vulkan doesn't support VK_KHR_dynamic_rendering
-# This applies to all OHOS targets (e.g., aarch64-unknown-linux-ohos)
+# `--cfg gles` compiles the GLES backend INTO the patched wgpu tree. It is
+# consumed by `#[cfg(gles)]` in patches/wgpu/{wgpu,wgpu-core,wgpu-hal} and
+# declared in crates/gpui/build.rs. It does NOT select the runtime backend:
+# gpui_ohos defaults to Vulkan -- see crates/gpui_ohos/src/ohos/wgpu_context.rs
+# (`wgpu::Backends::VULKAN`), where an A/B test measured lower CPU usage than
+# GLES (~7% less while scrolling, 16-30% less while idle). Use the
+# WGPU_BACKEND=gles environment variable at runtime for the GLES fallback.
+# This applies to all OHOS targets (e.g., aarch64-unknown-linux-ohos).
 #
 # rustix_use_libc: OHOS reports target_os = "linux", so rustix picks its
 # linux_raw backend and issues syscalls through inline `svc` assembly, which

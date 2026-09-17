@@ -1612,6 +1612,12 @@ impl Panel for TerminalPanel {
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         let old_active = self.active;
         self.active = active;
+        // [ohos] Opening the terminal panel also maximizes it, so it fills the
+        // surface instead of sitting at the dock's default height.
+        #[cfg(target_env = "ohos")]
+        if active && !old_active {
+            cx.emit(PanelEvent::ZoomIn);
+        }
         if !active || old_active == active || !self.has_no_terminals(cx) {
             return;
         }
