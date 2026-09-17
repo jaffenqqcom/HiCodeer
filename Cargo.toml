@@ -100,7 +100,6 @@ members = [
     "crates/gpui_macos",
     "crates/gpui_macros",
     "crates/gpui_ohos",
-    "crates/gpui_ohos/depend/gpui_ohos_linker",
     "crates/gpui_ohos/depend/launch-zed",
     "crates/gpui_ohos/depend/ohos-libc-shim",
     "crates/gpui_platform",
@@ -366,7 +365,7 @@ gpui_shared_string = { path = "crates/gpui_shared_string" }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
 gpui_macros = { path = "crates/gpui_macros" }
-gpui_ohos_linker = { path = "crates/gpui_ohos/depend/gpui_ohos_linker" }
+gpui_ohos = { path = "crates/gpui_ohos" }
 gpui_platform = { path = "crates/gpui_platform", default-features = false }
 gpui_web = { path = "crates/gpui_web" }
 gpui_wgpu = { path = "crates/gpui_wgpu" }

@@ -6,9 +6,10 @@ use ohos_libc_shim as _;
 
 mod launch_app;
 
-// OHOS: command-backend selection (on-device daemon vs QEMU guest) plus QEMU boot
-// and dynamic work-directory mounts.
-#[cfg(target_env = "ohos")]
+// QEMU guest backend: engine boot and dynamic work-directory mounts. Compiled
+// only when the `qemu-agent` feature is on; the on-device command service needs
+// none of it and lives in launch_app.
+#[cfg(all(target_env = "ohos", feature = "qemu-agent"))]
 mod qemu_runtime;
 
 // OHOS libc lacks robust mutexes (pthread_mutexattr_setrobust /

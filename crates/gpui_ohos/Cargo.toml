@@ -13,7 +13,6 @@ path = "src/gpui_ohos.rs"
 
 [dependencies]
 gpui.workspace = true
-gpui_ohos_linker.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 anyhow.workspace = true

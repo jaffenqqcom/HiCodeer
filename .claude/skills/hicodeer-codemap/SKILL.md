@@ -1,13 +1,13 @@
 ---
 name: hicodeer-codemap
-description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地图，记录程序启动流程、模块入口与跨运行时边界（NAPI / XComponent / 事件循环）。用于快速定位启动链路上各模块的入口函数与触发方式。
+description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地图，记录程序启动流程、模块入口与跨运行时边界（NAPI / XComponent / 事件循环）、hicodeerd 守护进程自身的运行路径（双 SSH listener / 会话分发 / 子进程与进程组回收），以及 Zed 官方服务的出网总闸与各服务出网点（遥测 / 扩展市场 / 自动更新 / Cloud 账号 / Cloud LLM / Zed 编辑预测 / web search / 协作 RPC / MCP OAuth）。用于快速定位各模块的入口函数与触发方式。
 ---
 
 # hicodeer-codemap：HiCodeer 启动流程架构地图
 
 本文件记录 HiCodeer（代码库为 Zed，产品名 HiCodeer，移植到 HarmonyOS NEXT）的**程序启动流程**。只记录模块入口、跨文件跳转、跨运行时跳转，不追踪完整执行路径。
 
-所有路径均为相对项目根目录（`/mnt/linux_share/workspace/zcoder`）的相对路径。
+所有路径均为相对项目根目录的相对路径。
 
 ## 启动链路总览
 
@@ -243,14 +243,38 @@ OhosPlatform::new() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosTextSystem
 滚轮 到 handle_axis_input() 在 crates/gpui_ohos/src/ohos/window.rs  [modifiers.shift 按下时 swap 横纵轴（shift+滚轮水平滚动，对齐 gpui_linux）；Mouse→ScrollDelta::Lines(每 120 单位 3 行)、Touchpad→ScrollDelta::Pixels(1:1 不放大)；两分支对 scroll_vertical/horizontal 取反与触摸屏方向一致]
 ```
 
-IME 输入（`InputEvent::ImeEvent` → GPUI InputHandler）：
+IME 输入（ArkTS 插件持有 `InputMethodController`，控制面与输入面各占一条 NAPI 桥；不再是 NDK/TSFN 路径）：
 ```
-IME 到 handle_input_event() 的 ImeEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [收到 IME 事件时调用；经 foreground_executor.spawn 异步处理]
-IME 到 ImeEvent::TextInputEvent → replace_text_in_range / unmark_text 在 crates/gpui_ohos/src/ohos/window.rs  [文本提交]
-IME 到 ImeEvent::EnterEvent → replace_text_in_range("\n") 在 crates/gpui_ohos/src/ohos/window.rs  [回车]
-IME 到 ImeEvent::BackspaceEvent → 按 selection 删字符 在 crates/gpui_ohos/src/ohos/window.rs  [退格]
-IME 到 ImeEvent::ImeStatusEvent(Hide) → unmark_text + notify_keyboard_hidden 在 crates/gpui_ohos/src/ohos/window.rs  [键盘隐藏]
-IME 到 IME::new + insert_text/on_status_change/on_backspace/on_enter 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/render/xcomponent.rs  [on_surface_created 时创建 IME 并注册系统软键盘回调；经 TSFN 转 ImeEvent 入 event_loop]
+IME 到 ImePlugin 注册 在 hap/entry/src/main/ets/entryability/EntryAbility.ets  [EntryAbility.bridgePlugins 以 LazyPlugin 登记；窗口 stage 创建时由 NativeAbility 安装]
+IME 到 onInstall() 在 crates/gpui_ohos/depend/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [插件安装时调用一次；注册 windowSizeChange/windowRectChange 用于重算候选框位置]
+IME 到 invokeAsync() 在 .../plugins/ime/src/main/ets/ImePlugin.ets  [Rust 经异步桥调用；按 action 分派 attach / detach / update-cursor]
+IME 到 attach() → bindWithRetries() 在 .../ImePlugin.ets  [Rust 请求 attach；attachWithUIContext + showTextInput 后 attached=true，回调注册由 callbacksRegistered 单独保证只做一次。已 attached 的请求也必须真正重绑——窗口隐藏时系统会收走会话而该标志仍为 true（2026-09-15 修复）]
+IME 到 stopInputSession() 在 .../ImePlugin.ets  [Rust 请求 detach；attached=false 并结束系统会话，controller 与回调保留复用]
+IME 到 updateCursor() → computeCursorScreenPos() 在 .../ImePlugin.ets  [Rust 请求 update-cursor，或 windowSizeChange/windowRectChange 触发；窗口坐标换算成屏幕坐标后喂 controller.updateCursor]
+IME 到 register_plugins() 在 crates/gpui_ohos/src/ohos/platform.rs  [OhosPlatform::new 启动时注册 ImeBridgePlugin（插件 ID "ohos.ime"）]
+IME 到 ImeBridgePlugin::on_main_thread_event() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-ime/src/lib.rs  [ArkTS invokeNativeSync 送来的主线程事件入口；按事件名分派 insert-text/delete-left/delete-right/function-key/keyboard-status/preview-text]
+IME 到 push_input() 在 .../crates/plugin-ime/src/lib.rs  [把 IME 回调转成 Event::Input(InputEvent::ImeEvent)，经 global_app().dispatch_input_event 入事件循环]
+IME 到 ImeClient::attach()/detach()/update_cursor() 在 .../crates/plugin-ime/src/lib.rs  [控制面入口，由 ImeExt::ime() 取得；经异步桥调 ArkTS 对应 action]
+IME 到 handle_input_event() 的 ImeEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [ImeEvent 消费点；经 foreground_executor.spawn 异步处理]
+IME 到 handle_ime_backspace()/handle_ime_delete_forward()/handle_ime_enter() 在 crates/gpui_ohos/src/ohos/window.rs  [有组合(marked)文本→走 IME 文本层；无组合→派发真实 backspace/delete/enter KeyDown]
+IME 到 show_keyboard_if_needed() 在 crates/gpui_ohos/src/ohos/window.rs  [SurfaceCreate / 窗口获焦(GainedFocus) / update_ime_position 推光标时调用；受 ime_attached 缓存守卫防重复]
+IME 到 hide_keyboard_if_needed() 在 crates/gpui_ohos/src/ohos/window.rs  [窗口失焦(LostFocus) 时调用，向 ArkTS 下发 detach]
+IME 到 push_ime_cursor_rect()/refresh_ime_cursor() 在 crates/gpui_ohos/src/ohos/window.rs  [光标或窗口几何变化时把 caret rect 推给 ArkTS，驱动候选框跟随]
+```
+
+窗口生命周期与 IME（关键时序，决定输入法能否被重新激活）：
+```
+IME 到 onWindowStageEvent() 在 crates/gpui_ohos/depend/openharmony-ability/native_ability/src/main/ets/ability/NativeAbility.ets  [windowStage 注册；windowStageEvent 与 windowVisibilityChange 都由这里转发]
+IME 到 window_stage_event 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/lifecycle.rs  [ArkTS 送来的 event_type 原始整数映射为 Event：SHOWN(1)→Start、ACTIVE(2)→GainedFocus、INACTIVE(3)→LostFocus、HIDDEN(4)→Stop]
+```
+实测时序（tablet，2026-09-15）：最小化 `INACTIVE`→`HIDDEN`；恢复 `SHOWN`→`ACTIVE`，且 `windowVisibilityChange(true)` 比 `SHOWN` 晚约 30ms、`ACTIVE` 再晚约 100ms。**只有 `ACTIVE`(GainedFocus) 处于「窗口已可见且已获焦」**，IME 重建必须挂在这里；挂在 `SHOWN` 会落在「不可见、未获焦」的空窗，`attachWithUIContext`/`showTextInput` 不抛异常但系统不建会话，此后 attach 全被 `ime_attached` 缓存短路（详见 `移植记录/bugfix/2026-09-15-ohos-ime-minimize-restore.md`）。
+
+跨运行时跳转：
+```
+IME 到 ImePlugin.invokeAsync() 在 .../plugins/ime/src/main/ets/ImePlugin.ets 到 [ohos.ime attach / detach / update-cursor] 到 ImeClient::attach()/detach()/update_cursor() 在 .../crates/plugin-ime/src/lib.rs  [控制面：Rust → ArkTS 异步桥]
+IME 到 registerCallbacksOnce() 注册的回调 在 .../ImePlugin.ets 到 [insert-text / delete-left / delete-right / function-key / keyboard-status / preview-text] 到 ImeBridgePlugin::on_main_thread_event() 在 .../crates/plugin-ime/src/lib.rs  [输入面：ArkTS → Rust 主线程同步桥；回调不可注销，重复注册会让一次按键裂成 N 个 insert-text]
+IME 到 push_input() 在 .../crates/plugin-ime/src/lib.rs 到 [Event::Input(InputEvent::ImeEvent)] 到 OhosWindow::handle_input_event() 在 crates/gpui_ohos/src/ohos/window.rs
+IME 到 window_stage_event 闭包 在 .../crates/ability/src/lifecycle.rs 到 [Event::GainedFocus / Event::LostFocus] 到 OhosWindow::handle_event() 在 crates/gpui_ohos/src/ohos/window.rs  [窗口前后台与获焦变化驱动 IME 的拆除与重建]
 ```
 
 键盘输入（物理按键 `InputEvent::KeyEvent` → GPUI Keystroke + 文本兜底）：
@@ -532,7 +556,7 @@ ExtensionLspAdapter 到 [path_from_extension] 到 扩展目录内二进制 → l
 **结论：能，且无需任何修改。** 扩展系统在代码层面完全平台无关：`extension_host` / `language_extension` / `theme_extension` 三个 crate **零 `cfg(target_env = "ohos")`**；`main.rs` 的 `extension::init` 与 `extension_host::init` 无条件调用（无 cfg 包裹）；`paths::extensions_dir()` 无 ohos 分支（Linux 下即 `data_dir()/extensions`）。wasm 扩展是 **wasm32-wasip2 组件**，编译产物是平台无关的纯 wasm，wasmtime 在 x86_64/aarch64 Linux 原生运行。这本质就是 Zed 桌面版的标准架构，OHOS 移植靠不改扩展核心保持一致——唯一平台差异（子进程执行）收敛在 `util::command` 这一个抽象点。
 
 ```
-扩展跨平台 到 util::command::new_command() 在 crates/util/src/command.rs  [唯一平台抽象点；cfg(target_env = "ohos") 分支走 cmd-agent 远程在 OpenEuler VM 执行，其余平台走 smol::process::Command 本机执行；process::Host::run_command 与 LSP 二进制 spawn 全走此函数]
+扩展跨平台 到 util::command::new_command() 在 crates/util/src/command.rs  [唯一平台抽象点；cfg(target_env = "ohos") 分支先试本地 HNP 快照、未命中的投给 daemon（见命令后端模块），其余平台走 smol::process::Command 本机执行；process::Host::run_command 与 LSP 二进制 spawn 全走此函数]
 ```
 
 #### 通信接口清单（wasm ↔ HiCodeer，WIT 双向）
@@ -627,13 +651,13 @@ start_language_server() 在 crates/project/src/lsp_store.rs 到 LanguageServer::
 
 跨运行时跳转：
 ```
-check_if_user_installed() 到 [delegate.which] 到 which() 在 crates/project/src/lsp_store.rs  [OHOS 分支（cfg ohos，14780）经 cmd-agent 远程在 OpenEuler VM 上执行 which；非 ohos 分支（14799）用 which crate 本机查 PATH]
-which miss 到 [cmd-agent spawn -> exit != 0] 到 ensure_program_installed() 在 crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-server/src/install.rs  [which 未命中触发 VM 后台 dnf 自动安装（单 worker 串行），下次查询命中即直接用 VM 已装 LSP binary，跳过下载]
+check_if_user_installed() 到 [delegate.which] 到 which() 在 crates/project/src/lsp_store.rs  [OHOS 分支（cfg target_env=ohos，14786/14787）把 which 交给 util::command 在设备上执行并短暂重试——executor 是异步注册的，早于注册的 spawn 会被误判成"二进制不存在"；非 ohos 分支（14825）用 which crate 本机查 PATH]
+which miss 到 [子进程 exit != 0] 到 回落"未安装"  [设备侧没有 dnf/自动安装这条路：which 未命中即视为缺失，交由 LSP adapter 走正常的下载分支]
 ```
 
 ### Git 操作模块（git 子进程执行路径与线程归属）
 
-git 操作 100% 走 git CLI 子进程（`crates/git` 无 git2/libgit2 依赖）；OHOS 上子进程经 `util::command::Command` 远程投给 cmd-agent daemon，在 OpenEuler VM 执行（沙箱禁 exec）。线程归属分两派：**读/普通写操作在后台（BackgroundExecutor）；commit / reset / checkout_files / push / pull / fetch 与 clone 对话框在前台（UI 主线程）**。前台操作在 OHOS 上因 `Command::spawn()` 的同步阻塞握手而真实卡 UI（最长 20s，SPAWN_REPLY_TIMEOUT）。
+git 操作 100% 走 git CLI 子进程（`crates/git` 无 git2/libgit2 依赖）；OHOS 上子进程经 `util::command::Command` 分流——命中 `/data/app/bin` 快照的本地 HNP 工具（本项目含 git/ssh/curl）在 app 沙箱内本地 fork，未命中的（chmod、LSP、node 等）才投给 daemon（hicodeerd，独立 uid，看不到调用方沙箱）。线程归属分两派：**读/普通写操作在后台（BackgroundExecutor）；commit / reset / checkout_files / push / pull / fetch 与 clone 对话框在前台（UI 主线程）**。前台操作在 OHOS 上因 `Command::spawn()` 的同步阻塞握手而真实卡 UI（最长 20s，SPAWN_REPLY_TIMEOUT）；git 命中本地 HNP 走本地 fork，不受此限，只有走 daemon 的前台命令才会卡。
 
 后台执行（`self.executor.spawn` BackgroundExecutor / `cx.background_spawn`，OHOS 每任务 `std::thread::spawn` 线程）：
 ```
@@ -674,64 +698,142 @@ git_store::spawn_local_git_worker() 在 crates/project/src/git_store.rs 到 send
 
 跨运行时跳转：
 ```
-Git 到 util::command::Command::spawn() 在 crates/util/src/command/ohos.rs 到 [ExecSpec + SpawnReply] 到 cmd-agent daemon 在 crates/gpui_ohos/depend/ohos-openeuler-agent/cmd-agent-client/src/client.rs  [OHOS 沙箱禁 exec，git 在 OpenEuler VM 远程执行；spawn 是同步阻塞握手（rx.recv_timeout，超时上限 20s）——前台 git 写操作因此卡 UI 最多 20s]
+Git 到 util::command::Command::spawn() 在 crates/util/src/command/ohos.rs 到 [命中本地 HNP 快照 → smol::process 本地 fork；未命中 → ExecSpec + SpawnReply 投 daemon] 到 CmdClientExecutor::spawn() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/executor.rs  [daemon 路是同步阻塞握手（超时上限 20s）；git/ssh/curl 命中本地快照，走本地 fork 不经 daemon]
 ```
 
-### QEMU 命令后端模块（ohos-qemu-agent，替代 OpenEuler VM）
+### Git Panel 运行路径（提交 / 凭据 / 子进程 / 刷新）
 
-> 当前默认后端（`script/bundle-ohos` QEMU_MODE=true）：沙箱禁 exec，git/LSP/终端命令经 **in-process QEMU guest** 执行。四 crate：`cmd-agent`（HiCodeer 进程内 host 侧）、`cmd-agentd`（QEMU 内 guest 侧二进制）、`cmd-agent-protocol`（长度前缀 JSON 协议）、`cmd-agent-linker`（trait 薄接口，`util` 与 `workspace` 只依赖它）。virtio-serial 端口池：`hicodeer.mgmt` + `hicodeer.cmd.0..13` + `hicodeer.err.0..13`（PORT_POOL_SIZE=14，2N+1 端口）。
+面板装配：`git_ui::init()`（`crates/git_ui/src/git_ui.rs`）在 zed 启动时调用（`crates/zed/src/main.rs`、`crates/zed/src/zed.rs`），面板本身按 workspace 的序列化 panel 注册。提交入口是 `git::Commit` action（默认 `ctrl-enter` / `cmd-enter`，见 `assets/keymaps/default-*.json`），面板上的按钮派发同一个 action。
 
 模块入口：
 ```
-QEMU 到 start() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/lib.rs  [由 launch_app::start_qemu 在应用启动时调用；dlopen libqemu-system-aarch64.so + dlsym("main")，QEMU 线程跑机器]
-QEMU 到 QemuCommandExecutor::new() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 start_qemu 在 QEMU 启动后调用；建端口池状态 + 启 qemu-cmd-mgmt 线程 + 传 sandbox_root（启动时经 MountFolder2QEMU 挂沙箱根 → /sandbox）]
-QEMU 到 init_executor() / init_mounter() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker/src/lib.rs  [由 start_qemu 注册 RemoteCommandExecutor 与 FolderMounter 全局单例]
-命令 到 Command::spawn() 在 crates/util/src/command/ohos.rs  [由业务代码（git/LSP/终端）经 util::command 发起；build_spec 构造 ExecSpec（原始 HiCodeer 路径）→ executor.spawn]
-QEMU 到 spawn() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 util::command spawn 触发；alloc 端口对 → unix socket 握手（Hello→HelloOk→Spawn→SpawnOk），失败释放端口]
-QEMU 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 QemuCommandExecutor::new 启动的常驻线程；维持 mgmt 长连接，读 ExecResult，每 100ms 刷 MgmtCommand 队列（Signal/Mount/Unmount）]
-QEMU 到 signal() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 util::command Child::kill 触发；经 MgmtCommand::Signal 由 mgmt_loop 代发（mgmt socket 单连接不能新建）]
-QEMU 到 mount_folder() / unmount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [由 workspace open_paths 挂接（cfg ohos）经 linker mounter() 调用；QMP fsdev-add+device_add → MgmtCommand::Mount → 等 MountOk；幂等（已挂载集合）]
-QMP 到 create_workdir_fsdev() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/qmp.rs  [由 mount_folder 调用；一次性 QMP 会话（connect→qmp_capabilities→fsdev-add→device_add→断开）]
-cmd-agentd 到 main() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [由 guest init 开机启动（rootfs S42cmd-agentd 从 /sandbox find 二进制）；扫描 /dev/virtio-ports 按端口分线程]
-cmd-agentd 到 data_port_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [每数据端口一线程；循环 open_port 服务命令，host 断开后 REOPEN_DELAY 重开]
-cmd-agentd 到 handle_data_connection() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [由 data_port_loop 在 host 连上后调用；Hello→Spawn→stdio 双向流→等 stderr 排空→发 ExecResult→等 ExecResultAck(2s) 回收端口]
-cmd-agentd 到 err_port_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [每 stderr 端口一线程；SpawnStderr 后转发 child stderr 到 err 端口]
-cmd-agentd 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [管理端口线程；读 ClientMessage（Signal/Mount/Unmount/ExecResultAck）+ 写 ServerMessage（HelloOk/ExecResult/MountOk）]
-cmd-agentd 到 mount_folder() / unmount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [由 mgmt_loop 收到 MountFolder2QEMU/UnmountFolder2QEMU 时调用；mount -t 9p <tag> <guest_path> + 登记/撤销 path_map；不真 umount]
-cmd-agentd 到 build_command() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/exec.rs  [由 handle_data_connection 构造命令时调用；path_map.map_path 替换 binary/args/cwd 为 guest 路径]
+Git Panel 到 on_commit() 在 crates/git_ui/src/git_panel.rs  [由 git::Commit action 触发；先取提交信息，信息为空则聚焦输入框后返回]
+Git Panel 到 commit() 在 crates/git_ui/src/git_panel.rs  [on_commit 调用；有 staged 变更直接 commit，否则在 cx.spawn 里先 stage_entries 再 commit]
+Git Panel 到 askpass_delegate() 在 crates/git_ui/src/git_panel.rs  [commit / push / pull / fetch 各自前置调用；内部 new 出 AskPassModal 把凭据框挂到 UI]
+Git Panel 到 schedule_update() 在 crates/git_ui/src/git_panel.rs  [收到 GitStore 事件后重算面板内容；render() 是绘制入口]
 ```
 
 跨文件跳转：
 ```
-launch_app::start_qemu() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs 到 qemu_cmd_agent::start() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/lib.rs  [启动 QEMU 线程]
-launch_app::start_qemu() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs 到 QemuCommandExecutor::new() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [建 executor 并注册 linker]
-QemuCommandExecutor::new() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [常驻线程]
-QemuCommandExecutor::mount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs 到 create_workdir_fsdev() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/qmp.rs  [QMP 建 fsdev+device]
-workspace::mount_opened_dirs() 在 crates/workspace/src/workspace.rs 到 mounter().mount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker/src/lib.rs  [cfg(ohos) 挂接；fire-and-forget 不阻塞打开流程]
-util::command::Command::spawn() 在 crates/util/src/command/ohos.rs 到 executor.spawn()（linker trait）在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent-linker/src/lib.rs  [经 RemoteCommandExecutor 薄接口]
+Git Panel 到 GitStore::commit() 在 crates/project/src/git_store.rs  [作者参数传 None——提交身份交给 git 自己按 user.name/user.email 解析，移植侧不注入]
+GitStore::commit() 在 crates/project/src/git_store.rs 到 RealGitRepository::commit() 在 crates/git/src/repository.rs  [send_job 投给前台 worker]
+RealGitRepository::commit() 在 crates/git/src/repository.rs 到 run_git_command() 在 crates/git/src/repository.rs  [commit 与 push/pull/fetch 四个前台写操作的唯一收口；build_command 带 --quiet -m --cleanup=strip]
+run_git_command() 在 crates/git/src/repository.rs 到 AskPassSession::new() 在 crates/askpass/src/askpass.rs  [env 里没有 GIT_ASKPASS 时无条件建会话：tempdir + 写 askpass.sh + chmod +x + 绑 Unix socket；本地提交根本用不到凭据，但这条照样会走]
+AskPassSession::new() 在 crates/askpass/src/askpass.rs 到 make_file_executable() 在 crates/util/src/fs.rs  [给生成的脚本加执行位；OHOS 上必须是进程内本地 chmod]
+run_git_command() 在 crates/git/src/repository.rs 到 run_askpass_command() 在 crates/git/src/repository.rs  [select_biased：git 子进程输出 与 askpass 任务 竞速，谁先完成谁定结果]
+GitStore 事件到 subscribe_in 回调 在 crates/git_ui/src/git_panel.rs  [订阅 GitStoreEvent：StatusesChanged / HeadChanged / RepositoryAdded / RepositoryRemoved / ActiveRepositoryChanged 触发 schedule_update；IndexWriteError 弹 workspace 错误]
 ```
 
-跨运行时跳转（virtio-serial 端口 / QMP / 协议消息）：
+跨运行时跳转（凭据回环）：
 ```
-cmd-agent spawn 到 [Hello/Spawn] 经 cmd.<n>.sock 到 handle_data_connection() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [数据端口；SpawnOk 后连接变原始字节流（stdin/stdout）]
-cmd-agent spawn 到 [SpawnStderr] 经 err.<n>.sock 到 handle_err_connection() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [stderr 端口；转发 child stderr]
-cmd-agentd 到 [ExecResult] 经 hicodeer.mgmt 到 mgmt_loop() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agent/src/executor.rs  [host 回 ExecResultAck 触发 cmd-agentd 2s 内回收端口]
-cmd-agent signal 到 [Signal] 经 hicodeer.mgmt 到 signal_session() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [kill(-pid) 整进程组]
-cmd-agent mount_folder 到 [MountFolder2QEMU] 经 hicodeer.mgmt 到 mount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [回 MountOk；登记 host_root→guest_root]
-cmd-agent unmount_folder 到 [UnmountFolder2QEMU] 经 hicodeer.mgmt 到 unmount_folder() 在 crates/gpui_ohos/depend/ohos-qemu-agent/cmd-agentd/src/main.rs  [只撤销映射不 umount]
-cmd-agent mount_folder 到 [QMP fsdev-add/device_add] 经 qmp.sock 到 QEMU fsdev 动态创建  [一次性会话；security-model=passthrough]
-cmd-agentd 命令 到 [mount -t 9p <ztag{n}> /ws/{n}] 在 guest 内  [fsdev path=HiCodeer 真实路径；9p 以真实路径 open]
+Git 到 run_git_command() 在 crates/git/src/repository.rs 到 [GIT_ASKPASS / SSH_ASKPASS = askpass.sh 路径，SSH_ASKPASS_REQUIRE=force] 到 git 子进程
+askpass.sh 到 [Unix socket 上的提示串] 到 AskPassSession 的 socket 任务 在 crates/askpass/src/askpass.rs  [脚本内容是 printf '%s\0' "$@" | <app 二进制> --askpass=<socket>；ASKPASS_PROGRAM 取 current_exe，即回 exec app 自身]
+AskPassSession socket 任务 在 crates/askpass/src/askpass.rs 到 [get_password 回调] 到 askpass_delegate() 闭包 在 crates/git_ui/src/git_panel.rs 到 AskPassModal 在 crates/git_ui_core/src/askpass_modal.rs  [跨到 UI 线程弹凭据框；用户提交后密码原路经 socket 回传 → 脚本 stdout → git]
+```
+
+> **提交身份**：`GitPanel::commit()` 的作者参数是 `None`，身份完全由 git 按 `$HOME/.gitconfig` 解析。app 的 `$HOME` 是用户在启动页挑的目录下的 `HiCodeer` 子目录（`hap/entry/src/main/ets/entryability/Setup.ets` + `crates/gpui_ohos/depend/launch-zed/src/launch_app.rs`），**不是**系统终端的 `~`，所以系统终端里配好的 git 身份不会被 app 内的 git 继承。报 `unable to auto-detect name` 说明 email 已生效、只缺 `user.name`。
+
+### 命令后端模块（cmd-agent：cmd-client + hicodeerd）
+
+设备沙箱禁 exec 外部程序，非本地 HNP 的命令统一经 `util::command` 投给设备上的守护进程 **hicodeerd**。它由系统以独立 uid 拉起、不随 HAP 覆盖安装重启（`install-local.sh` 结尾亦如此提示），app 内没有它的启动代码。两个 crate 同在 `crates/gpui_ohos/depend/cmd-agent/`：`cmd-client`（HiCodeer 进程内 host 侧，实现 `RemoteCommandExecutor`）与 `hicodeerd`（daemon 侧二进制）。传输是 **loopback SSH**（russh），不是裸 TCP；端口定义在 `cmd-client/src/protocol.rs`——`COMMAND_PORT=4022`（命令）、`MANAGEMENT_PORT=4023`（管理），命令口每次运行换动态密钥、管理口固定密钥。旧的 QEMU/OpenEuler 后端及其 9p 挂载已删除：`workspace::mount_opened_dirs()`（`crates/workspace/src/workspace.rs:10471`）现在是空实现，QEMU 代码只剩 `depend/qemu-mngt`，仅在 `qemu-agent` feature 下参与。
+
+模块入口：
+```
+命令后端 到 main() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [daemon 进程入口；由系统以独立 uid 拉起（public HNP），不由 app 启动]
+命令后端 到 run() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [main 调用；在 bind_host（默认 127.0.0.1）上建 4022/4023 两个 listener]
+命令后端 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs  [SSH 会话的 exec 请求入口；解析 sid 前缀后转 spawn_command]
+命令后端 到 pty_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs  [SSH 会话的 shell 请求入口；PTY 由 daemon 侧开]
+launch-zed 到 launch_app() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs  [NAPI 启动入口；先 init_local_tools() 快照本地 HNP 工具集]
+launch-zed 到 start_command_backend() 在 crates/gpui_ohos/depend/launch-zed/src/qemu_runtime.rs  [由 launch_app 调用；文件名含 qemu，实为后端选择的公共入口]
+launch-zed 到 register_executor() 在 crates/gpui_ohos/depend/launch-zed/src/qemu_runtime.rs  [链路就绪后注册：cmd_client::init_executor() + util::command::init()]
+命令 到 Command::spawn() 在 crates/util/src/command/ohos.rs  [业务代码（git/LSP/终端）的唯一入口；先试本地 HNP 快照，未命中才转 executor.spawn()]
+```
+
+跨文件跳转：
+```
+register_ohos_backend() 在 crates/gpui_ohos/depend/launch-zed/src/qemu_runtime.rs 到 SshCommandExecutor::new() 在 crates/gpui_ohos/depend/launch-zed/src/qemu_runtime.rs  [建 host 侧 SSH 执行器]
+SshCommandExecutor::new() 到 CommandEndpoint::ohos_default() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/endpoint.rs  [取 loopback 端点参数]
+bootstrap 到 start() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/bootstrap.rs 到 fetch_ssh_info() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/bootstrap.rs  [轮询管理口 4023 取 SshInfo，兼作心跳与就绪判据]
+连接池 到 Pool::new() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/pool.rs 到 connect() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/pool.rs  [按 host key 建立/复用 SSH 连接]
+命令构造 到 build_command() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/command.rs 到 sid_payload() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/protocol.rs  [ExecSpec → 单条 POSIX sh 串 + session id 前缀]
+终端 到 open_remote_shell() 在 crates/util/src/command/ohos.rs 到 open_shell_pty() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/executor.rs  [交互式 shell；PTY 建在 daemon 侧，host 只做中继]
+daemon 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs 到 spawn_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs  [exec 请求 → 起子进程并桥接 stdio]
+daemon 到 pty_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs 到 run_pty_shell() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/pty.rs  [shell 请求 → daemon 侧 openpty 并跑 shell]
+```
+
+跨运行时跳转（loopback SSH 上的 exec / signal / bootstrap）：
+```
+host spawn 到 [exec 首行的 __hicodeerd_sid__ 前缀] 经命令口 4022 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs  [发送端 executor.spawn() → pump → channel.exec()；接收端 split_sid_payload() 解析]
+daemon 子进程 stdio 到 [SSH channel data / extended_data] 到 host pump 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/executor.rs  [daemon 侧 bridge_until_exit() 转发 stdout/stderr 与退出码；host 回灌 socketpair]
+host signal 到 [signal_command()] 经命令口到 signal_session() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs  [由 executor.signal() 触发；daemon 侧 kill 整个进程组]
+daemon 就绪 到 [BOOTSTRAP_COMMAND / SshInfo] 经管理口 4023 到 management.rs 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/management.rs  [daemon 发布 SshInfo，host 的 bootstrap 轮询消费]
 ```
 
 补充要点（实现决策，非追踪细节）：
-- **路径映射**：只在 cmd-agentd（path_map.rs）。host_root（HiCodeer 路径段前缀）→ guest_root（/ws/{n}）替换 binary/args/cwd；未命中透传；`--flag=<path>` 只映射 `/` 开头 value。cmd-agent 不维护映射。
-- **端口回收**：ExecResult + ExecResultAck 两段握手 + 2s 强制回收（cmd-agentd sessions.rs ACK_TIMEOUT）；ExecResult 在 stdout/stderr 都 EOF 后才发。
-- **动态挂载编号**：fsdev{n}（fsdev0 静态 sandbox）/ virtio9p{n} / ztag{n} / /ws/{n}；已挂载集合幂等；不主动 umount、fsdev 累积不删。
-- **mount/unmount 对称接口**：cmd-agent 侧 mount_folder/unmount_folder（对外，含 QMP），cmd-agentd 侧同名协议处理（执行 mount/unmount + 映射维护），register_mapping/unregister_mapping 为登记辅助对。
+- **管理口只剩 bootstrap**：现在只服务取 SshInfo；没有 Mount/Unmount，Signal 走命令口。
+- **辅助模块**：`pool.rs` host 侧连接池；`command.rs` ExecSpec → sh 串；`pty.rs` host 中继 / daemon 侧 openpty；`session_tmp.rs` daemon 采纳 data root 并导出 TMPDIR；`shim.rs` 给 Node 注入 NODE_OPTIONS 预载；`sign_elf.rs` npm 安装后补 `.codesign` 段；`keygen.rs` 每次运行生成命令口动态密钥。
+- **两个 feature**：`launch-zed/Cargo.toml` 的 `daemon-agent` 与 `qemu-agent`，`default` 同时含两者（`Cargo.toml:17`），`script/bundle-ohos` 不传 `--features` 故两者都编；运行期由设置决定（默认关 QEMU）→ 实际走 daemon。注意 `script/bundle-ohos:368-370` 的注释称「qemu-agent 已淘汰」，与 Cargo.toml 矛盾，**以 Cargo.toml 为准**。
+- **daemon 从哪来**：`script/bundle-ohos:438` 用 `cargo build --release --manifest-path $DAEMON_MANIFEST` 编出 hicodeerd，再经 hnpcli 打成 **public** 的 `hicodeerd.hnp`（声明见 `hap/entry/src/main/module.json5` 的 hnpPackages）。public 意味着它不在 app 的 `/data/app/bin` 本地工具集里，因此 `chmod` 之类未打包的命令只能投给它、且它看不到 app 沙箱路径。
+
+### hicodeerd 守护进程运行路径（daemon 侧：启动装配 → 双 listener → SSH 会话 → 子进程）
+
+上一节讲的是 host 侧 cmd-client；这一节讲 **daemon 自身的代码运行路径**。hicodeerd 是设备上独立运行的守护进程（public HNP `hicodeerd.hnp` 的 `bin/hicodeerd`），由系统以独立 uid 拉起，**app 内没有它的启动代码**，它也不随 HAP 覆盖安装重启。源码全在 `crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/`，12 个模块：`main`（装配）、`logger`、`shim`、`keygen`、`protocol`、`sshd`（命令口）、`management`（管理口）、`exec`（普通命令）、`pty`（交互式 shell）、`peers`（进程组登记与回收）、`session_tmp`（TMPDIR）、`sign_elf`（补签名）。
+
+模块入口：
+```
+hicodeerd 到 main() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [进程入口；由系统以独立 uid 拉起，app 不参与；只认 --log / --help（--help 在装 logger 之前就返回）]
+hicodeerd 到 logger::init() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/logger.rs  [main 调用，参数即是否带 --log；不带则不装 logger，所有 log::xxx! 被静默丢弃；带则 OHOS 经 OH_LOG_Print 进 hilog]
+hicodeerd 到 run() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [main 调用；启动装配顺序：shim::install → conf_dir/read_mgmt_keys → keygen::generate → 建 tokio multi-thread runtime → 绑两个 listener]
+hicodeerd 到 shim::install() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/shim.rs  [run 的第一件事；由 package_root() 解析 <pkg>/shim/，给本进程导出 NODE_OPTIONS=--require shim.js 与 LD_PRELOAD=musllib-shim.so（另设 HICODEERD_OSUSER），此后所有子进程继承；载荷缺失只 warn 不致命]
+hicodeerd 到 keygen::generate() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/keygen.rs  [run 调用；为本次运行现生成命令口动态密钥对（host key + client private key），只经管理口的 SshInfo 交给客户端，不落盘]
+hicodeerd 到 accept_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [run 里 tokio::try_join! 的一个分支；4022 上循环 accept，每连接新建 ConnectionHandler 后 tokio::spawn 给 russh::run_stream]
+hicodeerd 到 accept_management() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [run 里 try_join! 的另一分支；4023 上循环 accept，每连接经 ManagementServer::new_connection 新建 ManagementHandler]
+hicodeerd 到 peers::spawn_sweeper() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/peers.rs  [run 内调用；5s 一次的常驻任务，30s 没心跳的客户端连同它启动的全部进程组一起被回收]
+hicodeerd 到 maybe_spawn_drop_caches() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs  [run 内调用；仅当 HICODEERD_DROP_CACHES=1（guest 模式）才起 15s 周期任务写 /proc/sys/vm/drop_caches，OHOS 上直接 return]
+```
+
+跨文件跳转：
+```
+hicodeerd 到 run() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs 到 SshServer::new() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs  [命令口 handler 工厂，注入本次运行的动态 client key]
+hicodeerd 到 run() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs 到 ManagementServer::new() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/management.rs  [管理口 handler 工厂，注入固定 client key 与已序列化的 SshInfo]
+hicodeerd 到 accept_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs 到 ConnectionHandler::new() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs  [每连接一份私有 children/ptys map，因为 ChannelId 跨连接会从同一低值重来]
+hicodeerd 到 accept_management() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/main.rs 到 ManagementServer::new_connection() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/management.rs
+hicodeerd 到 auth_publickey() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs 到 peers::touch() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/peers.rs  [SSH 用户名即客户端身份，鉴权成功即心跳]
+hicodeerd 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs 到 spawn_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs  [无 pty 的普通 exec 走这条]
+hicodeerd 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs 到 run_pty_shell() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/pty.rs  [该 channel 先来过 pty_request 时走这条；relay 必须另起 task，否则后续 data/window_change 无处投递]
+hicodeerd 到 data()/window_change_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs 到 forward_input()/resize() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/pty.rs  [键盘输入与窗口尺寸中转]
+hicodeerd 到 spawn_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs 到 split_sid_payload()/parse_signal_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/protocol.rs  [解析会话 id 前缀与预留信号命令]
+hicodeerd 到 spawn_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs 到 sign_tree() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sign_elf.rs  [先经同文件 rewrite_npm_para 识别 npm install 并记下安装根；子进程退出码为 0 后扫描该树补签名]
+hicodeerd 到 register_session() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs 到 peers::add_group() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/peers.rs  [把新进程组登记到该客户端身份名下]
+hicodeerd 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/management.rs 到 session_tmp::adopt() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/session_tmp.rs  [采纳客户端报来的 data root：建 <root>/tmp 并导出 TMPDIR，只生效一次]
+hicodeerd 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/management.rs 到 logger::attach_file() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/logger.rs  [同一个 root：日志镜像到 <root>/logs/hicodeerd.log，打开时回放此前的 backlog]
+```
+
+跨运行时跳转：
+```
+host cmd-client 到 [管理口 exec: "hicodeerd-bootstrap <data_root>"] 经 4023 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/management.rs  [接收端 parse_bootstrap_command；回包是本次运行的 SshInfo JSON，该轮询同时充当客户端心跳]
+host cmd-client 到 [命令口 exec: 首行 "__hicodeerd_sid__ <sid>"] 经 4022 到 exec_request() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/sshd.rs  [接收端 split_sid_payload]
+host cmd-client 到 [命令口 exec: "__hicodeerd_signal__ <sid> <sig>"] 经 4022 到 spawn_command() 在 crates/gpui_ohos/depend/cmd-agent/hicodeerd/src/exec.rs  [不 spawn 子进程，直接 kill 整个进程组]
+daemon 子进程 到 [SSH channel Data / ExtendedData + exit status] 到 host 侧 executor 的 pump  [daemon 侧 bridge_until_exit 转发 stdout/stderr 与退出码，host 侧回灌 socketpair]
+daemon 到 [libc::kill(-pgid, SIGTERM → 1s → SIGKILL)] 到 该客户端启动的整棵进程树  [peers::retire；跨进程信号而非消息，负 pid 打整个进程组]
+daemon 到 [/proc/self/exe] 到 HNP 版本目录 <pkg>.org/<pkg>_<version>/  [package_root() 定位 <pkg>/conf 与 <pkg>/shim；read_link 返回的是真实路径，不是 /data/service/hnp/bin 那层软链]
+daemon 到 [进程环境 NODE_OPTIONS / LD_PRELOAD / TMPDIR] 到 每个被 spawn 的 sh -c 与 PTY shell  [继承而非消息：preload 由 shim::install 一次性导出、TMPDIR 由 session_tmp::adopt 一次性导出，Node/npm、语言服务器、构建工具都靠它]
+```
+
+补充要点（实现决策，非追踪细节）：
+- **两个口两套密钥**：4022 用每次启动现生成的动态密钥对；4023 用包内 `conf/` 的固定密钥（`mgmt_host_key` + `authorized_keys`，目录可用 `HICODEERD_CONF_DIR` 覆盖）。客户端先打 4023 取 SshInfo，再拿动态密钥连 4022；两个 listener 的 `inactivity_timeout` 都是 `None`（host 侧保持长连接池，不能让空闲连接被服务端回收）。
+- **身份即 SSH 用户名**：客户端身份是 `hk-<random>` 用户名（`protocol::CLIENT_ID_PREFIX`）。daemon 以它为单位登记该实例启动的所有进程组；两条回收路径——30s 无心跳，或一个新身份出现（旧实例的一切连同子进程一起下掉）。不带前缀的裸账号名不被跟踪，行为与加此机制前一致。
+- **会话与信号是预留命令字，不是新协议**：`__hicodeerd_sid__` 前缀把 exec 与会话关联，`__hicodeerd_signal__` 在命令口内发信号；管理口只服务 bootstrap，没有挂载类命令。
+- **PTY 建在 daemon 侧**：host 只做中继。pty master 注册表按 `(conn_id, channel)` 双键索引——`ChannelId` 每个连接从同一个低值重来，单键会让另一个连接的 exec 子进程被抢走 stdin。
+- **`which` 未命中要显式补一行 stdout**：`which` 找不到时本来什么都不打印，daemon 代它输出 `which: not found: <prog>`，供命令面板探测 PATH。
+- **npm install 补签名**：npm 解包出的原生二进制没有 OHOS 签名，daemon 在该安装命令退出码为 0 后扫描安装树给缺 `.codesign` 段的 ELF 补签；安装过程中脚本自己跑的东西已随跑随签，故不做二次回放。补签失败不影响它所跟随的命令。
+- **日志**：只有 `--log` 才装 logger。hilog 之外还镜像到 `<data_root>/logs/hicodeerd.log`；data root 要等客户端 bootstrap 才报来，所以启动头几行先缓存成 backlog（上限 256 条），文件打开时回放，使文件从"客户端已连接"那句开始就完整。
+- **guest/QEMU 模式复用同一份代码**（`script/bundle-ohos:585` 的 GUEST_TARGET 分支），靠环境变量分流：`HICODEERD_BIND_ADDR` 改绑定地址（guest 必须 0.0.0.0 才能被 hostfwd 打到，OHOS 保持 127.0.0.1），`HICODEERD_DROP_CACHES=1` 周期回收 guest dcache 以释放 virtiofsd 持有的 O_PATH fd。guest 侧 `<pkg>/shim/` 为空目录，两个 preload 都不装，daemon 照常服务。
+- **shim 载荷随包安装**：`<pkg>/shim/` 的 `shim.js`（NODE_OPTIONS）与 `musllib-shim.so`（LD_PRELOAD）由 HNP 一并安装、随重装整包替换，运行时不写、不检查、不自愈；缺失只 warn。编译与打包见 `script/bundle-ohos`。
 
 ### AI Agent 模块（agent_ui / agent / language_models：进程内 agent 引擎）
 
-Agent Panel 是 Zed 自家实现的**进程内 agent**：UI（crates/agent_ui）→ 引擎（crates/agent 的 Thread tool-call 循环）→ 工具集（crates/agent/src/tools，进程内操作 fs/Buffer）→ LLM（crates/language_models 各 provider）。整个 agent 层**零 `cfg(target_env = "ohos")`**；除 LLM 推理（出网）与第三方/远程 agent（ACP 子进程）外全在 HiCodeer 主进程内，无独立 agent 进程。OHOS 差异全部在下层（进程执行 util::command → cmd-agent/QEMU，见 Git/QEMU 模块）。会话存本地 SQLite（thread_store + crates/db）。
+Agent Panel 是 Zed 自家实现的**进程内 agent**：UI（crates/agent_ui）→ 引擎（crates/agent 的 Thread tool-call 循环）→ 工具集（crates/agent/src/tools，进程内操作 fs/Buffer）→ LLM（crates/language_models 各 provider）。整个 agent 层**零 `cfg(target_env = "ohos")`**；除 LLM 推理（出网）与第三方/远程 agent（ACP 子进程）外全在 HiCodeer 主进程内，无独立 agent 进程。OHOS 差异全部在下层（进程执行 util::command → 本地 HNP 快照 / daemon，见命令后端模块）。会话存本地 SQLite（thread_store + crates/db）。
 
 模块入口：
 ```
@@ -760,7 +862,7 @@ Agent::server() 在 crates/agent_ui/src/agent_ui.rs 到 NativeAgentServer::new()
 NativeAgentServer::connect() 在 crates/agent/src/native_agent_server.rs 到 NativeAgent::new() 在 crates/agent/src/agent.rs
 NativeAgent（agent.rs:404）到 Thread::new() 在 crates/agent/src/thread.rs  [会话实体创建；agent.rs:741]
 Thread::run_turn_internal() 在 crates/agent/src/thread.rs 到 model.stream_completion() 在 crates/language_model 的 LanguageModel 实现  [请求模型流式推理]
-ThreadEnvironment::create_terminal()（trait thread.rs:756）在 crates/agent/src/agent.rs（NativeThreadEnvironment:3138）到 project.create_terminal_task() 在 crates/project/src/terminals.rs:64  [→ TerminalBuilder → crates/terminal open_pty（alacritty_terminal::tty::new）真 fork/exec PTY shell；OHOS 重活经 util::command → cmd-agent → VM]
+ThreadEnvironment::create_terminal()（trait thread.rs:756）在 crates/agent/src/agent.rs（NativeThreadEnvironment:3138）到 project.create_terminal_task() 在 crates/project/src/terminals.rs:64  [→ TerminalBuilder → crates/terminal open_pty（alacritty_terminal::tty::new）真 fork/exec PTY shell；OHOS 重活经 util::command → 本地 HNP 快照 / daemon]
 EditSession buffer 编辑 在 crates/agent/src/tools/edit_session.rs 到 project.save_buffer()/format() 在 crates/project/src/project.rs  [落盘到 RealFs]
 ```
 
@@ -777,13 +879,158 @@ Agent 到 DeepSeekLanguageModelProvider 在 crates/language_models/src/provider/
 Thread run_turn_internal 到 [stream_completion HTTP 流] 到 云 LLM API / 本地模型  [唯一默认出网环节：zed.dev 云或 Anthropic/OpenAI/DeepSeek 等厂商 API 或 Ollama localhost；取决于所选 provider]
 AgentPanel 选 custom/第三方 agent 在 crates/agent_ui/src/agent_ui.rs 到 AcpConnection::stdio() 在 crates/agent_servers/acp.rs  [spawn 独立子进程走 ACP stdin/stdout；远程项目场景 agent 命令在远端 zed host 执行]
 Agent 到 AgentRegistryStore 在 crates/project/src/agent_server_store.rs 到 https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json  [列出可用第三方 agent（agent_registry_store.rs）]
-TerminalTool 到 [create_terminal → PTY] 到 本地 shell 子进程  [普通平台本地 fork/exec；OHOS 沙箱禁 exec，重活经 util::command → cmd-agent（OpenEuler/QEMU VM）在 VM 执行（见 Git/QEMU 模块）；PTY 本体 /bin/sh 本地 exec + rustix-openpty 补丁]
+TerminalTool 到 [create_terminal → PTY] 到 本地 shell 子进程  [普通平台本地 fork/exec；OHOS 沙箱禁 exec，重活经 util::command → 本地 HNP 快照 / daemon（见命令后端模块）；PTY 本体 /bin/sh 本地 exec + rustix-openpty 补丁]
 Agent 工具编辑 到 [Buffer transaction + save_buffer] 到 打开文件的编辑器视图  [同进程 buffer 共享，改 buffer 即实时可见 diff，用户可撤销]
 ```
 
 补充要点：
 - **进程内 vs 远程**：Agent Panel 默认 native agent 全进程内；ACP/agent_servers 只在 custom agent（spawn 外部 ACP 进程）与远程项目场景出现。会话持久化本地 SQLite（thread_store.rs ThreadsDatabase::connect），无云端存储。
 - **编辑落点是 Buffer 而非 Editor**：工具结构体无 Entity\<Editor\>/Workspace，编辑目标是 project 打开的真实 Buffer（被 editor 共享），因此 agent 编辑天然有实时 diff 与 undo。
+
+### Collab Panel 与 Edit Prediction 模块
+
+两模块都属 Zed 协作/AI 功能的 UI 与运行时，路径均不含 `ohos`，属通用上游代码；OHOS 上无裁剪（编译与运行与其它 OS 一致）。
+
+#### Collab Panel（协作面板，左侧/右侧 Dock）
+
+编译/初始化路径：
+- `collab_ui` 是 workspace 成员（`Cargo.toml:39`），`crates/zed` 依赖它（`crates/zed/Cargo.toml:91`）。
+- 启动初始化序列里 `collab_ui` 在 on_finish_launching 闭包中调用 `collab_ui::init`（crates/zed/src/main.rs:869）。
+
+模块入口：
+```
+Collab Panel 到 collab_ui::init() 在 crates/zed/src/main.rs  [由 on_finish_launching 初始化序列调用（第77步）；模块初始化]
+Collab Panel 到 CollabPanel::load() 在 crates/zed/src/zed.rs  [由 workspace 初始化时调用（zed.rs:786）；把面板注册进 workspace 的 dock 面板集合]
+Collab Panel 到 icon_tooltip "Collab Panel" 在 crates/collab_ui/src/collab_panel.rs  [Panel 实现返回 tooltip 字符串（collab_panel.rs:3990），dock 图标由 GPUI dock 渲染；图标为 UserGroup]
+Collab Panel 到 ToggleFocus action 在 crates/zed/src/zed/app_menus.rs  [菜单项 "Collab Panel"（app_menus.rs:43）由用户点击触发]
+Collab Panel 到 toggle_panel_focus::<CollabPanel>() 在 crates/zed/src/zed.rs  [由 ToggleFocus action 触发（zed.rs:1304）；打开/聚焦面板]
+```
+
+跨文件跳转：
+```
+on_finish_launching 到 collab_ui::init() 在 crates/zed/src/main.rs  [第77步模块初始化]
+CollabPanel 状态 到 ChannelStore / UserStore / NotificationStore 在 crates/collab_ui/src/collab_panel.rs  [面板状态源；内容分区见 enum Section（collab_panel.rs:297）：ActiveCall / FavoriteChannels / Channels / ChannelInvites / ContactRequests / Contacts / Online / Offline]
+CollabPanel 到 client.status() / rpc::proto 在 crates/collab_ui/src/collab_panel.rs  [登录态与协作数据走 Client → RPC（proto）连 Zed 协作服务端；未登录显示登录引导视图]
+```
+
+跨运行时跳转：
+```
+Collab Panel 到 [client RPC（proto）] 到 Zed 协作服务端  [频道/联系人/通话/通知全走 client 出网；OHOS 单机若无协作后端则面板停在登录页]
+```
+
+补充要点：
+- **受保护代码**：`crates/collab_ui` 与调用点 `crates/zed/src/zed.rs`、`crates/zed/src/main.rs`、`crates/zed/src/zed/app_menus.rs` 路径均不含 `ohos`，属上游受保护文件。要裁剪/不编译（如 OHOS 不显示协作）需逐处授权，不能在协作功能外擅改。
+- **停靠位置**：仅 Left/Right（`position_is_valid` 只放行二者，collab_panel.rs:3950）；隐藏状态栏按钮走 `collaboration_panel.button = false`（`hide_button_setting`，collab_panel.rs:4010）。
+
+#### Edit Prediction（AI 代码预测补全，状态栏按钮 + 多 provider）
+
+编译/初始化路径：
+- 启动初始化序列三步：`edit_prediction_ui`（main.rs:800）、`edit_prediction_registry`（main.rs:804）、`edit_prediction`（main.rs:879），均在 on_finish_launching 闭包中。
+- `crates/edit_prediction/Cargo.toml:6` 协议为 `GPL-3.0-or-later`（强 copyleft）。
+
+模块入口：
+```
+Edit Prediction 到 edit_prediction_ui::init() 在 crates/zed/src/main.rs  [初始化序列（main.rs:800）；注册 RatePredictions action + OpenEditPredictionContextView 渲染]
+Edit Prediction 到 edit_prediction_registry::init() 在 crates/zed/src/main.rs  [初始化序列（main.rs:804）；observe_new 每个 Editor → 按 settings provider 分配 provider；订阅 user_store 与 SettingsStore 变更]
+Edit Prediction 到 edit_prediction::init() 在 crates/zed/src/main.rs  [初始化序列（main.rs:879）；核心 store/telemetry 初始化]
+Edit Prediction 到 EditPredictionButton::new() 在 crates/zed/src/zed.rs  [UI 装配（zed.rs:588-646）；状态栏右侧 item]
+Edit Prediction 到 status_bar.add_right_item(edit_prediction_ui) 在 crates/zed/src/zed.rs  [由 UI 装配调用（zed.rs:646）；状态栏右侧显示 provider 状态按钮 + 下拉菜单]
+Edit Prediction 到 assign_edit_prediction_provider() 在 crates/zed/src/zed/edit_prediction_registry.rs  [由 editor 创建 / 用户切 provider / 设置变更 触发；把选中的 delegate 设给 editor]
+Edit Prediction 到 edit_prediction_provider_config_for_settings() 在 crates/zed/src/zed/edit_prediction_registry.rs  [由 assign 调用前读取 settings.edit_predictions.provider 决定走哪条 delegate（edit_prediction_registry.rs:114-157）]
+```
+
+跨文件跳转：
+```
+edit_prediction_registry::init() 到 EditPredictionStore::global() 在 crates/edit_prediction/src/edit_prediction.rs  [store 全局单例（edit_prediction.rs:977）]
+assign_edit_prediction_provider() 到 ZedEditPredictionDelegate::new() 在 crates/edit_prediction/src/zed_edit_prediction_delegate.rs  [Zed 自营 provider 分支，需 Zed 账号 + 组织开通（edit_prediction_registry.rs:279-313）]
+assign_edit_prediction_provider() 到 CopilotEditPredictionDelegate 在 crates/copilot  [Copilot provider 分支，需 GitHub 登录，不要求 Zed 账号]
+assign_edit_prediction_provider() 到 CodestralEditPredictionDelegate 在 crates/codestral  [Codestral provider 分支，用 client.http_client() + Mistral API key]
+status_bar.add_right_item 到 EditPredictionButton::new() 在 crates/edit_prediction_ui/src/edit_prediction_button.rs  [状态栏按钮实现；点击弹 provider 菜单]
+```
+
+跨运行时跳转：
+```
+Edit Prediction Zed provider 到 [client RPC（proto）/ cloud_llm_client] 到 Zed 云端 LLM  [仅 Zed 自营 provider 走；需 Zed 账号 + 组织 edit_prediction 开启]
+Edit Prediction Copilot provider 到 [Copilot LSP] 到 GitHub Copilot 服务  [需 GitHub 登录]
+Edit Prediction Ollama / OpenAiCompatibleApi provider 到 [http_client 直连] 到 本地或自建 API  [只需配置 api_url/model，无需任何账号登录]
+```
+
+补充要点：
+- **不强制 Zed 登录**：Edit Prediction 是**多 provider 架构**，是否要登录 Zed 账号只取决于所选 provider——`Zed` 自营才强制（且组织须开启）；`Copilot` / `Ollama` / `OpenAiCompatibleApi` / `Codestral` 都不要求 Zed 账号（路由逻辑见 edit_prediction_registry.rs:117-157，唯 Zed 分支查 `current_organization_configuration().edit_prediction.is_enabled`）。
+- **设置页**：配置入口在设置 UI 的 "Edit Predictions" 分组（crates/settings_ui/src/page_data.rs:10632），含 provider / 数据采集 / 语言级开关。
+- **协议**：`edit_prediction` 及同族 crate 为 `GPL-3.0-or-later`，集成分发需遵守 GPL 义务。
+
+### Zed 官方服务依赖运行路径（出网总闸 + 各服务出网点）
+
+本节只记**运行路径与出网点**。各服务的端点全集、默认值、凭据要求、换第三方后的损失等完整分析，
+见 `移植记录/design/2026-09-17-zed官方服务依赖分析.md`，不在此重述。
+
+**总闸**：全应用只有一个带基址的 HTTP 客户端，构造点唯一（`crates/client/src/client.rs:586`），
+基址取自 `ClientSettings.server_url`（默认 `https://zed.dev`，`assets/settings/default.json:2687`），
+环境变量 `ZED_SERVER_URL` 优先覆盖（`crates/client/src/client.rs:63-64`）。
+所有官方请求的 URL 都由三个构建器产出（`crates/http_client/src/http_client.rs`），
+映射规则：白名单值映射到 `api.zed.dev` / `cloud.zed.dev`，**任何其它值原样透传**。
+
+模块入口：
+```
+Zed 官方服务 到 Client::production() 在 crates/client/src/client.rs  [on_finish_launching 初始化序列创建 Client（client.rs:584）；此处构造唯一的 HttpClientWithUrl]
+Zed 官方服务 到 HttpClientWithUrl::new_url() 在 crates/client/src/client.rs  [client.rs:586，全仓唯一构造点；基址 = ClientSettings.server_url]
+Zed 官方服务 到 build_zed_api_url() / build_zed_cloud_url() / build_zed_llm_url() 在 crates/http_client/src/http_client.rs  [三个 URL 构建器（http_client.rs:277/285/317）；非白名单基址原样透传，即自建域名要同时扮演 API+Cloud+LLM 三角色]
+Telemetry 到 report_event() 在 crates/client/src/telemetry.rs  [由 telemetry::event! 宏触发（telemetry.rs:566）；settings.telemetry.metrics=false 时直接 return（:573），入队后由 flush_events_inner 出网（:660）]
+AutoUpdate 到 AutoUpdater::start_polling() 在 crates/auto_update/src/auto_update.rs  [由 auto_update::init（crates/zed/src/main.rs:682）按 ReleaseChannel::poll_for_updates() 决定是否轮询（auto_update.rs:261/455）；Dev 通道返回 false（crates/release_channel/src/lib.rs:201）]
+AutoUpdate 到 check() 在 crates/auto_update/src/auto_update.rs  [用户点菜单 Check for Updates 触发（auto_update.rs:304，注册于 init 内的 register_action）]
+崩溃上报 到 upload_previous_minidumps() 在 crates/zed/src/reliability.rs  [启动时补传历史 minidump（reliability.rs:232；上传实现 :273）；仅当 MINIDUMP_ENDPOINT 存在才启用（crates/client/src/telemetry.rs:92-102），OHOS 构建未注入该常量]
+Cloud 账号 到 CloudApiClient::get_authenticated_user() 在 crates/cloud_api_client/src/cloud_api_client.rs  [需已登录凭据（cloud_api_client.rs:108）；未登录不触发]
+Cloud 账号 到 CloudApiClient::create_llm_token() 在 crates/cloud_api_client/src/cloud_api_client.rs  [铸 LLM token（cloud_api_client.rs:128），所有 Cloud LLM 请求的前置步骤]
+Feature flags 到 FeatureFlagStore::update_flags() 在 crates/feature_flags/src/feature_flags.rs  [由云端 websocket 消息驱动（feature_flags.rs:232）；不是独立拉取]
+MCP OAuth 到 CIMD_URL 在 crates/context_server/src/oauth.rs  [MCP 服务器走 OAuth 授权时把 https://zed.dev/oauth/client-metadata.json 当 client_id（oauth.rs:37）；可自托管替换]
+```
+
+跨文件跳转：
+```
+各服务 到 HttpClientWithUrl 在 crates/client/src/client.rs 到 build_zed_*_url() 在 crates/http_client/src/http_client.rs  [所有官方请求 URL 的唯一产出路径]
+Extension 市场 到 fetch_extensions() 在 crates/extension_host/src/extension_host.rs 到 fetch_extensions_from_api() 在 crates/extension_host/src/extension_host.rs  [列表 :574、单扩展版本 :647；真正出网在 :726（URL 构造 :732）]
+Cloud LLM 到 CloudLanguageModelProvider 在 crates/language_models_cloud/src/language_models_cloud.rs 到 refresh_models() 在 crates/language_models_cloud/src/language_models_cloud.rs  [模型列表 :870（GET /models，:889）；推理走 :169 perform_llm_request]
+Edit Prediction Zed provider 到 ZedEditPredictionDelegate 在 crates/edit_prediction/src/zed_edit_prediction_delegate.rs 到 zeta 请求 在 crates/edit_prediction/src/zeta.rs  [delegate 结构 :18、实现 :50；accept 上报 :871]
+Web Search 到 CloudWebSearchProvider 在 crates/web_search_providers/src/cloud.rs 到 perform_web_search() 在 crates/web_search_providers/src/cloud.rs  [唯一 web search provider，id=zed.dev（cloud.rs:43），注册 crates/web_search_providers/src/web_search_providers.rs:59；出网 :61/:74]
+协作 到 Client::rpc_url() 在 crates/client/src/client.rs 到 Client::establish_websocket_connection() 在 crates/client/src/client.rs  [GET /rpc 期望 302（:1283-1322），取 Location 作 websocket URL 再连（:1326）]
+```
+
+跨运行时跳转（出网到 zed 官方）：
+```
+Telemetry 到 report_event() 在 crates/client/src/telemetry.rs 到 [POST /telemetry/events] 到 https://api.zed.dev  [build_zed_api_url（telemetry.rs:652）；无需凭据，默认开（assets/settings/default.json:1561-1569），OHOS 那份未覆盖 → 当前会发]
+Extension 市场 到 fetch_extensions() 在 crates/extension_host/src/extension_host.rs 到 [GET /extensions、/extensions/{id}/download] 到 https://api.zed.dev  [用户打开扩展面板触发；无需凭据]
+AutoUpdate 到 check() 在 crates/auto_update/src/auto_update.rs 到 [GET /releases/{channel}/{version}/asset] 到 https://cloud.zed.dev  [build_zed_cloud_url_with_query（auto_update.rs:673）；Dev 通道不自动轮询，仅手动触发]
+Cloud 账号 到 CloudApiClient 在 crates/cloud_api_client/src/cloud_api_client.rs 到 [GET /client/users/me、POST /client/llm_tokens、POST /client/system_settings] 到 https://cloud.zed.dev  [需登录凭据；含 /internal/users/impersonate（crates/client/src/client.rs:1580）]
+账号变更 到 Client 连接循环 在 crates/client/src/client.rs 到 [WebSocket /client/users/connect + MessageToClient::UserUpdated] 到 crates/cloud_api_types/src/websocket_protocol.rs  [CBOR 编码（websocket_protocol.rs:12-27）；连接由用户登录/分享项目/加入频道触发（connect 调用点见 client.rs:705、crates/project/src/project.rs:1695、crates/zed/src/main.rs:1339）]
+Cloud LLM 到 CloudLanguageModelProvider 在 crates/language_models_cloud/src/language_models_cloud.rs 到 [GET /models、POST 推理] 到 https://cloud.zed.dev（build_zed_llm_url）  [需 Zed 账号 + 组织；provider id 字面为 zed.dev（crates/language_model_core/src/provider.rs:19），注册见 crates/language_models/src/language_models.rs:223]
+Edit Prediction Zed provider 到 zeta 在 crates/edit_prediction/src/zeta.rs 到 [POST /predict_edits/accept|reject|settled|raw] 到 https://cloud.zed.dev（build_zed_llm_url）  [需 Zed 账号 + 组织开通 edit_prediction；默认 provider 就是 "zed"（assets/settings/default.json:1771）]
+Web Search 到 CloudWebSearchProvider 在 crates/web_search_providers/src/cloud.rs 到 [POST /web_search] 到 https://cloud.zed.dev（build_zed_llm_url）  [需 Zed 账号 + 组织（缺组织直接报 "No organization selected."）；内置唯一 provider，无替代]
+反馈提交 到 CloudApiClient::submit_agent_feedback() 在 crates/cloud_api_client/src/cloud_api_client.rs 到 [POST /client/feedback/agent_thread（及 _comments、edit_prediction）] 到 https://cloud.zed.dev  [用户在 Agent 面板主动提交（cloud_api_client.rs:272/284/299）]
+MCP OAuth 到 CIMD_URL 在 crates/context_server/src/oauth.rs 到 [GET https://zed.dev/oauth/client-metadata.json] 到 zed.dev  [可自托管替换]
+```
+
+补充要点：
+- **未登录账号时只有两条会真的出网**：遥测（`api.zed.dev`，默认开）与扩展市场（`api.zed.dev`，需用户打开扩展面板）。
+  其余（AI、账号、协作、反馈）都要求凭据；`Client::connect` 的调用点只在用户主动登录/分享/加入频道路径上
+  （`crates/client/src/client.rs:705`、`crates/project/src/project.rs:1695`、`crates/collab_ui/src/collab_panel.rs:2751`、`crates/zed/src/main.rs:1339`）。
+- **三个编译期常量 OHOS 构建均未注入**（`script/bundle-ohos` 与仓库内其它构建入口皆零命中）：
+  `ZED_MINIDUMP_ENDPOINT`（→ 崩溃不上传）、`ZED_CLIENT_CHECKSUM_SEED`（→ 遥测 checksum 头为空）、
+  `ZED_RELEASE_CHANNEL`（→ 见下条 dev 通道）。复核手法：`grep -n` 需先做阳性对照，因为 `script/bundle-ohos` 无扩展名，`psrch.py` 按后缀过滤覆盖不到它。
+- **当前 `RELEASE_CHANNEL` 为 `dev`**（`crates/zed/RELEASE_CHANNEL` 内容）→ `poll_for_updates()` 返回 false → 不自动轮询更新；一旦改通道，「自动更新」那条会立刻变成活跃依赖。
+- **三处默认值指向 zed，且都能在 OHOS 叠加层覆盖**（不需要改代码，因为是「改值」不是「删共享键」）：
+  `telemetry.diagnostics/metrics`（`assets/settings/default.json:1561-1569`）、
+  `agent.default_model.provider`（`:1091-1097`，默认 `zed.dev`）、
+  `edit_predictions.provider`（`:1771`，默认 `zed`）。
+- **与相邻两节的关系**：上文「Collab Panel」里的 `client RPC（proto）→ Zed 协作服务端`
+  与「Edit Prediction」里的 `cloud_llm_client → Zed 云端 LLM`，其出网实现就落在本节：
+  协作走 `Client::rpc_url` → websocket；Cloud LLM 走 `CloudLanguageModelProvider` → `build_zed_llm_url`。
+- **`server_url` 是单点开关**：改它一处，扩展市场 / 协作 / 遥测 / 自动更新 / 账号 / AI 全部一起改向。
+  但自建服务器必须实现 `/rpc`、`/extensions/*`、`/client/*`、`/models`、`/predict_edits/*`、`/web_search`、
+  `/telemetry/events`、`/releases/*` 全套，否则各功能各自静默失效（都不阻塞启动）。
+- **若决定「OHOS 默认不依赖官方服务」，只动 OHOS 那两份文件**：
+  `assets/settings/default-ohos.json`（覆盖上面三处默认值）与 `assets/keymaps/default-ohos.json`（键位）。
+  协作要移除则必须改代码 cfg（涉及路径不含 `ohos` 的受保护文件，见上文 Collab Panel 节的说明）。
 
 ### 关键配置与产物
 
@@ -813,3 +1060,4 @@ Agent 工具编辑 到 [Buffer transaction + save_buffer] 到 打开文件的编
 - **设置 tab 不能嵌套 lease 主窗口**：`open_current_settings_file` 的 OHOS 分支必须用 App 级 `cx.defer`（回调里 `with_window` 已持有主窗口 lease），若用 `cx.defer_in` 则回调内再 `original_window.update` 会**嵌套窗口 lease 返回 Err**（被 `.ok()` 吞掉 → json 打不开、设置 tab 关不掉、无任何报错）。关闭 tab 的 `close_item_by_id` 返回异步 `Task`，必须 `.detach()`（丢弃即取消，tab 不关闭）。排查设置 tab 打不开 json / 不关闭，先确认这两点。
 - **设置 tab 的 Esc 挂死**：`SettingsWindow` 键盘上下文 `key_context("SettingsWindow")` 的 `escape`/`ctrl-w` 在桌面 keymap 绑定 `workspace::CloseWindow`，OHOS 上设置是 tab 非独立窗口，触发 CloseWindow 会挂死。必须用 OHOS 专用 keymap（`assets/keymaps/default-ohos.json`，删 5 处 CloseWindow；`DEFAULT_KEYMAP_PATH` 在 `crates/settings/src/settings.rs` 加 `#[cfg(target_env = "ohos")]` 分支）。
 - **最小化报 DisplaySync DelFromPipeline CurrentContext is nullptr**：帧回调启停**不要**挂在 `GainedFocus`/`LostFocus` 上——该事件被真实焦点（`StageEventType::Active/Inactive`）和窗口可见性（`windowVisibilityChange` 路由）两个来源复用，最小化时可能重复触发 `disable_frame_callback` → 第二次 `UnregisterOnFrameCallback` 时 DisplaySync 管道 context 已删 → `DelFromPipeline CurrentContext is nullptr`。修复（2026-08-22）：`windowVisibilityChange` 走独立 `Event::VisibilityChanged(bool)`，帧回调启停移入 `window.rs` 的 VisibilityChanged 分支；`enable/disable_frame_callback` 用 `FRAME_CALLBACK_ENABLED`（AtomicBool）幂等（已注册/已注销直接 return，标志收进函数内部维护），`window.rs` 不再外部 set。详见 `移植记录/bugfix/2026-08-21-ohos-idle-cpu-on-demand-vsync.md` 的"后续修复"章节。
+- **IME 重建必须挂 `ACTIVE`，且 `attached` 缓存不能早退**：窗口恢复时事件序为 `SHOWN(1)` → `ACTIVE(2)`（后者约晚 100ms，`windowVisibilityChange(true)` 还要再晚约 30ms）。只有 `ACTIVE` 同时满足「已可见 + 已获焦」；在 `SHOWN` 上发起 attach 时 `attachWithUIContext`/`showTextInput` **不抛异常、ack 也正常**，但系统不建会话——静默失败。另外 ArkTS `ImePlugin.attached` 与 Rust `OhosWindow::ime_attached` 是**两层互相独立的缓存**：最小化时系统收走会话而标志仍为 true，任一层早退都会让真正的重绑被短路（表现为「恢复后输入法不激活，切走再切回才好」）。修复（2026-09-15）：`ImePlugin.attach()` 删除 `if (this.attached) return` 早退，改为每次真正重绑；回调重复注册由 `callbacksRegistered` 单独守卫。详见 `移植记录/bugfix/2026-09-15-ohos-ime-minimize-restore.md`。

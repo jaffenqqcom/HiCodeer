@@ -1,9 +1,9 @@
-//! Command-backend selection plus QEMU boot and dynamic work-directory mounts.
+//! QEMU guest backend: engine boot and dynamic work-directory mounts.
 //!
-//! Called once at launch, before Zed starts: decides whether to talk to the
-//! on-device (OHOS) the daemon or to the daemon running inside the embedded QEMU
-//! guest, provisions the guest files under the app sandbox `files/qemu/`, boots
-//! the guest and registers the chosen command executor.
+//! Compiled only under the `qemu-agent` feature. Called once at launch, before
+//! Zed starts: provisions the guest files under the app sandbox `files/qemu/`,
+//! boots the guest and registers the guest command executor, falling back to
+//! the on-device command service on any failure.
 //!
 //! The QEMU settings are read here straight from the user settings file because
 //! the SettingsStore is not initialized yet at launch time. The settings are
@@ -20,31 +20,14 @@ use cmd_client::{
 use openharmony_ability::OpenHarmonyApp;
 use qemu_manager::{GuestShell, MountRegistry, QemuConfig, QemuPaths};
 
-/// [diag] Boot-time trace that writes straight to hilog, bypassing the global
-/// logger: `start_command_backend` runs inside `launch_app`, BEFORE the zlog
-/// logger is installed in `start_zed_main`, so plain `log::*!` lines from here
-/// are dropped silently during cold start. Keeping the whole QEMU decision
-/// chain visible required a direct channel; keep this until the backend
-/// selection is stable, then delete the calls (they are pure diagnostics).
-fn boot_trace(msg: &str) {
-    #[cfg(target_env = "ohos")]
-    zlog::ohos::direct_hilog_info("qemu-boot", msg);
-    #[cfg(not(target_env = "ohos"))]
-    let _ = msg;
-}
+use crate::launch_app::{
+    boot_trace, read_management_keys, register_executor, register_ohos_backend, resource_dir,
+};
 
-/// OHOS app module name (resfile resources live under it).
-const APP_MODULE_NAME: &str = "entry";
-/// Resfile subdir holding the on-device daemon management keys.
-const OHOS_KEY_SUBDIR: &str = "hicodeerd-mgmt";
 /// Resfile subdir holding the guest daemon management keys.
 const GUEST_KEY_SUBDIR: &str = "hicodeerd-mgmt-guest";
 /// Resfile subdir carrying the guest daemon binary staged at startup.
 const RES_QEMU_SUBDIR: &str = "qemu-guest";
-/// Management host public key file (client half).
-const MGMT_HOST_PUB_FILE: &str = "mgmt-host.pub";
-/// Management client private key file (client half).
-const MGMT_CLIENT_KEY_FILE: &str = "mgmt-client-key";
 /// Guest daemon management server-half files.
 const MGMT_HOST_KEY_FILE: &str = "mgmt_host_key";
 const MGMT_AUTHORIZED_KEYS_FILE: &str = "authorized_keys";
@@ -179,50 +162,6 @@ pub fn start_command_backend(app: &OpenHarmonyApp) {
         boot_trace("settings.enabled=false; OHOS fallback");
         register_ohos_backend(app);
     }
-}
-
-/// OHOS mode: the plain on-device daemon on the default endpoint.
-fn register_ohos_backend(_app: &OpenHarmonyApp) {
-    boot_trace("register_ohos_backend entered");
-    let resource_dir = match resource_dir() {
-        Some(dir) => dir,
-        None => {
-            log::error!("register_ohos_backend: no resource dir");
-            return;
-        }
-    };
-    let (host_pub, client_key) =
-        match read_management_keys(&resource_dir.join(OHOS_KEY_SUBDIR)) {
-            Some(pair) => pair,
-            None => {
-                log::error!("register_ohos_backend: no OHOS management keys");
-                return;
-            }
-        };
-    let inner = match SshCommandExecutor::new(
-        CommandEndpoint::ohos_default(),
-        client_key,
-        host_pub,
-    ) {
-        Ok(executor) => Arc::new(executor) as Arc<dyn RemoteCommandExecutor>,
-        Err(err) => {
-            log::error!("register_ohos_backend: create executor: {err}");
-            return;
-        }
-    };
-    register_executor(inner);
-}
-
-/// Registers the executor globally and initializes `util::command`.
-fn register_executor(executor: Arc<dyn RemoteCommandExecutor>) {
-    if let Err(()) = cmd_client::init_executor(executor.clone()) {
-        log::warn!("qemu_runtime: executor already registered");
-    }
-    if let Err(err) = util::command::init("") {
-        log::warn!("qemu_runtime: util command init failed: {err}");
-    }
-    boot_trace("register_executor done");
-    log::info!("qemu_runtime: command executor registered");
 }
 
 /// Provision guest assets under `files/qemu/` (staged binaries/keys, disk
@@ -733,29 +672,6 @@ fn golden_virtual_size(path: &Path) -> Option<u64> {
     let mut buf = [0u8; 8];
     file.read_exact(&mut buf).ok()?;
     Some(u64::from_be_bytes(buf))
-}
-
-/// Reads the fixed management key pair (host public + client private) from a
-/// resfile key directory.
-fn read_management_keys(key_dir: &Path) -> Option<(String, String)> {
-    let host_pub = std::fs::read_to_string(key_dir.join(MGMT_HOST_PUB_FILE)).ok()?;
-    let client_key = std::fs::read_to_string(key_dir.join(MGMT_CLIENT_KEY_FILE)).ok()?;
-    Some((host_pub, client_key))
-}
-
-/// Resolves the module resource directory (el1 resfile).
-fn resource_dir() -> Option<PathBuf> {
-    match openharmony_ability::application_resource_dir(APP_MODULE_NAME) {
-        Ok(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-        Ok(_) => {
-            log::error!("qemu_runtime: empty application_resource_dir");
-            None
-        }
-        Err(err) => {
-            log::error!("qemu_runtime: application_resource_dir failed: {err}");
-            None
-        }
-    }
 }
 
 /// Reads the QEMU launch settings from the user settings file, tolerating the

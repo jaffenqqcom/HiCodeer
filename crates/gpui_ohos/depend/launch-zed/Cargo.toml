@@ -11,10 +11,11 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [features]
-# Default backend: the on-device daemon command server (public HNP on the same
-# device), reached over loopback SSH through the self-contained cmd-client
-# crate. Replaces the retired openeuler-agent / qemu-agent backends.
-default = ["daemon-agent", "qemu-agent"]
+# Default backend: the on-device command service (public HNP on the same device),
+# reached over loopback SSH through the self-contained cmd-client crate. The
+# embedded QEMU guest backend is off by default and is turned on only by
+# script/bundle-ohos (see ENABLE_QEMU_AGENT there).
+default = ["daemon-agent"]
 daemon-agent = ["dep:cmd-client"]
 # Embedded QEMU guest backend: boot the guest and mount work dirs into it.
 qemu-agent = ["dep:qemu-manager", "dep:cmd-client"]
@@ -36,7 +37,6 @@ cmd-client = { path = "../cmd-agent/cmd-client", optional = true }
 # vCPUs on every console write and makes hilog a heavy device disk writer. Add
 # `, features = ["qemu_debug_assertions"]` back only when debugging guest boot.
 qemu-manager = { path = "../qemu-mngt/qemuctrl", optional = true, features = ["qemu_debug_assertions"] }
-gpui_ohos_linker.workspace = true
 util = { path = "../../../util" }
 paths = { path = "../../../paths" }
 log = "0.4"

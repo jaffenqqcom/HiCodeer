@@ -40,6 +40,18 @@ IS_RELEASE=false
 MODE="all"
 REBUILD_GOLDEN=false
 CHECK_TLS=false
+
+# ==================== 嵌入式 QEMU 客户机后端开关 ====================
+# 默认关闭。关闭时 QEMU 客户机相关的一切都不参与：launch-zed 不带 qemu-agent
+# 特性（相关代码不编译），客户机侧的 hicodeerd、golden 母盘、管理密钥、内核
+# Image 与引擎库既不编译也不进 HAP。开启方式只有一种：把下面这行改成 true。
+# 刻意不提供命令行参数，改动只允许发生在本脚本。
+ENABLE_QEMU_AGENT=false
+QEMU_CARGO_FEATURE=()
+if [ "$ENABLE_QEMU_AGENT" = true ]; then
+  QEMU_CARGO_FEATURE=(--features qemu-agent)
+fi
+
 CARGO_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -385,11 +397,10 @@ if [ "$MODE" != "hap" ]; then
   NPROC=$(nproc 2>/dev/null || echo 4)
   OHOS_TARGET_DIR="$SHARED_TARGET_DIR"
   echo "[hicodeer-ohos-build] Cargo build ($PROFILE_DIR, $NPROC CPUs) ..."
-  # Default backend feature the daemon-agent (cmd-client -> on-device daemon). No
-  # feature flags are passed; the retired openeuler-agent / qemu-agent features
-  # are gone.
+  # Backend features: the on-device command service rides the default feature;
+  # the QEMU guest backend is added only when ENABLE_QEMU_AGENT is on.
   CARGO_TARGET_DIR="$OHOS_TARGET_DIR" \
-    cargo build $($IS_RELEASE && echo --release) --lib -p "$CRATE" --target "$OHOS_TARGET" -j "$NPROC" "${CARGO_ARGS[@]}"
+    cargo build $($IS_RELEASE && echo --release) --lib -p "$CRATE" --target "$OHOS_TARGET" -j "$NPROC" "${QEMU_CARGO_FEATURE[@]}" "${CARGO_ARGS[@]}"
 
   # ==================== 拷贝 libhicodeer.so ====================
   HAP_LIBS_DIR="$HAP_DIR/entry/libs/arm64-v8a"
@@ -455,6 +466,11 @@ if [ "$MODE" != "hap" ]; then
   # keys> and <pkg>/shim/<preloads>.
   STAGE_DIR="$RUST_TARGET_ROOT/${TARGET_PREFIX}-hicodeerd-stage"
   mkdir -p "$STAGE_DIR/hicodeerd/bin" "$STAGE_DIR/hicodeerd/conf" "$STAGE_DIR/hicodeerd/shim"
+  # A staged file left behind by an earlier build can carry fs-verity
+  # (FS_VERITY_FL), which makes the inode unwritable: an open-for-write returns
+  # EPERM and `cp` cannot overwrite it in place. Remove it first so the copy
+  # lands on a fresh inode without the verity tag.
+  rm -f "$STAGE_DIR/hicodeerd/bin/hicodeerd"
   cp "$DAEMON_BIN" "$STAGE_DIR/hicodeerd/bin/hicodeerd"
   chmod 755 "$STAGE_DIR/hicodeerd/bin/hicodeerd"
   cp "$KEYS_DIR/mgmt_host_key" "$STAGE_DIR/hicodeerd/conf/mgmt_host_key"
@@ -561,6 +577,9 @@ fi
 # kernel, engine native libs, the statically linked guest daemon and the guest
 # management keys) into the HAP resfile. The guest userland itself is not staged
 # here: it lives inside golden.qcow2 (see goldendisk/build-golden.sh).
+# All of it is gated on ENABLE_QEMU_AGENT: with the backend compiled out nothing
+# would consume these resources, so none of them are built or packaged.
+if [ "$ENABLE_QEMU_AGENT" = true ]; then
 QEMU_IMG_DIR="$PROJECT_ROOT/crates/gpui_ohos/depend/qemu-mngt/images"
 QEMU_HAP_LIBS_DIR="$HAP_DIR/entry/libs/arm64-v8a"
 mkdir -p "$QEMU_HAP_LIBS_DIR"
@@ -698,6 +717,18 @@ if [ "$MODE" != "hap" ]; then
   # start; a shipped template once carried broken refcount entries (4-byte
   # where qcow2 v2 uses 2-byte) and bricked the guest's first boot.
   echo "[hicodeer-ohos-build] QEMU guest resources staged"
+fi
+else
+  echo "[hicodeer-ohos-build] QEMU guest backend disabled (ENABLE_QEMU_AGENT=false); guest resources not built or packaged"
+  # hvigor packs the whole libs/ and resfile/ trees, so resources an earlier
+  # build staged there would keep shipping even though nothing stages them any
+  # more. Drop them so "disabled" really means absent from the HAP.
+  rm -f "$HAP_DIR/entry/libs/arm64-v8a/libqemu-system-aarch64.so" \
+        "$HAP_DIR/entry/libs/arm64-v8a/libslirp.so.0" \
+        "$HAP_DIR/entry/libs/arm64-v8a/libz.so"
+  rm -rf "$HAP_DIR/entry/src/main/resources/resfile/qemu-guest" \
+         "$HAP_DIR/entry/src/main/resources/resfile/hicodeerd-mgmt-guest"
+  rm -f "$HAP_DIR/entry/src/main/resources/resfile/Image"
 fi
 
 # ==================== cmd-agent daemon（线程运行，无需 cdylib） ====================

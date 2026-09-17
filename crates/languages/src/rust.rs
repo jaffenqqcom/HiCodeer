@@ -265,13 +265,6 @@ impl RustLspAdapter {
         #[cfg(not(target_os = "linux"))]
         let arch_server_name = Self::ARCH_SERVER_NAME.to_string();
 
-        // On OHOS the binary must run on the VM, so the download is keyed to
-        // the VM's architecture (queried from the VM), not the device's.
-        #[cfg(target_env = "ohos")]
-        let arch = gpui_platform::vm_platform()
-            .map(|platform| platform.arch)
-            .unwrap_or_else(|| std::env::consts::ARCH.to_string());
-        #[cfg(not(target_env = "ohos"))]
         let arch = std::env::consts::ARCH.to_string();
 
         format!(

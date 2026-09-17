@@ -8525,7 +8525,6 @@ dependencies = [
  "etagere",
  "futures 0.3.32",
  "gpui",
- "gpui_ohos_linker",
  "itertools 0.14.0",
  "log",
  "openharmony-ability",
@@ -8549,14 +8548,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui_ohos_linker"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "log",
-]
-
-[[package]]
 name = "gpui_platform"
 version = "0.1.0"
 dependencies = [
@@ -8564,7 +8555,7 @@ dependencies = [
  "gpui",
  "gpui_linux",
  "gpui_macos",
- "gpui_ohos_linker",
+ "gpui_ohos",
  "gpui_web",
  "gpui_windows",
 ]
@@ -10774,7 +10765,6 @@ version = "0.1.0"
 dependencies = [
  "cmd-client",
  "gpui_ohos",
- "gpui_ohos_linker",
  "libc",
  "log",
  "napi-build-ohos",

@@ -1,5 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use cmd_client::{CommandEndpoint, RemoteCommandExecutor, SshCommandExecutor};
 use openharmony_ability_derive::ability;
 
 /// Environment variable carrying the app sandbox's `files/` directory.
@@ -31,8 +33,6 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     // zlog->hilog redirect is live; a missing tool shows one clear line instead
     // of a runtime error later.
     log_local_tools_delayed();
-    // Register the OHOS platform factory before Zed constructs any platform.
-    gpui_ohos::register_platform();
     // Start the on-device daemon client (management bootstrap + command pool)
     // so remote command execution is ready before Zed starts issuing git/LSP
     // commands. The daemon replaces the retired openeuler-VM and QEMU backends.
@@ -196,12 +196,14 @@ fn ensure_shell_env(base_path: Option<String>, home_directory: Option<String>) {
 }
 
 /// Starts the command backend and registers the process-wide executor so
-/// `util::command` can execute commands. Delegates to `qemu_runtime`, which
-/// selects the backend once by the QEMU setting: the on-device daemon on
-/// loopback 4022/4023 when QEMU is off, or the guest daemon (hostfwd
-/// 4122/4123) plus dynamic work-dir mounts when the embedded QEMU guest is on.
+/// `util::command` can execute commands. The on-device command service is the
+/// always-present backend; when the QEMU guest backend is compiled in it gets
+/// the first chance and falls back here on any failure.
 fn start_daemon_client(app: &openharmony_ability::OpenHarmonyApp) {
+    #[cfg(feature = "qemu-agent")]
     crate::qemu_runtime::start_command_backend(app);
+    #[cfg(not(feature = "qemu-agent"))]
+    register_ohos_backend(app);
 }
 
 /// [diag] From a background thread ~3s after launch (once the zlog->hilog
@@ -232,4 +234,98 @@ fn log_local_tools_delayed() {
             }
         })
         .ok();
+}
+
+// ==================== On-device command service ====================
+// The command service that runs on the device itself, reached over loopback
+// SSH on 4022/4023. Nothing below depends on the embedded QEMU guest backend,
+// so it stays available whether or not that backend is compiled in.
+
+/// [diag] Boot-time trace that writes straight to hilog, bypassing the global
+/// logger: the command backend is chosen here, BEFORE the zlog logger is
+/// installed in `start_zed_main`, so plain `log::*!` lines from here are
+/// dropped silently during cold start. Keeping the whole decision chain visible
+/// required a direct channel; keep this until the backend selection is stable,
+/// then delete the calls (they are pure diagnostics).
+pub(crate) fn boot_trace(msg: &str) {
+    #[cfg(target_env = "ohos")]
+    zlog::ohos::direct_hilog_info("qemu-boot", msg);
+    #[cfg(not(target_env = "ohos"))]
+    let _ = msg;
+}
+
+/// OHOS app module name (resfile resources live under it).
+const APP_MODULE_NAME: &str = "entry";
+/// Resfile subdir holding the on-device command service management keys.
+const OHOS_KEY_SUBDIR: &str = "hicodeerd-mgmt";
+/// Management host public key file (client half).
+const MGMT_HOST_PUB_FILE: &str = "mgmt-host.pub";
+/// Management client private key file (client half).
+const MGMT_CLIENT_KEY_FILE: &str = "mgmt-client-key";
+
+/// Registers the on-device command service as the process-wide command executor.
+pub(crate) fn register_ohos_backend(_app: &openharmony_ability::OpenHarmonyApp) {
+    boot_trace("register_ohos_backend entered");
+    let resource_dir = match resource_dir() {
+        Some(dir) => dir,
+        None => {
+            log::error!("register_ohos_backend: no resource dir");
+            return;
+        }
+    };
+    let (host_pub, client_key) =
+        match read_management_keys(&resource_dir.join(OHOS_KEY_SUBDIR)) {
+            Some(pair) => pair,
+            None => {
+                log::error!("register_ohos_backend: no OHOS management keys");
+                return;
+            }
+        };
+    let inner = match SshCommandExecutor::new(
+        CommandEndpoint::ohos_default(),
+        client_key,
+        host_pub,
+    ) {
+        Ok(executor) => Arc::new(executor) as Arc<dyn RemoteCommandExecutor>,
+        Err(err) => {
+            log::error!("register_ohos_backend: create executor: {err}");
+            return;
+        }
+    };
+    register_executor(inner);
+}
+
+/// Registers the executor globally and initializes `util::command`.
+pub(crate) fn register_executor(executor: Arc<dyn RemoteCommandExecutor>) {
+    if let Err(()) = cmd_client::init_executor(executor.clone()) {
+        log::warn!("launch_app: executor already registered");
+    }
+    if let Err(err) = util::command::init("") {
+        log::warn!("launch_app: util command init failed: {err}");
+    }
+    boot_trace("register_executor done");
+    log::info!("launch_app: command executor registered");
+}
+
+/// Reads the fixed management key pair (host public + client private) from a
+/// resfile key directory.
+pub(crate) fn read_management_keys(key_dir: &Path) -> Option<(String, String)> {
+    let host_pub = std::fs::read_to_string(key_dir.join(MGMT_HOST_PUB_FILE)).ok()?;
+    let client_key = std::fs::read_to_string(key_dir.join(MGMT_CLIENT_KEY_FILE)).ok()?;
+    Some((host_pub, client_key))
+}
+
+/// Resolves the module resource directory (el1 resfile).
+pub(crate) fn resource_dir() -> Option<PathBuf> {
+    match openharmony_ability::application_resource_dir(APP_MODULE_NAME) {
+        Ok(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        Ok(_) => {
+            log::error!("launch_app: empty application_resource_dir");
+            None
+        }
+        Err(err) => {
+            log::error!("launch_app: application_resource_dir failed: {err}");
+            None
+        }
+    }
 }

@@ -70,8 +70,7 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
 
     #[cfg(target_env = "ohos")]
     {
-        // gpui_ohos::current_platform(headless) // OHOS impl isolated behind gpui_ohos_linker
-        gpui_ohos_linker::current_platform(headless)
+        gpui_ohos::current_platform(headless)
     }
 
     #[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))]
@@ -100,30 +99,6 @@ pub fn current_headless_renderer() -> Option<Box<dyn gpui::PlatformHeadlessRende
     {
         None
     }
-}
-
-/// Platform information about the VM that OHOS commands run on. Distinct from
-/// the device's own platform (`current_platform`): on this platform the
-/// device sandbox cannot execute binaries, so commands run on a paired VM, and
-/// downloads must be built for the VM's architecture.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VmPlatform {
-    /// The VM's CPU architecture as `uname -m` reports it (e.g. "aarch64").
-    pub arch: String,
-}
-
-/// Returns the platform of the VM that commands run on, when there is one.
-/// Only OHOS has a paired VM; other platforms have none and return `None`.
-#[cfg(target_env = "ohos")]
-pub fn vm_platform() -> Option<VmPlatform> {
-    gpui_ohos_linker::vm_arch().map(|arch| VmPlatform {
-        arch: arch.to_string(),
-    })
-}
-
-#[cfg(not(target_env = "ohos"))]
-pub fn vm_platform() -> Option<VmPlatform> {
-    None
 }
 
 #[cfg(all(test, target_os = "macos"))]
