@@ -248,12 +248,24 @@ fn pool_loop(pool: Arc<Pool>) {
 /// with no inactivity timeout, so this only guards against intermediate drops.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Bytes of traffic before an SSH key re-exchange is requested. The protocol
+/// forbids raising this past the ceiling russh itself enforces (see
+/// `russh::Limits::new`), and a pooled connection carries far less than it.
+pub(crate) const REKEY_BYTE_LIMIT: usize = 1 << 30;
+/// Time before an SSH key re-exchange is requested, for this pool and for the
+/// management connection alike (see `bootstrap`). Effectively "never": the
+/// daemon holds both kinds of connection open indefinitely, and a client frozen
+/// by the system cannot answer a rekey, so a short interval would drop exactly
+/// the connection whose presence says the instance is still alive.
+pub(crate) const REKEY_TIME_LIMIT: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
 /// Establishes and authenticates one SSH connection with the command client key,
 /// verifying the command host key against the expected public key.
 async fn connect(config: &ConnConfig) -> Result<SshSession, String> {
     let expected_host = host_public_key(&config.host_public_pem)?;
     let mut client_cfg = Config::default();
     client_cfg.keepalive_interval = Some(KEEPALIVE_INTERVAL);
+    client_cfg.limits = russh::Limits::new(REKEY_BYTE_LIMIT, REKEY_BYTE_LIMIT, REKEY_TIME_LIMIT);
     let client_config = Arc::new(client_cfg);
     let mut session = tokio::time::timeout(
         CONNECT_TIMEOUT,

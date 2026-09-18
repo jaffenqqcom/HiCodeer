@@ -401,6 +401,11 @@ pub async fn spawn_command(
     let cmd_preview: String = shell_command.chars().take(CMD_LOG_PREVIEW_CHARS).collect();
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(shell_command);
+    // Scratch files belong to the instance that asked for this command, so the
+    // value is taken from its own record rather than the process environment.
+    if let Some(tmpdir) = crate::session_tmp::tmpdir(client_id) {
+        cmd.env(crate::session_tmp::TMPDIR_VAR, tmpdir);
+    }
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

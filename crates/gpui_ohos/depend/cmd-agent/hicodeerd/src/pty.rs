@@ -241,6 +241,11 @@ pub async fn run_pty_shell(
     if !term.is_empty() {
         cmd.env("TERM", term);
     }
+    // Scratch files belong to the instance that opened this shell, so the value
+    // is taken from its own record rather than the process environment.
+    if let Some(tmpdir) = crate::session_tmp::tmpdir(client_id) {
+        cmd.env(crate::session_tmp::TMPDIR_VAR, tmpdir);
+    }
     // SAFETY: the closure runs in the forked child before exec and only calls
     // async-signal-safe libc functions; `slave_fd` stays open in the child
     // until exec (it is still referenced by the stdio setup).

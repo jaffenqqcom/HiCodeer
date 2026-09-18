@@ -80,7 +80,7 @@ fn start_zed_main(base_path: Option<String>, home_directory: Option<String>) {
             }
         }
     }
-    zed::main();
+    zed::hicodeer_main();
 }
 
 /// Resolves the directory to use as the data root. Prefers the user home

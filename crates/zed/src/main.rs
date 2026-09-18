@@ -208,16 +208,11 @@ static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 // other platform compiles the file as a plain binary, whose entry point stays
 // private.
 #[cfg(target_env = "ohos")]
-pub fn main() {
-    zed_main();
+pub fn hicodeer_main() {
+    main();
 }
 
-#[cfg(not(target_env = "ohos"))]
 fn main() {
-    zed_main();
-}
-
-fn zed_main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
 
     // If this process was re-executed as a Linux sandbox helper, run that mode

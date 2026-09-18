@@ -7,6 +7,12 @@
 //! dynamic keys, so the command listener the client is handed is always the
 //! current one.
 //!
+//! The connection is long-lived rather than one poll per connection: the client
+//! holds it open for as long as its process runs and re-sends the request over
+//! it whenever it needs the keys. Its presence is therefore what says the
+//! instance is still there, and its end is what says the instance is gone (see
+//! `peers`) -- so nothing here retires a client on a timer.
+//!
 //! The client appends the directory it works in, which this side adopts for the
 //! programs it spawns -- see `session_tmp`. That is the only
 //! path by which the daemon learns the directory: it runs under its own account
@@ -47,6 +53,8 @@ impl ManagementServer {
         ManagementHandler {
             authorized: self.authorized.clone(),
             ssh_info_json: self.ssh_info_json.clone(),
+            client_id: None,
+            conn_token: crate::peers::new_management_token(),
         }
     }
 }
@@ -56,6 +64,25 @@ impl ManagementServer {
 pub struct ManagementHandler {
     authorized: Arc<Vec<PublicKey>>,
     ssh_info_json: Arc<String>,
+    /// Identity this connection authenticated as, from the SSH user name; `None`
+    /// until it has. The instance it names stays alive for exactly as long as
+    /// connections holding its tokens are open (see `peers`).
+    client_id: Option<String>,
+    /// This connection's token in that record.
+    conn_token: u64,
+}
+
+/// Releases this connection's claim on the instance when the connection ends.
+/// The handler is owned by `russh_server::run_stream` and dropped when that
+/// returns, which is the moment the connection is over -- whether the client
+/// closed it or its process went away, the kernel closes its sockets either
+/// way.
+impl Drop for ManagementHandler {
+    fn drop(&mut self) {
+        if let Some(client_id) = self.client_id.as_deref() {
+            crate::peers::management_closed(client_id, self.conn_token);
+        }
+    }
 }
 
 impl server::Handler for ManagementHandler {
@@ -68,10 +95,11 @@ impl server::Handler for ManagementHandler {
     ) -> Result<Auth, Self::Error> {
         let accepted = self.authorized.iter().any(|k| k == key);
         if accepted {
-            // The poll behind this connection is the client's heartbeat: it
-            // arrives every few seconds for as long as the client is alive, and
-            // its absence is what says the client is gone (see `peers`).
-            crate::peers::touch(user);
+            // Holding this connection open for as long as the client runs is
+            // what says the instance is still there; its end is what says the
+            // instance is gone (see `peers`).
+            crate::peers::management_opened(user, self.conn_token);
+            self.client_id = Some(user.to_string());
             Ok(Auth::Accept)
         } else {
             log::warn!("mgmt: publickey auth rejected for user {user}");
@@ -97,10 +125,13 @@ impl server::Handler for ManagementHandler {
         let handle = session.handle();
         match parse_bootstrap_command(command.trim()) {
             Some(data_root) => {
-                if let Some(root) = data_root {
-                    // Arrives on every poll; the adoption itself happens once.
-                    let root = Path::new(&root);
-                    crate::session_tmp::adopt(root);
+                if let (Some(root), Some(client_id)) =
+                    (data_root.as_deref(), self.client_id.as_deref())
+                {
+                    // Arrives on every poll; the adoption itself happens once
+                    // for each client.
+                    let root = Path::new(root);
+                    crate::session_tmp::adopt(client_id, root);
                     // The root is also where this run's log file goes.
                     crate::logger::attach_file(root);
                 }

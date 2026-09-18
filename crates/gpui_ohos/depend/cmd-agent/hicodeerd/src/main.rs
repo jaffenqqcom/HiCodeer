@@ -53,6 +53,18 @@ const DROP_CACHES_PATH: &str = "/proc/sys/vm/drop_caches";
 const DROP_CACHES_VALUE: &str = "2";
 /// Reclaim cadence (see the 2026-09-03 virtiofsd fd-exhaustion record).
 const DROP_CACHES_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+/// Bytes of traffic before an SSH key re-exchange is requested. The protocol
+/// forbids raising this past the ceiling russh itself enforces (see
+/// `russh::Limits::new`), and neither listener carries anywhere near it.
+const REKEY_BYTE_LIMIT: usize = 1 << 30;
+/// Time before an SSH key re-exchange is requested. An app frozen by the system
+/// (`nap-background`) or a suspended device stops answering altogether, so
+/// anything short of this would rekey into silence and drop the connection --
+/// which the management listener reads as the client being gone, and answers by
+/// taking down everything that client started (see `peers`). A year is
+/// effectively "never" for a connection that only ever carries a few kilobytes.
+const REKEY_TIME_LIMIT: std::time::Duration =
+    std::time::Duration::from_secs(365 * 24 * 60 * 60);
 /// Name of the fixed management host private key file (ssh-keygen output).
 const MGMT_HOST_KEY_FILE: &str = "mgmt_host_key";
 /// Name of the file holding the authorized management client public key.
@@ -199,6 +211,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // cmd-client keeps a pool of long-lived SSH connections; never let
             // the server reap an idle pooled connection.
             inactivity_timeout: None,
+            limits: russh::Limits::new(REKEY_BYTE_LIMIT, REKEY_BYTE_LIMIT, REKEY_TIME_LIMIT),
             ..Default::default()
         });
 
@@ -207,18 +220,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mgmt_config = Arc::new(russh_server::Config {
             keys: vec![mgmt_host_key],
             inactivity_timeout: None,
+            // This connection's presence is what says the client is alive
+            // (see `peers`), so it must never be asked to rekey while its
+            // process may be frozen and unable to answer.
+            limits: russh::Limits::new(REKEY_BYTE_LIMIT, REKEY_BYTE_LIMIT, REKEY_TIME_LIMIT),
             ..Default::default()
         });
 
         maybe_spawn_drop_caches();
-        // Retires clients that stop heartbeating, along with everything they
-        // started (see `peers`).
-        peers::spawn_sweeper();
-
-        tokio::try_join!(
-            accept_command(command_listener, command_config, command_server),
-            accept_management(mgmt_listener, mgmt_config, mgmt_server),
-        )?;
+        let mut shutdown = ShutdownSignals::new()?;
+        tokio::select! {
+            result = async {
+                tokio::try_join!(
+                    accept_command(command_listener, command_config, command_server),
+                    accept_management(mgmt_listener, mgmt_config, mgmt_server),
+                )
+            } => {
+                result?;
+            }
+            name = shutdown.recv() => {
+                log::warn!("daemon: {name} received; shutting down");
+            }
+        }
+        // Both ways out converge here: nothing a client started may outlive the
+        // daemon that owns it.
+        peers::retire_all("daemon exiting");
         Ok(())
     })
 }
@@ -271,6 +297,36 @@ async fn accept_management(
         tokio::spawn(async move {
             let _ = russh_server::run_stream(config, stream, handler).await;
         });
+    }
+}
+
+/// The signals that ask the daemon to stop. Registered once, before the accept
+/// loops start, so one arriving during start-up is not missed.
+struct ShutdownSignals {
+    terminate: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+impl ShutdownSignals {
+    fn new() -> std::io::Result<Self> {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok(Self {
+            terminate: signal(SignalKind::terminate())?,
+            interrupt: signal(SignalKind::interrupt())?,
+            hangup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    /// Resolves to the name of the first of them to arrive. SIGHUP is included
+    /// because the daemon is normally started from an interactive shell, which
+    /// sends it when that terminal goes away.
+    async fn recv(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.terminate.recv() => "SIGTERM",
+            _ = self.interrupt.recv() => "SIGINT",
+            _ = self.hangup.recv() => "SIGHUP",
+        }
     }
 }
 
