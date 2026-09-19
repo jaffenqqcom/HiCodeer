@@ -9,4 +9,22 @@
   "terminal": {
     "copy_on_select": true,
   },
+  // The collaboration panel button is not offered in this build, so keep it out
+  // of the status bar.
+  "collaboration_panel": {
+    "button": false,
+  },
+  // Training data for edit predictions is never collected in this build. "no"
+  // is unconditional, unlike the shipped "default", which follows whatever the
+  // status-bar toggle last stored.
+  "edit_predictions": {
+    "allow_data_collection": "no",
+  },
+  // The agent panel is used zoomed to the whole window, so let its content span
+  // 0.8 of that width, leaving a tenth blank on each side, instead of stopping
+  // at the shipped 850px readability cap. 1128 is 0.8 x the 1410 logical px the
+  // window reports at this device's 2.2125 density.
+  "agent": {
+    "max_content_width": 1128,
+  },
 }
