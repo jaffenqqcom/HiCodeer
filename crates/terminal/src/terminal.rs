@@ -1222,11 +1222,21 @@ impl TerminalBuilder {
                 // shell runs inside the QEMU guest instead of the sandbox
                 // /bin/sh. The probe resolves before the pty is opened so a
                 // backend without a shell simply keeps the local one.
+                // The task's own program and arguments are handed to the guest
+                // pty, so a task command runs as written instead of the pty
+                // substituting a shell of its own.
                 #[cfg(target_env = "ohos")]
-                let guest_shell = crate::ohos_shell::probe(
-                    working_directory.as_deref().and_then(|path| path.to_str()),
-                )
-                .await;
+                let guest_shell = match shell_params.as_ref() {
+                    Some(params) => {
+                        crate::ohos_shell::probe(
+                            working_directory.as_deref().and_then(|path| path.to_str()),
+                            &params.program,
+                            params.args.as_deref().unwrap_or(&[]),
+                        )
+                        .await
+                    }
+                    None => None,
+                };
 
                 let alacritty_shell = shell_params.as_ref().map(|params| {
                     (

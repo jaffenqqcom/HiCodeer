@@ -96,11 +96,19 @@ impl GuestShell {
     }
 }
 
-/// Probes the registered command backend for an interactive shell. `None` (with
-/// a log line) means the caller keeps the plain local `/bin/sh` terminal:
-/// either no backend is registered or it cannot serve a pty.
-pub(crate) async fn probe(cwd: Option<&str>) -> Option<GuestShell> {
-    let remote = match open_remote_shell(INITIAL_COLS as u32, INITIAL_ROWS as u32, cwd).await {
+/// Probes the registered command backend for an interactive shell running
+/// `program` with `args`. `None` (with a log line) means the caller keeps the
+/// plain local `/bin/sh` terminal: either no backend is registered or it cannot
+/// serve a pty.
+pub(crate) async fn probe(cwd: Option<&str>, program: &str, args: &[String]) -> Option<GuestShell> {
+    let remote = match open_remote_shell(
+        INITIAL_COLS as u32,
+        INITIAL_ROWS as u32,
+        cwd,
+        program,
+        args,
+    )
+    .await {
         Ok(remote) => remote,
         Err(err) => {
             log::info!("ohos_shell::probe: no guest shell ({err}); using the local /bin/sh");

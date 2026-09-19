@@ -22,10 +22,6 @@ use crate::pool::SshSession;
 const TERM_TYPE: &str = "xterm-256color";
 /// Bytes read from the socketpair per relay iteration.
 const PTY_CHUNK: usize = 8192;
-/// Interactive shell the daemon pty ends up running: the payload built below
-/// execs it, replacing the shell that carries `-c`. The daemon runs outside the
-/// app sandbox, so a shell the sandbox itself may not exec is usable here.
-const INTERACTIVE_SHELL: &str = "/usr/bin/zsh";
 
 /// A live interactive shell session on a remote pty.
 pub struct RemotePty {
@@ -66,19 +62,33 @@ impl ResizeHandle {
 
 /// Builds the shell command run on the backend pty: enter the caller's
 /// directory when it exists there (best effort: a stale path must not block the
-/// shell), then replace the wrapper shell with an interactive one.
-pub(crate) fn shell_command(cwd: Option<&str>) -> String {
-    match cwd.filter(|dir| !dir.is_empty()) {
-        Some(dir) => format!(
-            "cd {} 2>/dev/null; exec {INTERACTIVE_SHELL}",
-            crate::command::sh_quote(dir)
-        ),
-        None => format!("exec {INTERACTIVE_SHELL}"),
+/// shell), then replace the wrapper shell with the program and arguments the
+/// caller specified. Nothing is substituted: whatever the caller asks for is
+/// what the pty runs. An empty program is refused rather than defaulted, so a
+/// caller that names no shell is told instead of silently getting one.
+pub(crate) fn shell_command(
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+) -> std::io::Result<String> {
+    if program.is_empty() {
+        log::error!("cmd-client pty: shell_command called with an empty program");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "pty shell: caller specified no program",
+        ));
     }
+    let mut command = vec![crate::command::sh_quote(program)];
+    command.extend(args.iter().map(|arg| crate::command::sh_quote(arg)));
+    let exec = format!("exec {}", command.join(" "));
+    Ok(match cwd.filter(|dir| !dir.is_empty()) {
+        Some(dir) => format!("cd {} 2>/dev/null; {exec}", crate::command::sh_quote(dir)),
+        None => exec,
+    })
 }
 
 /// Opens an interactive shell channel on `conn`: pty request, then `command`
-/// exec (the caller passes `exec /usr/bin/zsh`, optionally preceded by a `cd`). Both
+/// exec (the caller passes `exec <program> <args>`, optionally preceded by a `cd`). Both
 /// steps complete before this future resolves, so a backend that cannot serve
 /// a pty surfaces an error and the caller falls back to a local shell. The
 /// relay task then runs on the current tokio runtime until the channel closes.

@@ -174,10 +174,17 @@ impl RemoteCommandExecutor for SshCommandExecutor {
         *exit
     }
 
-    fn open_shell_pty<'a>(&self, cols: u32, rows: u32, cwd: Option<&'a str>) -> ShellPtyFuture<'a> {
+    fn open_shell_pty<'a>(
+        &self,
+        cols: u32,
+        rows: u32,
+        cwd: Option<&'a str>,
+        program: &'a str,
+        args: &'a [String],
+    ) -> ShellPtyFuture<'a> {
         let pool = self.pool.clone();
         Box::pin(async move {
-            let command = crate::pty::shell_command(cwd);
+            let command = crate::pty::shell_command(program, args, cwd)?;
             let (tx, rx) = tokio::sync::oneshot::channel();
             let allocate_pool = pool.clone();
             // Connection allocation blocks (bounded retry budget), so it runs on

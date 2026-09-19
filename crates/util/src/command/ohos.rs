@@ -738,7 +738,9 @@ pub use cmd_client::ResizeHandle;
 
 /// Opens an interactive shell on the registered command backend - the OHOS
 /// the daemon or the QEMU guest daemon, whichever the launch layer selected.
-/// The shell starts in `cwd` when that directory exists on the backend.
+/// The shell runs `program` with `args` and starts in `cwd` when that directory
+/// exists on the backend; the caller's program and arguments travel unchanged,
+/// so the backend never substitutes a shell of its own.
 ///
 /// Returns `NotFound` when no backend is registered and `Unsupported` when the
 /// backend cannot serve a pty, so the terminal can fall back to a local shell
@@ -747,12 +749,16 @@ pub async fn open_remote_shell(
     cols: u32,
     rows: u32,
     cwd: Option<&str>,
+    program: &str,
+    args: &[String],
 ) -> io::Result<RemoteShell> {
-    log::info!("util::command::open_remote_shell: cols={cols} rows={rows} cwd={cwd:?}");
+    log::info!(
+        "util::command::open_remote_shell: cols={cols} rows={rows} cwd={cwd:?} program={program} args={args:?}"
+    );
     let executor = cmd_client::executor().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "no command backend registered")
     })?;
-    match executor.open_shell_pty(cols, rows, cwd).await {
+    match executor.open_shell_pty(cols, rows, cwd, program, args).await {
         Ok(shell) => {
             log::info!("util::command::open_remote_shell: interactive shell opened");
             Ok(shell)

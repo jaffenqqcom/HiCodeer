@@ -107,15 +107,19 @@ pub trait RemoteCommandExecutor: Send + Sync {
     fn try_exit(&self, session_id: u64) -> Option<Option<i32>>;
     fn wait_exit_async(&self, session_id: u64) -> ExitFuture<'_>;
 
-    /// Opens an interactive shell on the backend pty, starting in `cwd` when
-    /// that directory exists there. Backends without interactive-shell support
-    /// return `ErrorKind::Unsupported`, so the caller can fall back to a local
-    /// shell instead of failing the terminal.
+    /// Opens an interactive shell on the backend pty, running `program` with
+    /// `args` and starting in `cwd` when that directory exists there. The
+    /// program and arguments are the caller's: the backend runs exactly what it
+    /// is given and substitutes nothing. Backends without interactive-shell
+    /// support return `ErrorKind::Unsupported`, so the caller can fall back to a
+    /// local shell instead of failing the terminal.
     fn open_shell_pty<'a>(
         &self,
         _cols: u32,
         _rows: u32,
         _cwd: Option<&'a str>,
+        _program: &'a str,
+        _args: &'a [String],
     ) -> ShellPtyFuture<'a> {
         Box::pin(async {
             Err(io::Error::new(

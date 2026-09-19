@@ -515,13 +515,15 @@ impl RemoteCommandExecutor for WorkdirAwareExecutor {
         cols: u32,
         rows: u32,
         cwd: Option<&'a str>,
+        program: &'a str,
+        args: &'a [String],
     ) -> cmd_client::types::ShellPtyFuture<'a> {
         // The shell's directory must be guest-visible too: mount it before the
         // backend opens the pty, otherwise `cd` in the shell command fails.
         if let Some(cwd) = cwd {
             self.ensure_mounted(cwd);
         }
-        self.inner.open_shell_pty(cols, rows, cwd)
+        self.inner.open_shell_pty(cols, rows, cwd, program, args)
     }
 }
 
