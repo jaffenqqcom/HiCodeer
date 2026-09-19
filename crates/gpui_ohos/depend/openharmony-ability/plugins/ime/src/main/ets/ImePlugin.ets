@@ -41,10 +41,6 @@ const TITLE_BAR_HEIGHT_VP = 46;
 const CURSOR_TRIM_X_PX = 0;
 const CURSOR_TRIM_Y_PX = 0;
 
-// Logs every cursor computation while calibrating the candidate box. Turn this
-// off once the position is correct - `updateCursor` runs on every caret move.
-const DEBUG_CURSOR_POS = true;
-
 const TEXT_CONFIG: inputMethod.TextConfig = {
   inputAttribute: {
     textInputType: inputMethod.TextInputType.TEXT,
@@ -339,14 +335,6 @@ export class ImePlugin extends AsyncPluginBase {
     const titleBar = this.titleBarHeightPx();
     const left = this.lastCursor.x + winLeft + CURSOR_TRIM_X_PX;
     const top = this.lastCursor.y + winTop + titleBar + CURSOR_TRIM_Y_PX;
-    if (DEBUG_CURSOR_POS) {
-      console.info(
-        `ohos.ime: cursor fromRust=(${this.lastCursor.x},${this.lastCursor.y}) ` +
-          `win=(${winLeft},${winTop}) titleBar=${titleBar} ` +
-          `trim=(${CURSOR_TRIM_X_PX},${CURSOR_TRIM_Y_PX}) ` +
-          `-> screen=(${left},${top}) size=(${this.lastCursor.width},${this.lastCursor.height})`,
-      );
-    }
     return {
       left,
       top,

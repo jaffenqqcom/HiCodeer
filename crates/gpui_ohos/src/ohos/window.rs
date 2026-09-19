@@ -80,11 +80,16 @@ pub(crate) struct OhosWindow {
     active: Rc<Cell<bool>>,
     pinch_accumulator: Rc<Cell<f32>>,
     keyboard_visible: Rc<Cell<bool>>,
-    /// Whether the ArkTS IME session is actually bound. Tracked separately from
-    /// `keyboard_visible` (which only drives layout) so a failed attach — the
-    /// edit box had not taken focus yet — can be retried instead of being
-    /// permanently suppressed.
-    ime_attached: Rc<Cell<bool>>,
+    /// The IME-enabled state last pushed to ArkTS. Mirrors the `ime_enabled`
+    /// mirror behind `update_ime_enabled` in gpui_linux and gpui_windows: it
+    /// records only what this side last asked for, so the per-frame decision
+    /// compares against it and re-issues nothing while the decision stands.
+    ime_enabled: Rc<Cell<Option<bool>>>,
+    /// Whether an attach request is outstanding, i.e. a matching detach is owed.
+    /// It records only that this side asked -- never that ArkTS acknowledged,
+    /// because that acknowledgement means the session bound, not that the
+    /// keyboard came up -- so it can never suppress a later attach attempt.
+    ime_session_open: Rc<Cell<bool>>,
     /// Guards against overlapping attach attempts. ArkTS retries internally for
     /// about a second, so a concurrent second request adds nothing but load.
     ime_attach_in_flight: Rc<Cell<bool>>,
@@ -565,7 +570,8 @@ impl OhosWindow {
             active: Rc::new(Cell::new(true)),
             pinch_accumulator: Rc::new(Cell::new(0.0)),
             keyboard_visible: Rc::new(Cell::new(false)),
-            ime_attached: Rc::new(Cell::new(false)),
+            ime_enabled: Rc::new(Cell::new(None)),
+            ime_session_open: Rc::new(Cell::new(false)),
             ime_attach_in_flight: Rc::new(Cell::new(false)),
             last_ime_cursor_rect: RefCell::new(None),
             pending_touch_scroll: RefCell::new(None),
@@ -1015,46 +1021,75 @@ impl OhosWindow {
         self.begin_scroll_animation(position, modifiers, initial_velocity, friction);
     }
 
-    /// Binds the ArkTS IME session, retrying from Rust until it succeeds.
+    /// Decides whether an IME session should be bound and pushes that decision
+    /// to ArkTS only when it flips.
     ///
-    /// The first attempt typically runs while the edit box has not taken focus
-    /// yet, so `attachWithUIContext` rejects it. ArkTS retries internally and
-    /// reports the real outcome here, which lets the next focus or caret event
-    /// issue a fresh attempt instead of assuming success.
+    /// This is the single place that starts or ends a session. Both inputs to
+    /// the decision already track "is there somewhere to type": GPUI registers
+    /// an input handler exactly while an editable element holds focus, and
+    /// `active` follows the window. Every event that used to bind the IME by
+    /// hand -- startup, the surface taking focus, the window regaining focus,
+    /// a press -- only ever changed one of those two, so routing them through
+    /// here loses no case and removes the races between them.
+    ///
+    /// Comparing against the last pushed value is what keeps the per-frame
+    /// caller cheap and free of request storms. This mirrors the edge check in
+    /// `update_ime_enabled` in gpui_linux (Wayland) and gpui_windows.
+    ///
+    /// The text-input state is read as `input_handler.is_some()` rather than
+    /// through `query_accepts_text_input`: the caller runs inside the frame's
+    /// window update, and that query would re-enter the same update.
+    fn update_ime_enabled(&self) {
+        let wants_ime = self.active.get() && self.input_handler.borrow().is_some();
+        if self.ime_enabled.get() == Some(wants_ime) {
+            return;
+        }
+        self.ime_enabled.set(Some(wants_ime));
+        if wants_ime {
+            self.show_keyboard_if_needed();
+        } else {
+            self.hide_keyboard_if_needed();
+        }
+    }
+
+    /// Binds the ArkTS IME session.
+    ///
+    /// Called only from `update_ime_enabled`, i.e. at the moment the decision
+    /// to hold a session flips to true. No "already bound" note
+    /// is kept, because such a note could only record that a request had been
+    /// accepted -- not that the keyboard actually came up -- and a stale one
+    /// would suppress every later request. ArkTS binds idempotently and retries
+    /// internally, so repeating the request is safe.
     fn show_keyboard_if_needed(&self) {
-        if self.ime_attached.get() || self.ime_attach_in_flight.get() {
+        if self.ime_attach_in_flight.get() {
             return;
         }
         let Some(app) = self.app.borrow().clone() else {
             return;
         };
         self.ime_attach_in_flight.set(true);
-        let ime_attached = self.ime_attached.clone();
+        self.ime_session_open.set(true);
         let ime_attach_in_flight = self.ime_attach_in_flight.clone();
         let executor = self.foreground_executor.clone();
         executor
             .spawn(async move {
-                let attached = match app.ime() {
-                    Ok(client) => match client.attach().await {
-                        Ok(ack) => ack.accepted,
-                        Err(error) => {
+                match app.ime() {
+                    Ok(client) => {
+                        if let Err(error) = client.attach().await {
                             log::warn!("show_keyboard_if_needed: ime attach failed: {error}");
-                            false
                         }
-                    },
+                    }
                     Err(error) => {
                         log::warn!("show_keyboard_if_needed: ime client unavailable: {error}");
-                        false
                     }
-                };
-                ime_attached.set(attached);
+                }
                 ime_attach_in_flight.set(false);
             })
             .detach();
     }
 
     fn hide_keyboard_if_needed(&self) {
-        if !self.ime_attached.replace(false) {
+        if !self.ime_session_open.replace(false) {
             return;
         }
         if let Some(app) = self.app.borrow().as_ref() {
@@ -1462,9 +1497,6 @@ impl OhosWindow {
                     self.emit_resize_callback();
                 }
                 self.request_frame(true);
-                // The XComponent is the edit surface; attach the system IME so it
-                // can receive input once the surface gains focus.
-                self.show_keyboard_if_needed();
             }
             Event::WindowResize(ohos_size) => {
                 let scale = *self.scale.borrow();
@@ -1546,10 +1578,6 @@ impl OhosWindow {
                         app.enable_frame_callback();
                     }
                 }
-                // Re-attach the IME when the window regains focus (e.g. after the
-                // app was minimized and restored); the previous NDK path crashed
-                // here because its IME instance was dropped and never re-created.
-                self.show_keyboard_if_needed();
             }
             Event::LostFocus => {
                 // The key-up that ends auto-repeat is never delivered once another
@@ -1565,7 +1593,6 @@ impl OhosWindow {
                     cb(false);
                 }
                 self.callbacks.borrow_mut().active_status_change = callback;
-                self.hide_keyboard_if_needed();
                 if self.refresh_keyboard_overlap_device_px() {
                     self.emit_resize_callback();
                 }
@@ -2463,6 +2490,18 @@ impl OhosWindow {
     }
 
     fn dispatch_input(&self, input: PlatformInput) {
+        // A press on a surface that holds the input handler is the user asking
+        // to type. Pressing an already-focused element changes nothing that the
+        // per-frame decision can see -- the handler and the window state both
+        // stand -- so the wish is recorded here and picked up by the next
+        // frame's `update_ime_enabled`. Recorded only while the keyboard is
+        // down, since with it up there is nothing to re-request.
+        if matches!(&input, PlatformInput::MouseDown(_))
+            && self.input_handler.borrow().is_some()
+            && !self.keyboard_visible.get()
+        {
+            self.ime_enabled.set(None);
+        }
         let result = Self::dispatch_input_with_callbacks(&self.callbacks, input.clone());
 
         // X11-compatible fallback: if GPUI did not consume a KeyDown whose keystroke
@@ -2768,9 +2807,7 @@ impl PlatformWindow for OhosWindowHandle {
     }
 
     fn completed_frame(&self) {
-        if self.input_handler.borrow().is_none() {
-            self.with_window(|window| window.hide_keyboard_if_needed());
-        }
+        self.with_window(|window| window.update_ime_enabled());
         self.with_window(|window| window.completed_frame())
     }
 
@@ -3042,12 +3079,9 @@ impl PlatformWindow for OhosWindow {
 
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
         *self.last_ime_cursor_rect.borrow_mut() = Some(bounds);
-        // A caret position exists only while the edit box holds the focus, which
-        // makes this the earliest reliable moment to bind the IME. The attempt
-        // fired on surface creation runs well before focus hand-off completes
-        // and is rejected, so without this the keyboard stays dead until the
-        // window is minimized and restored.
-        self.show_keyboard_if_needed();
+        // Only the caret is reported here. Binding is decided once per frame by
+        // `update_ime_enabled`, so this path stays free of requests that would
+        // otherwise repeat on every caret movement.
         self.push_ime_cursor_rect(bounds);
     }
 
