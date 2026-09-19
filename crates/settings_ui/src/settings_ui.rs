@@ -865,8 +865,16 @@ fn open_settings_editor_in_tab(
         .update(cx, |_, window, cx| {
             let settings =
                 cx.new(|cx| SettingsWindow::new(Some(original_window.clone()), window, cx));
-            settings.update(cx, |settings_window, cx| {
-                callback(settings_window, window, cx);
+            // `SettingsWindow::new` only schedules tab initialization (see
+            // `initialize_as_tab`), and the callback reads what that
+            // initialization builds (`search_index` in particular), so it must run
+            // after it. Deferred effects are a FIFO queue and the initialization
+            // defer was registered first, so registering the callback here is
+            // enough to order it after initialization.
+            settings.update(cx, |_, cx| {
+                cx.defer_in(window, move |settings_window, window, cx| {
+                    callback(settings_window, window, cx);
+                });
             });
             settings
         })
