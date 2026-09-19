@@ -22,6 +22,10 @@ use crate::pool::SshSession;
 const TERM_TYPE: &str = "xterm-256color";
 /// Bytes read from the socketpair per relay iteration.
 const PTY_CHUNK: usize = 8192;
+/// Interactive shell the daemon pty ends up running: the payload built below
+/// execs it, replacing the shell that carries `-c`. The daemon runs outside the
+/// app sandbox, so a shell the sandbox itself may not exec is usable here.
+const INTERACTIVE_SHELL: &str = "/usr/bin/zsh";
 
 /// A live interactive shell session on a remote pty.
 pub struct RemotePty {
@@ -66,15 +70,15 @@ impl ResizeHandle {
 pub(crate) fn shell_command(cwd: Option<&str>) -> String {
     match cwd.filter(|dir| !dir.is_empty()) {
         Some(dir) => format!(
-            "cd {} 2>/dev/null; exec sh",
+            "cd {} 2>/dev/null; exec {INTERACTIVE_SHELL}",
             crate::command::sh_quote(dir)
         ),
-        None => "exec sh".to_string(),
+        None => format!("exec {INTERACTIVE_SHELL}"),
     }
 }
 
 /// Opens an interactive shell channel on `conn`: pty request, then `command`
-/// exec (the caller passes `exec sh`, optionally preceded by a `cd`). Both
+/// exec (the caller passes `exec /usr/bin/zsh`, optionally preceded by a `cd`). Both
 /// steps complete before this future resolves, so a backend that cannot serve
 /// a pty surfaces an error and the caller falls back to a local shell. The
 /// relay task then runs on the current tokio runtime until the channel closes.
