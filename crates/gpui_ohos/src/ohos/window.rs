@@ -1816,39 +1816,35 @@ impl OhosWindow {
                     _ => {}
                 }
 
-                let handler_ref = self.input_handler.clone();
-                let ime_event = ime_event.clone();
-                let executor = self.foreground_executor.clone();
+                // Deliver synchronously. The ArkTS IME callback already runs on the
+                // main thread (the bridge is `invokeNativeSync`), so re-queueing the
+                // text on the foreground executor only adds a main-thread task
+                // round-trip before the character reaches the input handler. The
+                // editing keys above (backspace/delete/enter) take the same
+                // synchronous route.
+                let mut handler_guard = self.input_handler.borrow_mut();
+                let Some(handler) = handler_guard.as_mut() else {
+                    return;
+                };
 
-                executor
-                    .spawn(async move {
-                        let mut handler_guard = handler_ref.borrow_mut();
-                        let Some(handler) = handler_guard.as_mut() else {
-                            return;
-                        };
-
-                        match ime_event {
-                            ImeEvent::TextInputEvent(data) => {
-                                handler.replace_text_in_range(None, &data.text);
-                                handler.unmark_text();
-                            }
-                            // Enter is handled synchronously in handle_input_event
-                            // (handle_ime_enter); never reached from the closure.
-                            ImeEvent::EnterEvent(_action) => {}
-                            ImeEvent::ImeStatusEvent(status) => {
-                                if matches!(status, openharmony_ability::ime::KeyboardStatus::Hide)
-                                {
-                                    handler.unmark_text();
-                                }
-                            }
-                            // Backspace/Delete are handled synchronously in
-                            // handle_input_event before this closure runs, so
-                            // they never reach here; the arm only makes the match
-                            // exhaustive.
-                            ImeEvent::BackspaceEvent(_) | ImeEvent::DeleteRightEvent(_) => {}
+                match ime_event {
+                    ImeEvent::TextInputEvent(data) => {
+                        handler.replace_text_in_range(None, &data.text);
+                        handler.unmark_text();
+                    }
+                    // Enter is handled synchronously above (handle_ime_enter);
+                    // never reached here.
+                    ImeEvent::EnterEvent(_action) => {}
+                    ImeEvent::ImeStatusEvent(status) => {
+                        if matches!(status, openharmony_ability::ime::KeyboardStatus::Hide) {
+                            handler.unmark_text();
                         }
-                    })
-                    .detach();
+                    }
+                    // Backspace/Delete are handled synchronously above before this
+                    // point, so they never reach here; the arm only makes the match
+                    // exhaustive.
+                    ImeEvent::BackspaceEvent(_) | ImeEvent::DeleteRightEvent(_) => {}
+                }
             }
             InputEvent::KeyEvent(key_event) => {
                 // Stateless key handling: modifiers and caps-lock are carried by each event.
