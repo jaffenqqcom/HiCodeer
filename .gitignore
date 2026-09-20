@@ -26,6 +26,7 @@
 .wrangler
 .perf-runs
 *.lock
+*.log
 /assets/*licenses.*
 /crates/collab/seed.json
 /crates/theme/schemas/theme.json
@@ -74,7 +75,6 @@ hap/entry/libs
 hap/entry/src/main/resources/resfile/*
 !hap/entry/src/main/resources/resfile/ca-bundle.crt
 build/
-Cargo.lock
 hap/cerfile/
 
 hap/entry/hnp/arm64-v8a/hicodeerd.hnp

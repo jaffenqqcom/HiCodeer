@@ -1,6 +1,6 @@
 ---
 name: hicodeer-codemap
-description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地图，记录程序启动流程、模块入口与跨运行时边界（NAPI / XComponent / 事件循环）、hicodeerd 守护进程自身的运行路径（双 SSH listener / 会话分发 / 子进程与进程组回收），以及 Zed 官方服务的出网总闸与各服务出网点（遥测 / 扩展市场 / 自动更新 / Cloud 账号 / Cloud LLM / Zed 编辑预测 / web search / 协作 RPC / MCP OAuth）。用于快速定位各模块的入口函数与触发方式。
+description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地图，记录程序启动流程、模块入口与跨运行时边界（NAPI / XComponent / 事件循环）、terminal 运行路径（面板 / 视图 / 网格元素 / pty / shell 后端与输入输出）、hicodeerd 守护进程自身的运行路径（双 SSH listener / 会话分发 / 子进程与进程组回收），以及 Zed 官方服务的出网总闸与各服务出网点（遥测 / 扩展市场 / 自动更新 / Cloud 账号 / Cloud LLM / Zed 编辑预测 / web search / 协作 RPC / MCP OAuth）。用于快速定位各模块的入口函数与触发方式。
 ---
 
 # hicodeer-codemap：HiCodeer 启动流程架构地图
@@ -267,7 +267,7 @@ IME 到 push_ime_cursor_rect()/refresh_ime_cursor() 在 crates/gpui_ohos/src/oho
 IME 到 onWindowStageEvent() 在 crates/gpui_ohos/depend/openharmony-ability/native_ability/src/main/ets/ability/NativeAbility.ets  [windowStage 注册；windowStageEvent 与 windowVisibilityChange 都由这里转发]
 IME 到 window_stage_event 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/lifecycle.rs  [ArkTS 送来的 event_type 原始整数映射为 Event：SHOWN(1)→Start、ACTIVE(2)→GainedFocus、INACTIVE(3)→LostFocus、HIDDEN(4)→Stop]
 ```
-实测时序（tablet，2026-09-15）：最小化 `INACTIVE`→`HIDDEN`；恢复 `SHOWN`→`ACTIVE`，且 `windowVisibilityChange(true)` 比 `SHOWN` 晚约 30ms、`ACTIVE` 再晚约 100ms。**只有 `ACTIVE`(GainedFocus) 处于「窗口已可见且已获焦」**，IME 重建必须挂在这里；挂在 `SHOWN` 会落在「不可见、未获焦」的空窗，`attachWithUIContext`/`showTextInput` 不抛异常但系统不建会话，此后 attach 全被 `ime_attached` 缓存短路（详见 `移植记录/bugfix/2026-09-15-ohos-ime-minimize-restore.md`）。
+实测时序（tablet）：最小化 `INACTIVE`→`HIDDEN`；恢复 `SHOWN`→`ACTIVE`，且 `windowVisibilityChange(true)` 比 `SHOWN` 晚约 30ms、`ACTIVE` 再晚约 100ms。**只有 `ACTIVE`(GainedFocus) 处于「窗口已可见且已获焦」**，窗口恢复后的 IME 会话只有在此时建立才不会失败；在 `SHOWN` 上发起 attach 会落在「不可见、未获焦」的空窗——`attachWithUIContext`/`showTextInput` 不抛异常、ack 也正常，但系统不建会话。
 
 跨运行时跳转：
 ```
@@ -733,6 +733,56 @@ AskPassSession socket 任务 在 crates/askpass/src/askpass.rs 到 [get_password
 
 > **提交身份**：`GitPanel::commit()` 的作者参数是 `None`，身份完全由 git 按 `$HOME/.gitconfig` 解析。app 的 `$HOME` 是用户在启动页挑的目录下的 `HiCodeer` 子目录（`hap/entry/src/main/ets/entryability/Setup.ets` + `crates/gpui_ohos/depend/launch-zed/src/launch_app.rs`），**不是**系统终端的 `~`，所以系统终端里配好的 git 身份不会被 app 内的 git 继承。报 `unable to auto-detect name` 说明 email 已生效、只缺 `user.name`。
 
+### Terminal 运行路径（面板 → 视图 → 元素 → pty → shell 后端）
+
+终端横跨三个 crate：`crates/terminal/`（pty + VT 解析 + 输入写入，无 UI）、`crates/terminal_view/`（面板 / 视图 / 网格元素，UI 层）、`crates/project/`（终端实例的创建与登记）。OHOS 上的关键分叉是 **pty 建在哪一侧**：探到命令后端（见下一节）时 pty 开在 daemon 侧、host 只做中继；探不到则回退沙箱内的本地 `/bin/sh`。
+
+模块入口：
+```
+终端视图 到 init() 在 crates/terminal_view/src/terminal_view.rs  [由 crates/zed/src/zed.rs:6163 的启动流程调用；内部先调 terminal_panel::init()]
+终端面板 到 init() 在 crates/terminal_view/src/terminal_panel.rs  [由 terminal_view::init() 调用；注册 Toggle / ToggleFocus / new_terminal / open_terminal 四个 action]
+终端面板 到 load() 在 crates/terminal_view/src/terminal_panel.rs  [由 workspace 加载 dock 面板时调用；先试反序列化，失败才 TerminalPanel::new()]
+终端面板 到 new_terminal() 在 crates/terminal_view/src/terminal_panel.rs  [用户操作：新建终端标签页]
+终端面板 到 open_terminal() 在 crates/terminal_view/src/terminal_panel.rs  [用户操作：打开终端面板]
+终端 到 create_terminal_task() 在 crates/project/src/terminals.rs  [由终端面板 / agent / 调试器调用；解析 cwd / env / shell 后建 TerminalBuilder]
+终端 到 TerminalBuilder::new() 在 crates/terminal/src/terminal.rs  [由 create_terminal_task() 调用；异步构造，OHOS 上在此探后端]
+终端 到 TerminalBuilder::subscribe() 在 crates/terminal/src/terminal.rs  [由 create_terminal_task() 在 cx.new() 内调用；起 pty 事件循环，返回 Terminal 实体]
+终端视图 到 TerminalView::new() 在 crates/terminal_view/src/terminal_view.rs  [由终端面板 / agent 面板 / 调试器调用；订阅 Terminal 事件并建 IME 状态]
+终端视图 到 TerminalElement::request_layout() 在 crates/terminal_view/src/terminal_element.rs  [GPUI 每帧布局时调用；终端网格的唯一渲染入口]
+```
+
+跨文件跳转：
+```
+create_terminal_task() 在 crates/project/src/terminals.rs 到 TerminalBuilder::new() 在 crates/terminal/src/terminal.rs
+TerminalBuilder::new() 在 crates/terminal/src/terminal.rs 到 probe() 在 crates/terminal/src/ohos_shell.rs  [仅 target_env=ohos；探命令后端能否供 pty，结果决定走 guest 还是本地]
+probe() 在 crates/terminal/src/ohos_shell.rs 到 open_remote_shell() 在 crates/util/src/command/ohos.rs  [探到后端时；交互 shell 的 pty 开在 daemon 侧]
+open_shell_pty() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/executor.rs 到 shell_command() 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/pty.rs  [拼出 daemon 侧要跑的 exec payload]
+TerminalBuilder::new() 在 crates/terminal/src/terminal.rs 到 open_pty() 在 crates/terminal/src/ohos_shell.rs  [guest 分支：建本地 pty 对 + 中继桥]
+open_pty() 在 crates/terminal/src/ohos_shell.rs 到 start_bridge() 在 crates/terminal/src/ohos_shell.rs  [起 INPUT_THREAD / OUTPUT_THREAD 两条中继线程]
+TerminalBuilder::new() 在 crates/terminal/src/terminal.rs 到 open_pty() 在 crates/terminal/src/alacritty.rs  [无后端时的本地回退；pty_options() 组装 shell 与 env]
+TerminalView 到 process_keystroke() 在 crates/terminal_view/src/terminal_view.rs 到 try_keystroke() 在 crates/terminal/src/terminal.rs  [keymap 命中的按键走这条]
+TerminalView 到 commit_text() 在 crates/terminal_view/src/terminal_view.rs 到 input() 在 crates/terminal/src/terminal.rs  [IME 上屏文本走这条]
+```
+
+跨运行时跳转：
+```
+pty IO 线程 到 [PtyEvent 经 futures mpsc] 到 TerminalBuilder::subscribe() 的事件循环 在 crates/terminal/src/terminal.rs  [后台线程 → GPUI 前台；4ms 合批，Wakeup 单独处理]
+Terminal 到 [Event::Wakeup / Event::Bell / Event::BlinkChanged] 到 subscribe_for_terminal_events() 在 crates/terminal_view/src/terminal_view.rs  [实体事件；TerminalView 据此 cx.notify() 重绘]
+TerminalView 到 [pty_tx.notify(bytes)] 到 spawn_event_loop() 起的 alacritty EventLoop 线程 在 crates/terminal/src/alacritty.rs  [GPUI 前台 → PTY 写线程]
+TerminalElement 到 [TerminalInputHandler 注册进 Window::handle_input()] 到 InputHandler 实现 在 crates/terminal_view/src/terminal_element.rs  [平台层把键盘与 IME 文本交给元素；:1630 构造、:1662 注册、:1799 实现]
+OHOS 键盘与 IME 到 [platform input event / IME 上屏] 到 dispatch_input() 在 crates/gpui_ohos/src/ohos/window.rs  [OHOS 平台入口；键盘走 GPUI 事件分发，IME 文本由 ArkTS 插件回调]
+OHOS 中继 到 [本地 pty slave ⇄ socketpair] 到 start_bridge() 的两条中继线程 在 crates/terminal/src/ohos_shell.rs  [读写各一条线程；终端界面看到的字节就是经它转发的远端数据]
+OHOS 中继 到 [cmd-client socketpair ⇄ SSH channel data] 到 open_shell_pty() 的中继任务 在 crates/gpui_ohos/depend/cmd-agent/cmd-client/src/pty.rs  [经 loopback SSH 打到 daemon 侧 pty]
+```
+
+补充要点（实现决策，非追踪细节）：
+- **pty 归谁由 probe 决定**：探到后端 → pty 开在 daemon 侧，host 侧那个本地 pty 的 child 只是**驻留进程**（`HOLD_SHELL` + FIFO，`crates/terminal/src/ohos_shell.rs:37` / `:62` / `:200`），从不读 slave；探不到 → 沙箱内起本地 `/bin/sh` 子进程。
+- **本地回退受沙箱限制**：`crates/terminal/src/ohos_shell.rs:3` 注明沙箱只允许 exec `/bin/sh`；`crates/terminal/src/terminal.rs:1134` 也把 `Shell::System` 固定成 `/bin/sh`，并绕开被 `load_login_shell_environment` 覆写成 `/bin/bash` 的 `SHELL` 变量（`crates/terminal/src/terminal.rs:1083`）。
+- **交互 shell 名不在 terminal 决定**：guest 分支下 `alacritty_shell` 被 `guest.local_shell_argv()` 覆盖（`crates/terminal/src/terminal.rs:1239`），用户设置里的 shell 会被丢弃；真正决定远端 shell 的是 cmd-agent 拼的 exec payload（`crates/gpui_ohos/depend/cmd-agent/cmd-client/src/pty.rs` 的 `shell_command()`，现为 `exec /usr/bin/zsh`）。属已知分层缺陷，见 `移植记录/bugfix/2026-09-19-ohos-terminal-shell-hardcoded-sh.md`。
+- **两条输入路径别混**：keymap 命中的按键走 `TerminalView::process_keystroke` → `Terminal::try_keystroke`；IME 上屏文本走 `TerminalInputHandler` → `TerminalView::commit_text`。两者最终都汇到 `Terminal::input`（`crates/terminal/src/terminal.rs:2112`）。
+- **两套事件别混**：`PtyEvent`（`crates/terminal/src/terminal.rs:764`，pty 线程 → GPUI）与 `Terminal::Event`（`crates/terminal/src/terminal.rs:673`，Terminal → TerminalView）是不同层的两个枚举。
+- **`TerminalView` 也服务非终端场景**：agent 面板、调试器、REPL 用 `new_display_only()` 的 display-only 终端（无 pty，`crates/terminal/src/terminal.rs:941`），渲染路径相同但不走 `probe`。
+
 ### 命令后端模块（cmd-agent：cmd-client + hicodeerd）
 
 设备沙箱禁 exec 外部程序，非本地 HNP 的命令统一经 `util::command` 投给设备上的守护进程 **hicodeerd**。它由系统以独立 uid 拉起、不随 HAP 覆盖安装重启（`install-local.sh` 结尾亦如此提示），app 内没有它的启动代码。两个 crate 同在 `crates/gpui_ohos/depend/cmd-agent/`：`cmd-client`（HiCodeer 进程内 host 侧，实现 `RemoteCommandExecutor`）与 `hicodeerd`（daemon 侧二进制）。传输是 **loopback SSH**（russh），不是裸 TCP；端口定义在 `cmd-client/src/protocol.rs`——`COMMAND_PORT=4022`（命令）、`MANAGEMENT_PORT=4023`（管理），命令口每次运行换动态密钥、管理口固定密钥。旧的 QEMU/OpenEuler 后端及其 9p 挂载已删除：`workspace::mount_opened_dirs()`（`crates/workspace/src/workspace.rs:10471`）现在是空实现，QEMU 代码只剩 `depend/qemu-mngt`，仅在 `qemu-agent` feature 下参与。
@@ -1060,4 +1110,4 @@ MCP OAuth 到 CIMD_URL 在 crates/context_server/src/oauth.rs 到 [GET https://z
 - **设置 tab 不能嵌套 lease 主窗口**：`open_current_settings_file` 的 OHOS 分支必须用 App 级 `cx.defer`（回调里 `with_window` 已持有主窗口 lease），若用 `cx.defer_in` 则回调内再 `original_window.update` 会**嵌套窗口 lease 返回 Err**（被 `.ok()` 吞掉 → json 打不开、设置 tab 关不掉、无任何报错）。关闭 tab 的 `close_item_by_id` 返回异步 `Task`，必须 `.detach()`（丢弃即取消，tab 不关闭）。排查设置 tab 打不开 json / 不关闭，先确认这两点。
 - **设置 tab 的 Esc 挂死**：`SettingsWindow` 键盘上下文 `key_context("SettingsWindow")` 的 `escape`/`ctrl-w` 在桌面 keymap 绑定 `workspace::CloseWindow`，OHOS 上设置是 tab 非独立窗口，触发 CloseWindow 会挂死。必须用 OHOS 专用 keymap（`assets/keymaps/default-ohos.json`，删 5 处 CloseWindow；`DEFAULT_KEYMAP_PATH` 在 `crates/settings/src/settings.rs` 加 `#[cfg(target_env = "ohos")]` 分支）。
 - **最小化报 DisplaySync DelFromPipeline CurrentContext is nullptr**：帧回调启停**不要**挂在 `GainedFocus`/`LostFocus` 上——该事件被真实焦点（`StageEventType::Active/Inactive`）和窗口可见性（`windowVisibilityChange` 路由）两个来源复用，最小化时可能重复触发 `disable_frame_callback` → 第二次 `UnregisterOnFrameCallback` 时 DisplaySync 管道 context 已删 → `DelFromPipeline CurrentContext is nullptr`。修复（2026-08-22）：`windowVisibilityChange` 走独立 `Event::VisibilityChanged(bool)`，帧回调启停移入 `window.rs` 的 VisibilityChanged 分支；`enable/disable_frame_callback` 用 `FRAME_CALLBACK_ENABLED`（AtomicBool）幂等（已注册/已注销直接 return，标志收进函数内部维护），`window.rs` 不再外部 set。详见 `移植记录/bugfix/2026-08-21-ohos-idle-cpu-on-demand-vsync.md` 的"后续修复"章节。
-- **IME 重建必须挂 `ACTIVE`，且 `attached` 缓存不能早退**：窗口恢复时事件序为 `SHOWN(1)` → `ACTIVE(2)`（后者约晚 100ms，`windowVisibilityChange(true)` 还要再晚约 30ms）。只有 `ACTIVE` 同时满足「已可见 + 已获焦」；在 `SHOWN` 上发起 attach 时 `attachWithUIContext`/`showTextInput` **不抛异常、ack 也正常**，但系统不建会话——静默失败。另外 ArkTS `ImePlugin.attached` 与 Rust `OhosWindow::ime_attached` 是**两层互相独立的缓存**：最小化时系统收走会话而标志仍为 true，任一层早退都会让真正的重绑被短路（表现为「恢复后输入法不激活，切走再切回才好」）。修复（2026-09-15）：`ImePlugin.attach()` 删除 `if (this.attached) return` 早退，改为每次真正重绑；回调重复注册由 `callbacksRegistered` 单独守卫。详见 `移植记录/bugfix/2026-09-15-ohos-ime-minimize-restore.md`。
+- **IME 会话的决策判据必须含窗口活跃状态，且不要缓存"是否已绑定"**：窗口恢复时事件序为 `SHOWN(1)` → `ACTIVE(2)`（后者约晚 100ms，`windowVisibilityChange(true)` 还要再晚约 30ms）。只有 `ACTIVE` 同时满足「已可见 + 已获焦」；在 `SHOWN` 上发起 attach 时 `attachWithUIContext`/`showTextInput` **不抛异常、ack 也正常**，但系统不建会话——静默失败。所以 attach/detach 的判据包含 `active`（由 `Event::GainedFocus`/`LostFocus` 维护）。当前实现（2026-09-19）：唯一决策点 `OhosWindow::update_ime_enabled()` 在 `crates/gpui_ohos/src/ohos/window.rs`，挂在每帧 `completed_frame`，判据 `active && input_handler.is_some()`，靠本地镜像 `ime_enabled` 做边沿检测——历史两轮（Rust `ime_attached`、ArkTS `ImePlugin.attached` 早退）都因缓存"已绑定"而在某个时序失同步卡死，不要再引入这类缓存。

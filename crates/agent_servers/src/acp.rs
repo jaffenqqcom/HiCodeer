@@ -4735,30 +4735,16 @@ fn handle_create_elicitation(
     }
 }
 
-/// One vendor notification that carries a sign-in URL.
-///
-/// ACP already has a standard way to hand a URL to the user: the URL mode of
-/// `elicitation/create`. Agents that predate it, or that bypass it, publish the
-/// URL through a vendor-namespaced notification instead, which this client has
-/// no typed handler for. Each row below maps one such notification onto the
-/// standard flow, so supporting another vendor is a data change, not a new code
-/// path.
+/// URL schemes recognised as sign-in links. Kept as named schemes rather than
+/// matching per agent, so any agent that ships its own sign-in URL is covered.
 #[cfg(target_env = "ohos")]
-struct ExtUrlRoute {
-    /// Notification method emitted by the agent.
-    method: &'static str,
-    /// Field holding the URL inside the notification params.
-    url_key: &'static str,
-    /// Message shown on the elicitation card.
-    message: &'static str,
-}
+const SIGN_IN_URL_SCHEMES: &[&str] = &["https://", "http://"];
 
+/// Message shown on the elicitation card for a URL discovered in an untyped
+/// notification. Deliberately vendor-neutral: the client cannot know which
+/// agent sent it or what the link does.
 #[cfg(target_env = "ohos")]
-const EXT_URL_ROUTES: &[ExtUrlRoute] = &[ExtUrlRoute {
-    method: "_codebuddy.ai/authUrl",
-    url_key: "authUrl",
-    message: "Sign in to continue. Your browser will open the agent's sign-in page.",
-}];
+const SIGN_IN_URL_MESSAGE: &str = "The agent requested to open a URL in your browser.";
 
 /// Request id used for URL elicitations the client injects on its own. It only
 /// participates in `cancel_request` matching, never in what the card renders.
@@ -4769,40 +4755,45 @@ const EXT_URL_REQUEST_ID: &str = "ext-notification";
 ///
 /// Agents are free to emit vendor-namespaced notifications, but the SDK silently
 /// drops anything it cannot route to a registered handler. This catch-all is
-/// registered last in the chain, so typed handlers always win; it turns the
-/// sign-in URLs described by [`EXT_URL_ROUTES`] into standard URL elicitations,
-/// so they reuse the same card, the same host presentation and the same browser
-/// hand-off as an agent that calls `elicitation/create` directly. The URL is
-/// logged as well, so sign-in can still be completed from another machine when
-/// no browser is available on this one.
+/// registered last in the chain, so typed handlers always win; for any unclaimed
+/// notification it scans the payload for the first HTTP(S) URL and turns that
+/// into a standard URL elicitation, so the link reuses the same card, the same
+/// host presentation and the same browser hand-off as an agent that calls
+/// `elicitation/create` directly. Scanning instead of matching a per-agent
+/// method/field name means a non-standard sign-in flow needs no registration
+/// here. The URL is logged as well, so sign-in can still be completed from
+/// another machine when no browser is available on this one.
 #[cfg(target_env = "ohos")]
 fn handle_ext_notification(
     notification: UntypedMessage,
     cx: &mut AsyncApp,
     ctx: &ClientContext,
 ) {
-    let Some(route) = EXT_URL_ROUTES
-        .iter()
-        .find(|route| route.method == notification.method.as_str())
-    else {
-        return;
-    };
-
-    let Some(url) = notification
-        .params
-        .get(route.url_key)
-        .and_then(|value| value.as_str())
-    else {
-        log::warn!(
-            "{} sent without a string `{}` field",
-            notification.method,
-            route.url_key
-        );
+    let Some(url) = find_http_url(&notification.params) else {
         return;
     };
 
     log::info!("external sign-in URL from {}: {url}", notification.method);
-    request_url_elicitation(url.to_string(), route.message, ctx, cx);
+    request_url_elicitation(url.to_string(), SIGN_IN_URL_MESSAGE, ctx, cx);
+}
+
+/// Depth-first search for the first string that looks like an HTTP(S) URL.
+///
+/// An unclaimed notification has no declared shape, so the URL can sit at any
+/// depth under any key (e.g. `{"authUrl": "..."}` or `{"data": {"url": "..."}}`).
+#[cfg(target_env = "ohos")]
+fn find_http_url(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(text) => SIGN_IN_URL_SCHEMES
+            .iter()
+            .any(|scheme| text.starts_with(*scheme))
+            .then(|| text.as_str()),
+        serde_json::Value::Array(items) => items.iter().find_map(|item| find_http_url(item)),
+        serde_json::Value::Object(entries) => {
+            entries.values().find_map(|value| find_http_url(value))
+        }
+        _ => None,
+    }
 }
 
 /// Normalises a vendor sign-in URL into the standard ACP URL-elicitation flow.
