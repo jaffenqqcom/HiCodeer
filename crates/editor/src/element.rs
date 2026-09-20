@@ -8067,10 +8067,21 @@ impl Element for EditorElement {
                         );
                         editor.set_visible_column_count(f64::from(editor_width / em_advance));
 
-                        if matches!(
+                        // The minimap is a read-only projection of its parent
+                        // editor, so it must not commit a wrap width here. On OHOS
+                        // an auto-height editor does commit one -- it derives its
+                        // height from it -- and asks for another layout pass when
+                        // that changes; every other platform keeps the upstream
+                        // behaviour of skipping the wrap width for it.
+                        #[cfg(target_env = "ohos")]
+                        let skip_wrap_width = matches!(editor.mode, EditorMode::Minimap { .. });
+                        #[cfg(not(target_env = "ohos"))]
+                        let skip_wrap_width = matches!(
                             editor.mode,
                             EditorMode::AutoHeight { .. } | EditorMode::Minimap { .. }
-                        ) {
+                        );
+
+                        if skip_wrap_width {
                             snapshot
                         } else {
                             let wrap_width = calculate_wrap_width(
@@ -8080,6 +8091,13 @@ impl Element for EditorElement {
                             );
 
                             if editor.set_wrap_width(wrap_width, cx) {
+                                // Auto-height editors derive their height from the
+                                // wrap width, so a change here needs another layout
+                                // pass before the element can resize.
+                                #[cfg(target_env = "ohos")]
+                                if matches!(editor.mode, EditorMode::AutoHeight { .. }) {
+                                    cx.notify();
+                                }
                                 editor.snapshot(window, cx)
                             } else {
                                 snapshot
