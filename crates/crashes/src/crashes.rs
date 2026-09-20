@@ -49,7 +49,21 @@ mod ohos {
         pub is_staff: Option<bool>,
     }
 
-    pub fn force_backtrace() {}
+    /// Install the panic hook used on OHOS.
+    ///
+    /// The desktop variant only raises `RUST_BACKTRACE`, leaving the default
+    /// hook to print to stderr, which is readable there. Neither stdout nor
+    /// stderr is visible from an OHOS app, so the message has to be routed
+    /// through `log::error!` instead, which zlog forwards to hilog.
+    pub fn force_backtrace() {
+        std::panic::set_hook(Box::new(|payload| {
+            panic_hook(
+                Arc::new(Client),
+                payload.payload_as_str().unwrap_or("<non-string panic payload>"),
+                payload.location(),
+            )
+        }));
+    }
 
     pub fn init<F, S, C, P>(
         crash_init: InitCrashHandler,
@@ -71,7 +85,11 @@ mod ohos {
 
     pub fn set_user_info(_crash_client: &Arc<Client>, _info: UserInfo) {}
 
-    pub fn panic_hook(_crash_client: Arc<Client>, _message: &str, _location: Option<&Location>) {
+    pub fn panic_hook(_crash_client: Arc<Client>, message: &str, location: Option<&Location>) {
+        let current_thread = std::thread::current();
+        let thread_name = current_thread.name().unwrap_or("<unnamed>");
+        let location = location.map_or_else(|| "<unknown>".to_owned(), |location| location.to_string());
+        log::error!("thread '{thread_name}' panicked at {location}:\n{message}");
         std::process::abort();
     }
 
