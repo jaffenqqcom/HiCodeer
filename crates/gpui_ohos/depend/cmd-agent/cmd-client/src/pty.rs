@@ -120,8 +120,6 @@ pub(crate) async fn open_shell_pty(
     let (resize_tx, mut resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, u32)>();
 
     tokio::spawn(async move {
-        let mut stdout_pump = stdout_pump;
-        let mut stdin_pump = stdin_pump;
         for s in [&stdout_pump, &stdin_pump] {
             if let Err(err) = s.set_nonblocking(true) {
                 log::error!("cmd-client pty: set nonblocking: {err}");

@@ -1,13 +1,21 @@
 //! SSH connection pool to the daemon's command listener.
 //!
 //! A single multi-threaded tokio runtime is shared by the pool thread and every
-//! command's pump task. A pool thread keeps at least MIN_IDLE ready connections
-//! (each an authenticated russh Handle); `allocate()` pops one with a bounded
-//! wait. When the daemon restarts, its dynamic keys change and the bootstrap
-//! swaps the config and clears the ready pool so in-flight commands fail
-//! explicitly and re-establish against the new keys.
+//! command's pump task. The pool thread keeps at least MIN_IDLE ready
+//! connections (each an authenticated russh Handle); `allocate()` pops one with
+//! a bounded wait. When the daemon restarts, its dynamic keys change and the
+//! bootstrap swaps the config and clears the ready pool so in-flight commands
+//! fail explicitly and re-establish against the new keys.
+//!
+//! The pool thread is started by the bootstrap the first time a config arrives,
+//! never before: until the management channel has answered once there is nothing
+//! the pool could connect to, so a daemon that was never reached costs neither a
+//! thread nor a connection attempt. It then stays up across daemon restarts, and
+//! is disabled -- config and ready connections dropped -- whenever the
+//! management channel is lost, since with the channel gone its keys are stale.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,26 +27,22 @@ use russh::keys::{PrivateKey, PrivateKeyWithHashAlg};
 const MIN_IDLE: usize = 5;
 /// Target maximum idle connections the pool thread fills to.
 const MAX_IDLE: usize = 16;
-/// How long a command waits when the pool has never connected to the daemon (first
-/// boot, the daemon not started yet). Bounded and short so a missing daemon never
-/// blocks the host application's startup: allocate pokes the bootstrap to connect right now and
-/// only waits this long before failing the command fast.
-const FIRST_CONNECT_BUDGET: Duration = Duration::from_millis(1000);
 /// How long a command waits when the pool was configured before (the daemon was
 /// reachable) but is momentarily empty (e.g. the daemon restarted). Fails fast
-/// rather than stalling the caller.
+/// rather than stalling the caller. A pool that was never configured is not
+/// waited on at all -- the pool thread is not even running then.
 const RECONNECT_BUDGET: Duration = Duration::from_secs(3);
-/// After a failed connect, subsequent commands fail immediately for this long
-/// (no point re-waiting for a daemon that is down); the background bootstrap
-/// keeps trying every BOOTSTRAP_INTERVAL and re-configures the pool the moment
-/// the daemon is back.
-const DOWN_COOLDOWN: Duration = Duration::from_secs(5);
 /// Timeout for establishing one SSH connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Poll interval of the pool thread while topping up.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Retry delay inside allocate() when the pool is momentarily empty.
 const ALLOCATE_RETRY: Duration = Duration::from_millis(20);
+/// Interval the pool thread waits after a failed connect. The bootstrap drops
+/// the config as soon as it notices the management channel is gone, which stops
+/// these attempts altogether; until it does, this keeps a daemon that has gone
+/// down from turning into a storm of connection attempts.
+const CONNECT_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Rejects any host key that does not match the expected one. The expected key
 /// is the daemon's command host key delivered in this run's `SshInfo`, so a
@@ -93,34 +97,29 @@ pub struct ConnConfig {
 pub struct Pool {
     runtime: Arc<tokio::runtime::Runtime>,
     ready: Mutex<VecDeque<SshSession>>,
-    config: Mutex<Option<ConnConfig>>,
-    /// Wakes the bootstrap loop immediately so an incoming command can trigger a
-    /// reconnect instead of waiting for the next 10s tick.
-    pub(crate) poke: tokio::sync::Notify,
-    /// When the last connect failure happened; gates the fail-fast cooldown.
-    down_since: Mutex<Option<Instant>>,
+    /// Held behind an `Arc` because readers are hot: the pool thread asks for it
+    /// once per poll and `allocate` once per wait step, and it carries two PEM
+    /// keys, so handing out owned copies would be a lot of needless allocation.
+    config: Mutex<Option<Arc<ConnConfig>>>,
+    /// Whether the pool thread has been started, so starting it is idempotent.
+    pool_started: AtomicBool,
 }
 
 impl Pool {
-    /// Starts the pool thread with a fresh multi-threaded tokio runtime.
+    /// Builds the pool and its tokio runtime. Starts neither a thread nor a
+    /// connection: the pool thread is created when the first config arrives (see
+    /// `update_config`), and until then there is nothing to connect to.
     pub fn new() -> std::io::Result<Arc<Self>> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(std::io::Error::other)?;
-        let pool = Arc::new(Self {
+        Ok(Arc::new(Self {
             runtime: Arc::new(runtime),
             ready: Mutex::new(VecDeque::new()),
             config: Mutex::new(None),
-            poke: tokio::sync::Notify::new(),
-            down_since: Mutex::new(None),
-        });
-        let worker = pool.clone();
-        std::thread::Builder::new()
-            .name("cmd-client-pool".to_string())
-            .spawn(move || pool_loop(worker))
-            .map_err(std::io::Error::other)?;
-        Ok(pool)
+            pool_started: AtomicBool::new(false),
+        }))
     }
 
     /// Exposes the shared runtime so executor pump tasks run on it.
@@ -129,8 +128,8 @@ impl Pool {
     }
 
     /// Swaps the connection config and clears the ready pool (the daemon restarted
-    /// with new dynamic keys).
-    pub fn update_config(&self, config: ConnConfig) {
+    /// with new dynamic keys), then makes sure the pool thread is running.
+    pub fn update_config(self: &Arc<Self>, config: ConnConfig) {
         log::info!(
             "cmd-client pool: updating config to {}:{} and clearing ready pool",
             config.host,
@@ -143,41 +142,63 @@ impl Pool {
         *self
             .config
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = Some(config);
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(Arc::new(config));
+        self.start_pool_loop();
+    }
+
+    /// Disables the pool because the management channel is gone: the command
+    /// listener's keys could only be stale, so keeping them would leave the pool
+    /// reconnecting with credentials the daemon no longer accepts, and would keep
+    /// newly issued commands waiting for a connection that cannot be made.
+    /// Returns whether a config was actually dropped, so a caller retrying in a
+    /// loop can report the transition once rather than once per attempt.
+    pub fn clear_config(&self) -> bool {
+        let had_config = self
+            .config
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+            .is_some();
+        self.ready
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+        had_config
+    }
+
+    /// Starts the pool thread, once. Called when a config first arrives, so a
+    /// daemon that was never reached costs no thread and no connect attempt.
+    fn start_pool_loop(self: &Arc<Self>) {
+        if self.pool_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let worker = Arc::clone(self);
+        if let Err(err) = std::thread::Builder::new()
+            .name("cmd-client-pool".to_string())
+            .spawn(move || pool_loop(worker))
+        {
+            log::error!("cmd-client pool: start pool thread: {err}");
+            self.pool_started.store(false, Ordering::Release);
+        }
     }
 
     /// Current connection config, if the bootstrap has configured the pool yet.
-    pub fn config(&self) -> Option<ConnConfig> {
+    /// Cloning it is a refcount bump (see the `config` field).
+    pub fn config(&self) -> Option<Arc<ConnConfig>> {
         self.config
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
     }
 
-    /// Pops one ready connection. Never blocks the host application for long: if the daemon has
-    /// not been reached yet (config is None) or a recent connect failed, fail
-    /// the command fast instead of stalling the caller. The bootstrap loop
-    /// keeps reconnecting in the background (every BOOTSTRAP_INTERVAL, or
-    /// immediately when poked here), so a command issued right after the daemon
-    /// comes up triggers an on-demand reconnect.
+    /// Pops one ready connection. Never blocks the host application for long: it
+    /// fails at once when there is no config -- the management channel was never
+    /// established, so the pool thread is not running and there is nothing to
+    /// wait for -- and after RECONNECT_BUDGET when the pool is configured but
+    /// momentarily empty. Losing the management channel drops the config, which
+    /// fails whoever is waiting here too.
     pub fn allocate(&self) -> std::io::Result<SshSession> {
-        let configured = self.config().is_some();
-        let now = Instant::now();
-        let cooling_down = !configured
-            && self
-                .down_since
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .map(|t| now.duration_since(t) < DOWN_COOLDOWN)
-                .unwrap_or(false);
-        let budget = if cooling_down {
-            Duration::ZERO
-        } else if configured {
-            RECONNECT_BUDGET
-        } else {
-            FIRST_CONNECT_BUDGET
-        };
-        let deadline = now + budget;
+        let deadline = Instant::now() + RECONNECT_BUDGET;
         loop {
             if let Some(session) = self
                 .ready
@@ -185,63 +206,89 @@ impl Pool {
                 .unwrap_or_else(|poison| poison.into_inner())
                 .pop_front()
             {
+                // A connection can die while it sits in the pool: the daemon was
+                // killed or restarted, or the loopback connection dropped. The
+                // pool may not have noticed yet, and handing this one out would
+                // only move the failure to whatever opens the first channel on
+                // it. Drop it and keep looking instead -- the pool either has
+                // another live connection or the wait below covers a refill.
+                if session.is_closed() {
+                    log::debug!("cmd-client pool: discarding a closed connection");
+                    continue;
+                }
                 return Ok(session);
             }
+            if self.config().is_none() {
+                let err = "hicodeerd not connected yet (start hicodeerd on the command line terminal of system。请先在系统命令行终端运行hicodeerd程序)";
+                log::warn!("cmd-client pool: allocate failed fast: no management channel");
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, err));
+            }
             if Instant::now() >= deadline {
-                if !self.config().is_some() {
-                    *self
-                        .down_since
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()) = Some(Instant::now());
-                }
-                let err = if configured {
-                    "hicodeerd connection unavailable"
-                } else {
-                    "hicodeerd not connected yet (start hicodeerd on the command line terminal of system。请先在系统命令行终端运行hicodeerd程序)"
-                };
+                let err = "hicodeerd connection unavailable";
                 log::warn!("cmd-client pool: allocate failed fast: {err}");
                 return Err(std::io::Error::new(std::io::ErrorKind::NotFound, err));
             }
-            // Ask the bootstrap to reconnect right now (on-demand), then poll.
-            self.poke.notify_one();
             std::thread::sleep(ALLOCATE_RETRY);
         }
     }
 }
 
 /// The pool thread: keeps the ready pool topped up to MAX_IDLE.
+///
+/// Only ever started once a config exists (see `Pool::start_pool_loop`), and made
+/// idle again by `clear_config` as soon as the management channel is lost, so it
+/// connects only to a daemon the bootstrap has just heard from.
 fn pool_loop(pool: Arc<Pool>) {
+    let mut reported_failure = false;
     loop {
-        let config = pool
-            .config
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone();
-        if let Some(config) = config {
-            let idle = pool
-                .ready
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .len();
-            if idle < MIN_IDLE {
-                let missing = MAX_IDLE - idle;
-                for _ in 0..missing {
-                    match pool.runtime.block_on(connect(&config)) {
-                        Ok(session) => pool
-                            .ready
-                            .lock()
-                            .unwrap_or_else(|poison| poison.into_inner())
-                            .push_back(session),
-                        Err(err) => {
-                            log::warn!("cmd-client pool: connect failed: {err}");
-                            break;
-                        }
-                    }
+        // No config means there is nothing to connect to -- the management
+        // channel is gone or has not answered yet. That is not a recovery, so
+        // reported_failure is left alone; and it is not a failure either, so it
+        // does not back off, which would delay a daemon that comes up right
+        // after this point by the whole backoff.
+        let Some(config) = pool.config() else {
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
+        };
+        match top_up(&pool, &config) {
+            Ok(()) => {
+                if reported_failure {
+                    reported_failure = false;
+                    log::info!("cmd-client pool: connections restored");
                 }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(err) => {
+                // Once per outage: a retry loop that logs every attempt is what
+                // made this a log storm before.
+                if !reported_failure {
+                    reported_failure = true;
+                    log::warn!("cmd-client pool: connect failed: {err}");
+                }
+                std::thread::sleep(CONNECT_BACKOFF);
             }
         }
-        std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Fills the ready pool up to MAX_IDLE, reporting the first failed connect.
+fn top_up(pool: &Arc<Pool>, config: &ConnConfig) -> Result<(), String> {
+    let idle = pool
+        .ready
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .len();
+    if idle >= MIN_IDLE {
+        return Ok(());
+    }
+    for _ in idle..MAX_IDLE {
+        let session = pool.runtime.block_on(connect(config))?;
+        pool.ready
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push_back(session);
+    }
+    Ok(())
 }
 
 /// Keepalive interval for pooled connections: the server is configured
@@ -283,13 +330,19 @@ async fn connect(config: &ConnConfig) -> Result<SshSession, String> {
 
     let key = PrivateKey::from_openssh(&config.private_key_pem)
         .map_err(|err| format!("parse client private key: {err}"))?;
-    let auth = session
-        .authenticate_publickey(
+    // Bounded like the connect above: `client::connect` only covers the TCP
+    // connection and key exchange, so a daemon that accepts the connection and
+    // then stops answering would otherwise park this call for good.
+    let auth = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        session.authenticate_publickey(
             config.client_id.as_str(),
             PrivateKeyWithHashAlg::new(Arc::new(key), None),
-        )
-        .await
-        .map_err(|err| format!("publickey auth: {err}"))?;
+        ),
+    )
+    .await
+    .map_err(|_| format!("publickey auth to {}:{} timed out", config.host, config.port))?
+    .map_err(|err| format!("publickey auth: {err}"))?;
     if !auth.success() {
         return Err("publickey auth rejected".to_string());
     }

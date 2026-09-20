@@ -31,8 +31,17 @@ use crate::endpoint::CommandEndpoint;
 use crate::pool::{ConnConfig, Pool, SshSession, VerifyHandler};
 use crate::protocol::{bootstrap_command, SshInfo};
 
-/// Delay between bootstrap re-fetches while the daemon is up (config unchanged).
-const BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(10);
+/// Delay between bootstrap re-fetches before a config has ever been obtained:
+/// short, so a daemon started after this process is picked up quickly and the
+/// pool thread starts as soon as it can.
+const BOOTSTRAP_PROBE_INTERVAL: Duration = Duration::from_secs(1);
+/// Delay between bootstrap re-fetches once a config exists. Each round is a real
+/// request over the held connection -- a fresh channel running
+/// `BOOTSTRAP_COMMAND` -- so this is not an SSH keepalive and does not protect
+/// the connection. What it bounds is how long the pool can go on using command
+/// keys the daemon has already replaced by restarting, which is why it sits well
+/// below what a mere refresh would need.
+const BOOTSTRAP_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 /// Timeout for one management connection / bootstrap round trip.
 const MGMT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound on the SshInfo payload, far larger than any serialized keys JSON.
@@ -57,21 +66,28 @@ pub fn start(
         }
     };
     rt.block_on(async move {
-        // Held open for the life of this loop (see the module header). Only a
-        // failure drops it, and the round after that opens a new one.
+        // Held open for the life of this loop (see the module header), and never
+        // let go before a replacement is up: a failed round stands a new
+        // connection up first and only then releases this one, so the daemon is
+        // never left without a connection vouching for this instance.
         let mut session: Option<SshSession> = None;
-        // Fetch immediately at startup, then wait for either the periodic tick
-        // or an on-demand poke (a command arrived while the pool had no ready
-        // connection) before fetching again. This keeps the background retry at
-        // BOOTSTRAP_INTERVAL while letting a command trigger an instant
-        // reconnect, without ever blocking a host-application calling thread.
+        // Whether the current outage has already been reported. Without this the
+        // retry loop would log a line per attempt, forever.
+        let mut reported_failure = false;
+        // Fetch immediately at startup, then wait one interval before fetching
+        // again: short while the daemon has never answered, so one started after
+        // this process is picked up quickly, and long once it has, which still
+        // bounds how long the pool can go on using keys a restart has already
+        // replaced. Never blocks a host-application thread.
         let mut fetch_now = true;
         loop {
             if !fetch_now {
-                tokio::select! {
-                    _ = pool.poke.notified() => {}
-                    _ = tokio::time::sleep(BOOTSTRAP_INTERVAL) => {}
-                }
+                let interval = if pool.config().is_some() {
+                    BOOTSTRAP_HEARTBEAT_INTERVAL
+                } else {
+                    BOOTSTRAP_PROBE_INTERVAL
+                };
+                tokio::time::sleep(interval).await;
             }
             fetch_now = false;
             match fetch_ssh_info(
@@ -84,6 +100,7 @@ pub fn start(
             .await
             {
                 Ok(info) => {
+                    reported_failure = false;
                     // The command port is fixed by the endpoint (host-side
                     // hostfwd rule in QEMU mode); only key changes matter.
                     let changed = match pool.config() {
@@ -108,15 +125,88 @@ pub fn start(
                         });
                     }
                 }
-                Err(err) => {
-                    log::warn!("cmd-client bootstrap: fetch failed: {err}");
-                    // Whatever went wrong, this connection cannot be trusted
-                    // any more: drop it so the next round starts a new one.
-                    session = None;
+                Err(FetchError::Connection(err)) => {
+                    // Disable the pool: its config and its ready connections
+                    // both come from this channel, so with the channel gone they
+                    // can only be stale.
+                    let pool_disabled = pool.clear_config();
+                    if pool_disabled {
+                        reported_failure = true;
+                        log::warn!("cmd-client bootstrap: management channel lost, pool disabled: {err}");
+                    } else if reported_failure {
+                        log::debug!("cmd-client bootstrap: fetch failed: {err}");
+                    } else {
+                        reported_failure = true;
+                        log::warn!("cmd-client bootstrap: fetch failed: {err}");
+                    }
+                    // Replace the connection that round could not use, but stand
+                    // the new one up first. The daemon reads a management
+                    // connection ending as this instance being gone and takes its
+                    // process trees down (see `hicodeerd::peers`), so closing
+                    // this one before another is open would retire the trees of a
+                    // client that is in fact still running. It counts the
+                    // connections themselves, so the overlap below is what keeps
+                    // the instance alive across the swap. Only worth doing when
+                    // there is a connection to replace: without one the daemon
+                    // holds nothing of ours to retire, and the round at the top of
+                    // the loop establishes a connection on its own.
+                    if session.is_some() {
+                        match connect_management(
+                            &endpoint,
+                            &mgmt_client_priv_pem,
+                            &mgmt_host_pub_pem,
+                            &client_id,
+                        )
+                        .await
+                        {
+                            Ok(fresh) => {
+                                // The old connection is dropped by this
+                                // assignment, and only now that the reply above
+                                // has already put the new one on the daemon's
+                                // record. The connection established itself to the
+                                // log on the way here.
+                                session = Some(fresh);
+                            }
+                            Err(reconnect_err) => {
+                                // Keep the old connection rather than dropping
+                                // it: closing it here would be the very
+                                // zero-connection window this exists to avoid,
+                                // and if it is genuinely dead the round above will
+                                // report that again on the next pass, which also
+                                // retries this.
+                                log::debug!("cmd-client bootstrap: management reconnect failed: {reconnect_err}");
+                            }
+                        }
+                    }
+                }
+                Err(FetchError::Protocol(err)) => {
+                    // The channel itself is fine, so the keys it last handed
+                    // over stand and the pool keeps working: only this round's
+                    // reply was unusable. Tearing the pool down over it would
+                    // drop healthy connections the daemon never invalidated.
+                    if reported_failure {
+                        log::debug!("cmd-client bootstrap: unusable management reply: {err}");
+                    } else {
+                        reported_failure = true;
+                        log::warn!("cmd-client bootstrap: unusable management reply, pool kept: {err}");
+                    }
                 }
             }
         }
     });
+}
+
+/// Why one bootstrap round failed.
+///
+/// The distinction matters because the pool is torn down on failure: only a
+/// `Connection` failure says the management channel is unusable. A `Protocol`
+/// failure leaves the channel intact, so the keys it last handed over still
+/// stand and the pool must be left alone.
+enum FetchError {
+    /// The management connection could not be established, or has gone bad.
+    Connection(String),
+    /// The connection held, but the daemon's reply could not be used.
+    Protocol(String),
 }
 
 /// One bootstrap round trip over the held management connection, opening that
@@ -127,21 +217,27 @@ async fn fetch_ssh_info(
     mgmt_client_priv_pem: &str,
     mgmt_host_pub_pem: &str,
     client_id: &str,
-) -> Result<SshInfo, String> {
+) -> Result<SshInfo, FetchError> {
     if session.is_none() {
         *session = Some(
             connect_management(endpoint, mgmt_client_priv_pem, mgmt_host_pub_pem, client_id)
-                .await?,
+                .await
+                .map_err(FetchError::Connection)?,
         );
     }
     let Some(connection) = session.as_ref() else {
-        return Err("management connection missing".to_string());
+        return Err(FetchError::Connection(
+            "management connection missing".to_string(),
+        ));
     };
 
-    let mut channel = connection
-        .channel_open_session()
+    // Bounded like every other step here: a daemon that accepts the connection
+    // but never answers would otherwise hang this loop for good, and take with
+    // it any chance of recovering once the daemon does come back.
+    let mut channel = tokio::time::timeout(MGMT_TIMEOUT, connection.channel_open_session())
         .await
-        .map_err(|err| format!("open management channel: {err}"))?;
+        .map_err(|_| FetchError::Connection("open management channel timed out".to_string()))?
+        .map_err(|err| FetchError::Connection(format!("open management channel: {err}")))?;
     // Tell the daemon which directory this side works in, so the programs it
     // spawns land their files in the same place this side already uses. Read
     // per round trip rather than once: the variable is set on the host
@@ -149,10 +245,10 @@ async fn fetch_ssh_info(
     // that raced ahead of it simply arrives on the next tick.
     let data_root = std::env::var("HOME").ok();
     let request = bootstrap_command(data_root.as_deref());
-    channel
-        .exec(true, request.as_str())
+    tokio::time::timeout(MGMT_TIMEOUT, channel.exec(true, request.as_str()))
         .await
-        .map_err(|err| format!("exec bootstrap: {err}"))?;
+        .map_err(|_| FetchError::Connection("exec bootstrap timed out".to_string()))?
+        .map_err(|err| FetchError::Connection(format!("exec bootstrap: {err}")))?;
 
     let mut payload = Vec::new();
     loop {
@@ -160,15 +256,20 @@ async fn fetch_ssh_info(
             Ok(Some(russh::ChannelMsg::Data { data })) => {
                 payload.extend_from_slice(&data);
                 if payload.len() > MAX_SSH_INFO_BYTES {
-                    return Err("SshInfo too large".to_string());
+                    return Err(FetchError::Protocol("SshInfo too large".to_string()));
                 }
             }
             Ok(Some(russh::ChannelMsg::Close)) | Ok(None) => break,
             Ok(Some(_)) => continue,
-            Err(_) => return Err("management channel timed out".to_string()),
+            Err(_) => {
+                return Err(FetchError::Connection(
+                    "management channel timed out".to_string(),
+                ))
+            }
         }
     }
-    serde_json::from_slice(&payload).map_err(|err| format!("parse SshInfo: {err}"))
+    serde_json::from_slice(&payload)
+        .map_err(|err| FetchError::Protocol(format!("parse SshInfo: {err}")))
 }
 
 /// Opens and authenticates one management connection.
@@ -209,10 +310,19 @@ async fn connect_management(
 
     let key = PrivateKey::from_openssh(mgmt_client_priv_pem)
         .map_err(|err| format!("parse management client key: {err}"))?;
-    let auth = connection
-        .authenticate_publickey(client_id, PrivateKeyWithHashAlg::new(Arc::new(key), None))
-        .await
-        .map_err(|err| format!("management publickey auth: {err}"))?;
+    // Bounded like the connect above: a daemon that accepts the TCP connection
+    // and then stops answering would otherwise park this call for good, and with
+    // it the only loop that can notice the daemon coming back.
+    let auth = tokio::time::timeout(
+        MGMT_TIMEOUT,
+        connection.authenticate_publickey(
+            client_id,
+            PrivateKeyWithHashAlg::new(Arc::new(key), None),
+        ),
+    )
+    .await
+    .map_err(|_| "management publickey auth timed out".to_string())?
+    .map_err(|err| format!("management publickey auth: {err}"))?;
     if !auth.success() {
         return Err("management publickey auth rejected".to_string());
     }
