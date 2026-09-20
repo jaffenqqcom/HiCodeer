@@ -197,7 +197,7 @@ impl Pool {
                 let err = if configured {
                     "hicodeerd connection unavailable"
                 } else {
-                    "hicodeerd not connected yet (start hicodeerd on the device)"
+                    "hicodeerd not connected yet (start hicodeerd on the command line terminal of system。请先在系统命令行终端运行hicodeerd程序)"
                 };
                 log::warn!("cmd-client pool: allocate failed fast: {err}");
                 return Err(std::io::Error::new(std::io::ErrorKind::NotFound, err));
