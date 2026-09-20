@@ -1,6 +1,6 @@
 ---
 name: hicodeer-codemap
-description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地图，记录程序启动流程、模块入口与跨运行时边界（NAPI / XComponent / 事件循环）、terminal 运行路径（面板 / 视图 / 网格元素 / pty / shell 后端与输入输出）、hicodeerd 守护进程自身的运行路径（双 SSH listener / 会话分发 / 子进程与进程组回收），以及 Zed 官方服务的出网总闸与各服务出网点（遥测 / 扩展市场 / 自动更新 / Cloud 账号 / Cloud LLM / Zed 编辑预测 / web search / 协作 RPC / MCP OAuth）。用于快速定位各模块的入口函数与触发方式。
+description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地图，记录程序启动流程、模块入口与跨运行时边界（NAPI / XComponent / 事件循环）、terminal 运行路径（面板 / 视图 / 网格元素 / pty / shell 后端与输入输出）、hicodeerd 守护进程自身的运行路径（双 SSH listener / 会话分发 / 子进程与进程组回收）、GPUI 平台后端接口清单（13 个平台 trait 的定义位置 → OHOS 实现位置与缺口口径）与 profiler 任务耗时采样链路（dispatcher 三处上报 → 全局按线程存储 → hang_detection / task_traces / miniprofiler 消费方），以及 Zed 官方服务的出网总闸与各服务出网点（遥测 / 扩展市场 / 自动更新 / Cloud 账号 / Cloud LLM / Zed 编辑预测 / web search / 协作 RPC / MCP OAuth）。用于快速定位各模块的入口函数与触发方式。
 ---
 
 # hicodeer-codemap：HiCodeer 启动流程架构地图
@@ -380,17 +380,67 @@ OhosWindow::handle_event() 的 WindowResize 分支 到 WgpuRenderer::update_draw
 ### 调度器与执行器模块
 
 ```
-调度 到 OhosDispatcher::new() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 OhosPlatform::new() 调用；创建主线程优先级队列 + TSFN waker（无独立定时器线程，延迟任务走 FFRT，见定时器模块）]
+调度 到 OhosDispatcher::new() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 OhosPlatform::new() 调用；创建主线程优先级队列 + 驻留 worker pool + TSFN waker（无独立定时器线程，延迟任务走 FFRT，见定时器模块）]
 调度 到 set_waker() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 OhosPlatform::set_app() 调用；注册 OpenHarmonyWaker 唤醒主线程]
-调度 到 dispatch() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 GPUI 后台任务调用；每个任务 std::thread::spawn 一个新线程执行（不经主线程，与 Linux 的 Worker 线程池不同）]
-调度 到 dispatch_on_main_thread() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 GPUI 主线程任务调用；进 PriorityQueueSender 后 waker.wake()，由 run_loop 消费（handle_ohos_event 的 UserEvent 分支跑 run_foreground_tasks）]
-调度 到 execute_runnable() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 FFRT 定时回调 / run_loop 消费任务时调用；runnable.run() 执行 GPUI 任务]
+调度 到 dispatch() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 GPUI 后台任务调用；按 High/Medium/Low 档位交给驻留 worker pool 执行，不经主线程]
+调度 到 dispatch_on_main_thread() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由要求在主线程执行的 GPUI 任务调用；进 PriorityQueueSender 后 waker.wake()，由 run_loop 消费]
+调度 到 run_foreground_tasks() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 handle_ohos_event 的 UserEvent 分支调用；从 main_receiver 取出排队的 foreground 任务逐条执行]
+调度 到 execute_runnable() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 run_foreground_tasks() 在主线程调用；runnable.run() 执行 GPUI foreground 任务]
+调度 到 WorkerPool 在 crates/gpui_ohos/depend/openharmony-ability/crates/worker-pool/src/lib.rs  [由 OhosDispatcher::new() 创建：线程名前缀 gpui-ohos-bg（每 worker 名为 {prefix}-{index}），worker 数 = available_parallelism().clamp(1,4)（查询失败回退 1）；worker 空闲时阻塞在 condvar 上，不空转]
 ```
 
 跨运行时跳转：
 ```
 OhosDispatcher::dispatch_on_main_thread() 到 [main_sender + OpenHarmonyWaker::wake] 到 OpenHarmonyApp run_loop 收 UserEvent  [入队后唤醒主线程；wake 每次实时读全局 WAKER（见常见坑 WAKER 时序）]
+OhosDispatcher::dispatch() 到 [worker pool 三档优先级加权抽签（High 60 / Medium 30 / Low 10）] 到 gpui-ohos-bg-N worker 线程  [后台任务在驻留 worker 线程执行。Priority::RealtimeAudio 正常由 spawn_realtime 分流不会走 dispatch，若真到达则用独立 thread::spawn 兜底]
+OhosDispatcher::dispatch_after() 到 [ffrt_timer_start] 到 FFRT worker 线程  [见定时器模块；FFRT 不可用时 inline 执行 callback]
 ```
+
+注（2026-09-20 修正）：本节此前写「`dispatch` 每个任务 `std::thread::spawn` 一个新线程执行（不经主线程，与 Linux 的 Worker 线程池不同）」，已过期——现为驻留 worker pool，代码注释自述这是替换 per-task spawn（`crates/gpui_ohos/src/ohos/dispatcher.rs:43-44`）。`execute_runnable` 此前记为「由 FFRT 定时回调 / run_loop 消费任务时调用」，实际只由 `run_foreground_tasks()` 在 `crates/gpui_ohos/src/ohos/platform.rs` 调用（FFRT 回调走的是 `dispatch_after` 自己的闭包，不经 `execute_runnable`）。
+
+### GPUI 平台后端接口（trait 定义 → OHOS 实现位置）
+
+GPUI 在 `crates/gpui/src` 下共 54 个 `pub trait`，其中只有 13 个是需要平台 crate 实现的平台后端接口；其余（`Action`、`Element`、`Render`、`Global`、`View`、`Focusable` 等）是框架/应用层，与平台无关。
+
+```
+平台接口 到 Platform 在 crates/gpui/src/platform.rs:125 到 OhosPlatform 在 crates/gpui_ohos/src/ohos/platform.rs  [平台总入口：窗口 / 剪贴板 / 凭据 / 菜单 / 光标 / 通知等]
+平台接口 到 PlatformWindow 在 crates/gpui/src/platform.rs:804 到 OhosWindowHandle / OhosWindow 在 crates/gpui_ohos/src/ohos/window.rs  [supertrait 是 raw-window-handle 的 HasWindowHandle + HasDisplayHandle，OHOS 亦已实现]
+平台接口 到 PlatformDispatcher 在 crates/gpui/src/platform.rs:1013 到 OhosDispatcher 在 crates/gpui_ohos/src/ohos/dispatcher.rs
+平台接口 到 PlatformDisplay 在 crates/gpui/src/platform.rs:332 到 OhosDisplay 在 crates/gpui_ohos/src/ohos/display.rs
+平台接口 到 PlatformTextSystem 在 crates/gpui/src/platform.rs:1056 到 OhosTextSystem 在 crates/gpui_ohos/src/ohos/text_system.rs
+平台接口 到 PlatformAtlas 在 crates/gpui/src/platform.rs:1308 到 crates/gpui_ohos/src/ohos/wgpu_atlas.rs
+平台接口 到 PlatformKeyboardLayout / PlatformKeyboardMapper 在 crates/gpui/src/platform/keyboard.rs:6,:14 到 crates/gpui_ohos/src/ohos/keyboard.rs
+平台接口 到 InputHandler 在 crates/gpui/src/platform.rs:1651  [无需平台实现：GPUI 自身在 crates/gpui/src/input.rs:117 提供 ElementInputHandler；平台只通过 PlatformWindow::set_input_handler 收下 PlatformInputHandler，并在 IME 事件里回调它]
+平台接口 到 PlatformGestures 在 crates/gpui/src/gestures.rs:178  [OHOS 无 impl；该 trait 方法全有默认实现，Platform::gestures() 默认返回 None，不构成缺口]
+```
+
+OHOS 未实现、且与 Linux/Windows 齐平（非 OHOS 特有缺口）：
+```
+平台接口 到 ScreenCaptureSource / ScreenCaptureStream 在 crates/gpui/src/platform.rs:426,:440  [仅 macOS 实现（crates/gpui_macos/src/screen_capture.rs），Linux/Windows 均无；OHOS 在 crates/gpui_ohos/src/ohos/platform.rs 的 screen_capture_sources() 显式返回 Err("Screen capture not supported on OHOS")]
+平台接口 到 PlatformHeadlessRenderer 在 crates/gpui/src/platform.rs:977  [仅 gpui 自身测试/bench 使用（crates/gpui/src/platform/test/platform.rs、crates/gpui/src/app/bench_context.rs），无任何生产平台实现]
+```
+
+审计口径（2026-09-20）：13 个接口中 8 个已实现、1 个无需平台实现（InputHandler）、1 个全走默认实现（PlatformGestures）、3 个未实现（上述）。**必须实现的方法共 117 个，按「与 Linux/Windows 齐平」口径 OHOS 真缺口为 0**（未实现的 6 个方法全落在上述 3 个 trait 里）。另有约 50 个方法（Platform 12 个、PlatformWindow 35 个，含 `on_app_lifecycle`、`on_memory_warning`、`show_soft_keyboard`/`hide_soft_keyboard`、`set_back_handler`、`a11y_*`）OHOS 走的是 trait 默认实现——属可选能力而非缺口，但这些是移动平台语义相关项，留待逐个确认是否有意省略。
+
+### Profiler 采样链路（任务耗时统计与消费方）
+
+GPUI 的任务耗时统计是「平台执行点上报 → 按线程全局存储 → 上层读取」三段式。**OHOS 曾完全缺席上报**，导致 profiler 在 OHOS 上读不到任何任务（见常见坑）。
+
+```
+Profiler 到 update_running_task() / save_task_timing() 在 crates/gpui/src/profiler.rs:664,:671  [全局自由函数、无 cfg 门控；未启用 profiler feature 时内部为空实现。必须在 runnable.run() 前后成对调用——save_task_timing 内部对 running 做 expect，只 save 不 update（或同线程任务嵌套）会 panic]
+Profiler 到 OhosDispatcher 的 3 个执行点 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [execute_runnable（主线程）、dispatch（worker pool 闭包）、dispatch_after（FFRT 回调）三处各自成对上报；与 crates/gpui_windows/src/dispatcher.rs:91-98 逐字同构]
+Profiler 到 THREAD_TIMINGS / GLOBAL_THREAD_TIMINGS 在 crates/gpui/src/profiler.rs:509,:529  [thread_local，每线程各自一把 spin 锁；线程首次上报时把 Weak 句柄注册进全局表。逐条任务历史仅在 set_trace_enabled(true) 时才保留]
+```
+
+消费方（两条路径语义不同，改动时勿混淆）：
+```
+Profiler 到 take_all_stats() 在 crates/gpui/src/profiler.rs:42 到 hang_detection 在 crates/zed/src/reliability/hang_detection.rs:105  [每 monitor_interval 取一次；collect_and_reset 语义——取走即清空，用于 telemetry 上报与触发 hang-*.miniprof.json 落盘]
+Profiler 到 get_all_timings() 在 crates/gpui/src/profiler.rs:30 到 task_traces 在 crates/zed/src/reliability/hang_detection/task_traces.rs  [只读不重置；传 TasksIncluded::CompletedAndRunning 时会把「当前正在执行、尚未返回的任务」合成为一条，这是卡死在单次 poll 里的任务唯一可见的途径]
+Profiler 到 get_all_timings() 到 miniprofiler_ui 在 crates/miniprofiler_ui/src/miniprofiler_ui.rs  [**OHOS 上不可用**：它靠新开窗口展示 profiler，而 OHOS 拒绝第二窗口（见平台事件循环节 open_window）]
+Profiler 到 spawn_profiler_sampler() 在 crates/gpui_ohos/src/ohos/platform.rs  [临时诊断设施：由 OhosPlatform::run() 启动一个名为 gpui-ohos-profiler 的线程，每 5 秒读一次 get_all_timings(CompletedAndRunning) 并 log::warn! 打印。输出两类行——executing（当前正在执行且已跑很久的任务，对应「卡死在单次 poll」型自旋）/ slowest（上轮以来完成的最慢任务，用于识别「任务都短但 CPU 高」的洪流型自旋）]
+```
+
+注：诊断时**不要**开 `set_trace_enabled(true)`——它会保留逐条任务历史（每线程上限 `MAX_TASK_TIMINGS` ≈ 16MB，见 `crates/gpui/src/profiler.rs:404`），并使 `get_all_timings` 在持 spin 锁的状态下拷贝整段历史，反过来拖慢乃至阻塞被测线程；另外任何新增的统计消费者都必须避开 `take_all_stats` 的 reset 语义，否则会抢空 hang_detection 的数据。
 
 ### 定时器模块
 
@@ -937,6 +987,43 @@ Agent 工具编辑 到 [Buffer transaction + save_buffer] 到 打开文件的编
 - **进程内 vs 远程**：Agent Panel 默认 native agent 全进程内；ACP/agent_servers 只在 custom agent（spawn 外部 ACP 进程）与远程项目场景出现。会话持久化本地 SQLite（thread_store.rs ThreadsDatabase::connect），无云端存储。
 - **编辑落点是 Buffer 而非 Editor**：工具结构体无 Entity\<Editor\>/Workspace，编辑目标是 project 打开的真实 Buffer（被 editor 共享），因此 agent 编辑天然有实时 diff 与 undo。
 
+#### 对话输入与 Add Context 上下文注入（MessageEditor / MentionSet）
+
+输入框是 `MessageEditor`（`crates/agent_ui/src/message_editor.rs`），内部包一个 gpui `Editor`（`self.editor`）与一个 `MentionSet`（`crates/agent_ui/src/mention_set.rs`，负责 `@` 提及的 crease 与内容注入）。Add Context 菜单挂在输入框左侧 "+" 按钮上。
+
+模块入口：
+```
+Agent 到 ThreadView::build_add_context_menu() 在 crates/agent_ui/src/conversation_view/thread_view.rs  [用户点输入框 "+"（render_add_context_button :5478 / OpenAddContextMenu :12023）展开 PopoverMenu 时构建菜单项]
+Agent 到 MessageEditor::insert_context_type() 在 crates/agent_ui/src/message_editor.rs  [菜单 "Files & Directories"（非 OHOS）/"Symbols"/"Threads" 项点击；插 "@file"/"@symbol"/"@thread" 前缀并弹补全菜单（:957）]
+Agent 到 MessageEditor::add_images_from_picker() 在 crates/agent_ui/src/message_editor.rs  [菜单 "Image" 项点击；打开系统文件选择器，选中图整张注入（:1618）]
+Agent 到 MessageEditor::add_file_paths_from_picker() 在 crates/agent_ui/src/message_editor.rs  [菜单 "Files & Directories"（OHOS，#[cfg(target_env = "ohos")]）项点击；打开系统文件选择器，选中路径以 ", " 连接的纯文本插入光标处，不注入文件内容（:1671）]
+Agent 到 MessageEditor::insert_skill_crease() 在 crates/agent_ui/src/message_editor.rs  [菜单 "Skills" 子项点击（:1525）]
+Agent 到 MessageEditor::insert_branch_diff_crease() 在 crates/agent_ui/src/message_editor.rs  [菜单 "Branch Diff" 项点击（:1439）]
+Agent 到 MessageEditor::send() 在 crates/agent_ui/src/message_editor.rs  [用户回车/Chat；emit MessageEditorEvent::Send（:944/:950）]
+```
+
+跨文件跳转：
+```
+Add Context 到 "Selection" handler 在 crates/agent_ui/src/conversation_view/thread_view.rs 到 ConversationView::insert_selection() 在 crates/agent_ui/src/conversation_view.rs  [dispatch AddSelectionToThread → agent_panel.rs:643 handler → :713 active_conversation_view()]
+Add Context 到 ConversationView::insert_selection() 在 crates/agent_ui/src/conversation_view.rs 到 MessageEditor::insert_selections() 在 crates/agent_ui/src/message_editor.rs  [（:1580）]
+Add Context 到 ConversationView::insert_dragged_files() 在 crates/agent_ui/src/conversation_view.rs 到 MessageEditor::insert_dragged_files() 在 crates/agent_ui/src/message_editor.rs  [拖拽文件/目录进输入框（:3169 → :1405）]
+Agent 到 MessageEditor::add_images_from_picker() 在 crates/agent_ui/src/message_editor.rs 到 insert_images_as_context() 在 crates/agent_ui/src/mention_set.rs  [load_external_image_from_path 读图（:1017）→ 建图片 crease（:882）]
+Agent 补全 到 PromptCompletionProvider 确认 在 crates/agent_ui/src/completion_provider.rs 到 MentionSet::confirm_mention_completion() 在 crates/agent_ui/src/mention_set.rs  [选中补全项（:1965）；内部 confirm_mention_for_file（:384）读取文件内容建 mention]
+Agent 到 MessageEditor::insert_skill_crease() 在 crates/agent_ui/src/message_editor.rs 到 MentionSet::confirm_mention_completion() 在 crates/agent_ui/src/mention_set.rs
+```
+
+跨运行时跳转：
+```
+Agent 到 MessageEditor::send() 在 crates/agent_ui/src/message_editor.rs 到 [MessageEditorEvent::Send] 到 ThreadView 订阅 在 crates/agent_ui/src/conversation_view/thread_view.rs  [gpui 实体事件（:1132 MessageEditorEvent::Send => self.send）]
+Agent 到 ThreadView::send_content() 在 crates/agent_ui/src/conversation_view/thread_view.rs 到 AcpThread::send() 在 crates/acp_thread/src/acp_thread.rs  [ContentBlock 列表发给会话（:3630）；native 走进程内 Thread::run_turn，custom/远程走 ACP 子进程]
+Agent 到 MessageEditor::add_images_from_picker() / add_file_paths_from_picker() 在 crates/agent_ui/src/message_editor.rs 到 [cx.prompt_for_paths] 到 OhosPlatform::prompt_for_paths() 在 crates/gpui_ohos/src/ohos/platform.rs  [OHOS 平台层开系统文件选择器，oneshot 回传 PathBuf（见文件选择器模块）]
+```
+
+补充要点：
+- **两种注入语义**：`insert_context_type`（非 OHOS 的 Files & Directories / Symbols / Threads）只插 `@keyword` + 弹补全菜单，用户选中后由 mention_set 读取内容建 crease（会把文件内容注入 prompt）；OHOS 的 "Files & Directories" 改走 `add_file_paths_from_picker`，仅插入纯路径文本、不注入内容（省 token，模型按需自读文件）。
+- **Image 不分平台**：Image 无论平台都 `insert_images_as_context` 注入整张图；只有 Files & Directories 在 OHOS 走纯路径。
+- **发送只是 emit**：`MessageEditor::send` 仅发事件，真正入队、起 turn、发给 agent 在 ThreadView（send → send_impl → send_content）。
+
 ### Collab Panel 与 Edit Prediction 模块
 
 两模块都属 Zed 协作/AI 功能的 UI 与运行时，路径均不含 `ohos`，属通用上游代码；OHOS 上无裁剪（编译与运行与其它 OS 一致）。
@@ -1098,7 +1185,9 @@ MCP OAuth 到 CIMD_URL 在 crates/context_server/src/oauth.rs 到 [GET https://z
 - **moduleName 与库名强绑定**：`NAPI_BUILD_TARGET_NAME`（=hicodeer）必须与 so 文件名 `libhicodeer.so` 一致。launch-zed 是叶子 crate（无消费者），可用 `[lib] name = "hicodeer"` 直接产出 `libhicodeer.so`；**不能改 zed 的 `[lib] name`**（会把 Rust crate 名改掉，`use zed::` 全断）。
 - **include!("main.rs") 只在 ohos 启用**：桌面端 crates/zed 仍是二进制 crate（`[[bin]] name = "zed"`）。
 - **GPU 初始化在平台层、surface 在窗口层**：`WgpuContext::new()`（Instance/Adapter/Device）在 `OhosPlatform::new()` 时创建，可在 app 设置前完成；`WgpuRenderer`（surface）在 `OhosWindow::initialize_renderer()` 时才建，必须等 `native_window` 可用（SurfaceCreate 后）。两个阶段分离，排查黑屏先确认哪一步失败。
-- **dispatch() 直接线程 spawn 的风险**：`OhosDispatcher::dispatch` 用 `std::thread::spawn` 跑后台任务，若任务内直接触 NAPI 会 SIGABRT（NAPI 只能在创建线程调用）。跨线程的 NAPI 调用必须走 `OpenHarmonyApp::bridge()` 的 TSFN 封装。
+- **后台任务的线程归属与 NAPI 限制**：`OhosDispatcher::dispatch` 现在把后台任务交给驻留 worker pool（线程名 `gpui-ohos-bg-N`），不再是每任务 `std::thread::spawn`（2026-09-20 修正，代码注释自述见 `crates/gpui_ohos/src/ohos/dispatcher.rs:43-44`）；但结论不变——worker 仍是非主线程，任务内若直接触 NAPI 会 SIGABRT（NAPI 只能在创建线程调用）。跨线程的 NAPI 调用必须走 `OpenHarmonyApp::bridge()` 的 TSFN 封装。
+- **OHOS 只能有一个窗口**：`OhosPlatform::open_window` 对第二个窗口直接 `bail!("OHOS supports a single window; cannot open a second window")`（`crates/gpui_ohos/src/ohos/platform.rs:602`）。因此任何依赖新开窗口的功能在 OHOS 上都不可用——典型受害者是 `miniprofiler_ui` 的性能分析窗口（profiler 因此需要非窗口出口，见 Profiler 采样链路节）；设置界面也正因此改用 tab 而非独立窗口（见设置界面模块）。
+- **profiler 在 OHOS 必须由 dispatcher 自己上报**：GPUI 不会自动覆盖 OHOS——`OhosDispatcher` 的三个执行点（`execute_runnable` / `dispatch` / `dispatch_after`）必须各自成对调用 `crates/gpui/src/profiler.rs` 的 `update_running_task` + `save_task_timing`。漏掉任何一处，那一类任务在 profiler 里就完全不可见（历史上三处全缺，是 CPU 自旋任务定位不到的直接原因）。`save_task_timing` 内部对 `running` 做 `expect`，不成对调用会 panic。
 - **初始化卡点定位**：hilog（tag=HiCodeer）里 `[boot] enter init: <模块>` 出现而对应 `exit init` 未出现，即初始化卡在该模块；`enter init` 一个都没出现则卡在更早（看 `hicodeer-boot` tag 的 `start_zed_main` / `building application` / `calling app.run` / `on_finish_launching entered`；launch_app 无入口日志，若连 `start_zed_main` 都没有则卡在 NAPI init 之前）。
 - **日志双 tag 体系**：`zlog::init()` 之前（`start_zed_main`）用 `direct_hilog_info` 直连，tag=`hicodeer-boot`；`zlog::init()` 之后所有 `log::xxx!` 走重定向，tag=`HiCodeer`。launch_app（NAPI 入口）不打印日志。抓日志两个 tag 都要过滤。
 - **WAKER 时序 bug（黑屏根因）**：`OhosPlatform::set_app` → `create_waker()`（读全局 WAKER）早于 ArkTS `init` → `create_lifecycle_handle()`（写全局 WAKER）。`wake()` 若用 `create_waker` 返回的 None 快照则永远静默失败 → UserEvent 死掉 → `run_foreground_tasks` 不驱动 → 窗口创建任务饿死 → 黑屏。修复：`wake()` 必须每次实时读全局 WAKER（`(*WAKER).read()`），不能存快照。详见 `移植记录/bugfix/2026-08-17-ohos-black-screen-waker.md`。
