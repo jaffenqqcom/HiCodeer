@@ -15,7 +15,7 @@ use futures::channel::oneshot;
 use openharmony_ability::{
     AvoidAreaType, AxisEventData, AxisToolType, ColorMode, DeviceModifiers, Event, ImeEvent,
     InputEvent, MouseAction, MouseEventData, MouseButton as DeviceMouseButton, OpenHarmonyApp,
-    ScrollPhase, xcomponent::{Action, KeyCode, KeyEventData, TouchEvent, TouchEventData},
+    ScrollPhase, xcomponent::{Action, KeyCode, TouchEvent, TouchEventData},
 };
 use openharmony_ability_plugin_ime::ImeExt;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -24,7 +24,7 @@ use super::display::OhosDisplay;
 use super::wgpu_context::WgpuContext;
 use super::wgpu_renderer::{WgpuRenderer, WgpuSurfaceConfig};
 use crate::{
-    Axis, BackgroundExecutor, Bounds, Capslock, DevicePixels, ExternalPaths, FileDropEvent,
+    Axis, Bounds, Capslock, DevicePixels, ExternalPaths, FileDropEvent,
     ForegroundExecutor, GpuSpecs, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
@@ -69,14 +69,8 @@ pub(crate) struct OhosWindow {
     renderer: RefCell<Option<WgpuRenderer>>,
     gpu_context: Rc<RefCell<Option<Arc<WgpuContext>>>>,
     foreground_executor: ForegroundExecutor,
-    background_executor: BackgroundExecutor,
-    key_repeat: Rc<RefCell<Option<KeyRepeatState>>>,
     window_alive: Rc<Cell<bool>>,
-    /// Whether this window currently holds keyboard focus. Auto-repeat must also
-    /// stop on focus loss: the key-up that ends a repeat is never delivered once
-    /// another window takes focus (e.g. the system file picker), so waiting for
-    /// it would repeat forever. Mirrors gpui_linux, whose Wayland repeat task
-    /// requires `keyboard_focused_window.is_some()`.
+    /// Whether this window currently holds keyboard focus.
     active: Rc<Cell<bool>>,
     pinch_accumulator: Rc<Cell<f32>>,
     keyboard_visible: Rc<Cell<bool>>,
@@ -267,23 +261,9 @@ impl ClickTracker {
     }
 }
 
-// Key auto-repeat timing. OHOS key events carry no repeat action (KeyAction has only
-// Down/Up), so repeats are synthesized here. Values approximate common desktop defaults
-// (Wayland RepeatInfo / X11 autorepeat): 500 ms initial delay, then ~10 cps.
-const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
-const KEY_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
-
 /// A pinch must accumulate at least this much scale change before one zoom step
 /// is emitted, keeping the pinch zoom rate gentle (0.15 == 15% scale change).
 const PINCH_ZOOM_THRESHOLD: f32 = 0.15;
-
-/// Tracks an in-flight synthesized key-repeat. `generation` increments on every
-/// key-down and when the key is released, invalidating any stale repeat task.
-#[derive(Clone, Copy)]
-struct KeyRepeatState {
-    code: KeyCode,
-    generation: u64,
-}
 
 #[derive(Clone, Copy)]
 struct TouchSample {
@@ -519,7 +499,6 @@ impl OhosWindow {
         params: WindowParams,
         gpu_context: Rc<RefCell<Option<Arc<WgpuContext>>>>,
         foreground_executor: ForegroundExecutor,
-        background_executor: BackgroundExecutor,
     ) -> Result<Self> {
         log::info!("[boot] OhosWindow::new entered, handle {:?}", handle);
         let scale = app
@@ -564,8 +543,6 @@ impl OhosWindow {
             renderer: RefCell::new(None),
             gpu_context,
             foreground_executor,
-            background_executor,
-            key_repeat: Rc::new(RefCell::new(None)),
             window_alive: Rc::new(Cell::new(true)),
             active: Rc::new(Cell::new(true)),
             pinch_accumulator: Rc::new(Cell::new(0.0)),
@@ -1580,11 +1557,7 @@ impl OhosWindow {
                 }
             }
             Event::LostFocus => {
-                // The key-up that ends auto-repeat is never delivered once another
-                // window takes focus (e.g. the system file picker), so repeat has to
-                // stop here instead of waiting for a key-up that never arrives.
                 self.active.set(false);
-                self.end_key_repeat();
                 self.cancel_momentum();
                 self.reset_touch_velocity();
                 self.reset_touch_state();
@@ -1900,18 +1873,12 @@ impl OhosWindow {
                         if !Self::is_modifier_key(key_event.code) {
                             let keystroke = super::keycodes::key_event_to_keystroke(key_event);
                             let key_down_event = KeyDownEvent {
-                                keystroke: keystroke.clone(),
+                                keystroke,
                                 is_held: false,
                                 prefer_character_input: false,
                             };
                             self.dispatch_input(PlatformInput::KeyDown(key_down_event));
-                            // OHOS KeyAction has no Repeat; synthesize auto-repeat with an
-                            // initial delay followed by a periodic is_held key-down.
-                            self.begin_key_repeat(key_event, keystroke);
                         }
-                    }
-                    Action::Up => {
-                        self.end_key_repeat();
                     }
                     _ => {}
                 }
@@ -2115,40 +2082,6 @@ impl OhosWindow {
         }
     }
 
-    /// Starts synthesized auto-repeat for a held non-modifier key. The repeat task
-    /// emits `is_held` key-downs on the foreground executor after an initial delay,
-    /// until the key is released or a different key is pressed (generation bump).
-    fn begin_key_repeat(&self, key_event: &KeyEventData, keystroke: Keystroke) {
-        // Modifier keys are never auto-repeated; only their own key events apply.
-        if Self::is_modifier_key(key_event.code) {
-            return;
-        }
-        let code = key_event.code;
-        let generation =
-            self.key_repeat
-                .borrow()
-                .map_or(0, |state| state.generation)
-                + 1;
-        *self.key_repeat.borrow_mut() = Some(KeyRepeatState { code, generation });
-        let key_repeat = self.key_repeat.clone();
-        let callbacks = self.callbacks.clone();
-        let window_alive = self.window_alive.clone();
-        let active = self.active.clone();
-        let background_executor = self.background_executor.clone();
-        self.foreground_executor
-            .spawn(async move {
-                background_executor.timer(KEY_REPEAT_DELAY).await;
-                while active.get()
-                    && window_alive.get()
-                    && Self::repeat_active(&key_repeat, code, generation)
-                {
-                    Self::dispatch_repeat_key_down(&callbacks, &keystroke);
-                    background_executor.timer(KEY_REPEAT_INTERVAL).await;
-                }
-            })
-            .detach();
-    }
-
     fn is_modifier_key(code: KeyCode) -> bool {
         matches!(
             code,
@@ -2163,33 +2096,6 @@ impl OhosWindow {
                 | KeyCode::CapsLock
                 | KeyCode::Fn
         )
-    }
-
-    /// Stops the in-flight auto-repeat task (generation check fails on next tick).
-    fn end_key_repeat(&self) {
-        *self.key_repeat.borrow_mut() = None;
-    }
-
-    fn repeat_active(
-        key_repeat: &Rc<RefCell<Option<KeyRepeatState>>>,
-        code: KeyCode,
-        generation: u64,
-    ) -> bool {
-        key_repeat
-            .borrow()
-            .is_some_and(|state| state.code == code && state.generation == generation)
-    }
-
-    fn dispatch_repeat_key_down(
-        callbacks: &Rc<RefCell<WindowCallbacks>>,
-        keystroke: &Keystroke,
-    ) {
-        let key_down_event = KeyDownEvent {
-            keystroke: keystroke.clone(),
-            is_held: true,
-            prefer_character_input: false,
-        };
-        Self::dispatch_input_with_callbacks(callbacks, PlatformInput::KeyDown(key_down_event));
     }
 
     /// Registers the event-driven pinch and drop handlers. Both plugins invoke

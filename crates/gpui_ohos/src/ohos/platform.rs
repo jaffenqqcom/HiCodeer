@@ -533,7 +533,6 @@ impl Platform for OhosPlatform {
                 options,
                 self.gpu_context.clone(),
                 self.foreground_executor.clone(),
-                self.background_executor.clone(),
             )?;
 
             // GPUI fetches sprite_atlas during window initialization and caches it.
