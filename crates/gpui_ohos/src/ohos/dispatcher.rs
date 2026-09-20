@@ -59,14 +59,20 @@ impl OhosDispatcher {
     }
 
     pub(crate) fn execute_runnable(runnable: RunnableVariant) {
+        // See `dispatch`: reporting keeps main-thread task timings visible to the profiler.
+        let location = runnable.metadata().location;
+        let spawned = runnable.metadata().spawned;
+        crate::profiler::update_running_task(spawned, location);
         runnable.run();
+        crate::profiler::save_task_timing();
     }
 }
 
 impl OhosDispatcher {
     // These two methods were originally trait methods of the zed 1.3 PlatformDispatcher and were removed from the trait starting in 1.17
-    // (profiler data is now collected by the top-level gpui::profiler functions). The OHOS dispatcher does not take part
-    // in task profiler statistics and returns empty data, but keeps the methods so upper layers can call them as needed, without cutting functionality.
+    // (profiler data is now collected by the top-level gpui::profiler functions, which this dispatcher reports to at
+    // each execution site in this file). OHOS returns empty data from these two methods because nothing calls them
+    // any more, but keeps them so upper layers can call them as needed, without cutting functionality.
     pub fn get_all_timings(&self) -> Vec<ThreadTaskTimings> {
         Vec::new()
     }
@@ -104,11 +110,19 @@ impl PlatformDispatcher for OhosDispatcher {
                 return;
             }
         };
+        // Report the task to the gpui profiler so background work shows up in the
+        // performance profiler, matching the other platform dispatchers (see
+        // `gpui::platform::threaded_dispatcher`). Both calls are cheap no-ops unless the
+        // `profiler` feature is enabled, so this stays off the hot path in normal builds.
+        let location = runnable.metadata().location;
+        let spawned = runnable.metadata().spawned;
         self._background_pool
             .dispatch_with_priority(pool_priority, move || {
+                crate::profiler::update_running_task(spawned, location);
                 // Discard the `bool` returned by `Runnable::run` (async-task reports whether
                 // the future finished); the job closure must evaluate to `()`.
                 runnable.run();
+                crate::profiler::save_task_timing();
             });
     }
 
@@ -138,8 +152,13 @@ impl PlatformDispatcher for OhosDispatcher {
         // semantics of the desktop platforms (Linux runs timer runnables on its timer thread).
         // The FFRT callback runs off the ArkTS/N-API main thread, so heavy timer work never
         // blocks UI rendering or input handling.
+        // See `dispatch`: reporting keeps timer task timings visible to the profiler.
+        let location = runnable.metadata().location;
+        let spawned = runnable.metadata().spawned;
         let callback: Box<dyn FnOnce() + Send> = Box::new(move || {
+            crate::profiler::update_running_task(spawned, location);
             runnable.run();
+            crate::profiler::save_task_timing();
         });
         match OpenHarmonyTimer::start(duration, callback) {
             Ok(_timer) => {}
