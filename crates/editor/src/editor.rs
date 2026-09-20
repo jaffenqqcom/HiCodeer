@@ -9765,6 +9765,20 @@ impl Editor {
                     display_map.unfold_buffers(removed_buffer_ids.iter().copied(), cx);
                 });
 
+                #[cfg(target_env = "ohos")]
+                {
+                    // On OHOS a buffer can leave the multibuffer while selections
+                    // made in it linger. They can never be resolved again, so drop
+                    // them now: otherwise every later `change_with` call trips its
+                    // resolve assertion on them.
+                    let snapshot = self.display_snapshot(cx);
+                    self.selections.change_with(&snapshot, |selections| {
+                        for buffer_id in removed_buffer_ids {
+                            selections.remove_selections_from_buffer(*buffer_id);
+                        }
+                    });
+                }
+
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
                 cx.emit(EditorEvent::BuffersRemoved {
                     removed_buffer_ids: removed_buffer_ids.clone(),

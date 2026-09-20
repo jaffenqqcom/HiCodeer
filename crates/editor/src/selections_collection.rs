@@ -692,6 +692,18 @@ impl<'snap, 'a> MutableSelectionsCollection<'snap, 'a> {
             self.disjoint
                 .iter()
                 .filter(|selection| {
+                    // On OHOS a buffer can leave the multi-buffer while selections
+                    // made in it linger. Those can never be resolved again and would
+                    // make the resolve assertion in `change_with` fail on the next
+                    // edit, so drop them here. `anchor_to_buffer_anchor` alone is not
+                    // strict enough: it only checks that the buffer id is known,
+                    // ignoring whether the anchor's path key still matches.
+                    #[cfg(target_env = "ohos")]
+                    if !self.snapshot.can_resolve(&selection.start) {
+                        changed = true;
+                        return false;
+                    }
+
                     if let Some((selection_buffer_anchor, _)) =
                         self.snapshot.anchor_to_buffer_anchor(selection.start)
                     {
