@@ -26,10 +26,7 @@
             "enableSourceCodeCheck": false
           },
           "nativeLib": {
-            "collectAllLibs": true,
-            "debugSymbol": {
-              "strip": true
-            }
+            "collectAllLibs": true
           },
           "strictMode": {
             "caseSensitiveCheck": true,
@@ -40,8 +37,7 @@
             "abiFilters": [
               "arm64-v8a"
             ]
-          },
-          "debuggable": false
+          }
         },
         "bundleName": "com.hicodeer.studio",
         "signingConfig": "default"
