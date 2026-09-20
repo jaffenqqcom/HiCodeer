@@ -5553,6 +5553,9 @@ impl ThreadView {
                             move |window, cx| {
                                 message_editor.focus_handle(cx).focus(window, cx);
                                 message_editor.update(cx, |editor, cx| {
+                                    #[cfg(target_env = "ohos")]
+                                    editor.add_file_paths_from_picker(window, cx);
+                                    #[cfg(not(target_env = "ohos"))]
                                     editor.insert_context_type("file", window, cx);
                                 });
                             }
