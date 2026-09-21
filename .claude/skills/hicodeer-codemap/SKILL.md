@@ -7,7 +7,13 @@ description: HiCodeer（Zed → HarmonyOS NEXT 移植）项目的代码架构地
 
 本文件记录 HiCodeer（代码库为 Zed，产品名 HiCodeer，移植到 HarmonyOS NEXT）的**程序启动流程**。只记录模块入口、跨文件跳转、跨运行时跳转，不追踪完整执行路径。
 
-所有路径均为相对项目根目录的相对路径。
+路径按前缀分三类：
+
+- `crates/...`、`hap/...` 等：**本仓库内**、相对项目根目录的路径。
+- `openharmony-ability-zed/...`、`ohos-native-bindings-zed/...`：**上游能力库的 GitHub fork 仓库内路径**（`github.com/jaffenqqcom/openharmony-ability-zed`、`github.com/jaffenqqcom/ohos-native-bindings-zed`）。这两个库已不再随本仓库分发，改由 `[patch.crates-io]` 指 git 源消费。要读源码可用 cargo 的 git checkout 缓存 `~/.cargo/git/checkouts/<仓库名>-<哈希>/<rev>/`（rev 见 `Cargo.lock` 的 `source` 行），或直接看 GitHub。
+- `target/ohos-arkts/openharmony-ability/...`：`script/bundle-ohos` 从上面那个 cargo checkout 同步出来、由 hvigor 编译进 HAP 的 **ArkTS 源码副本**。只有 ArkTS 侧走这里（hvigor 只认本地相对路径、ohpm 不支持 git）；Rust 侧由 cargo 直接编译 git 源。
+
+本文件的**代码行号**（如 `window.rs:2711`）一律指本仓库内文件的行号（上两类外部文件的引用不标行号）。
 
 ## 启动链路总览
 
@@ -41,8 +47,8 @@ RustAbility 基类 在 node_modules/@ohos-rs/ability  [由 EntryAbility extends 
 ### Rust 入口（launch-zed + crates/zed）
 
 ```
-入口 到 launch_app() 在 crates/gpui_ohos/depend/openharmony-ability/crates/launch-zed/src/launch_app.rs  [由 NAPI init 宏生成代码调用；接收 OpenHarmonyApp]
-入口 到 set_global_app() 在 openharmony-ability crates/ability/src/app.rs  [由 launch_app() 调用；把 OpenHarmonyApp 存入 GLOBAL_APP 全局，供 OhosPlatform 构造时取用]
+入口 到 launch_app() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs  [由 NAPI init 宏生成代码调用；接收 OpenHarmonyApp]
+入口 到 set_global_app() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 launch_app() 调用；把 OpenHarmonyApp 存入 GLOBAL_APP 全局，供 OhosPlatform 构造时取用]
 入口 到 start_zed_main() 在 crates/zed/src/main.rs  [由 launch_app() 跨 crate 调用（launch-zed 依赖 zed）；接收 base_path → 设 data_dir → 调 main()]
 ZED 到 main() 在 crates/zed/src/main.rs  [由 start_zed_main() 在 ohos 下调用（桌面端由系统直接调 main）；执行 Zed 完整启动逻辑]
 ```
@@ -103,15 +109,15 @@ OHOS 到 open_window() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 Zed 在 o
 ## 跨文件跳转
 
 ```
-launch_app() 在 crates/gpui_ohos/depend/openharmony-ability/crates/launch-zed/src/launch_app.rs 到 set_global_app() 在 openharmony-ability crates/ability/src/app.rs  [存 app 到 GLOBAL_APP]
-launch_app() 在 crates/gpui_ohos/depend/openharmony-ability/crates/launch-zed/src/launch_app.rs 到 start_zed_main() 在 crates/zed/src/main.rs  [依赖反转：launch-zed（能力库一侧）依赖 zed]
+launch_app() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs 到 set_global_app() 在 openharmony-ability-zed/crates/ability/src/app.rs  [存 app 到 GLOBAL_APP]
+launch_app() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs 到 start_zed_main() 在 crates/zed/src/main.rs  [依赖反转：launch-zed（能力库一侧）依赖 zed]
 start_zed_main() 在 crates/zed/src/main.rs 到 main() 在 crates/zed/src/main.rs  [原始 Zed main]
 main() 在 crates/zed/src/main.rs 到 build_application() 在 crates/zed/src/main.rs  [构建 Application]
 build_application() 在 crates/zed/src/main.rs 到 gpui_platform::current_platform() 在 crates/gpui_platform/src/gpui_platform.rs  [ohos 分支创建 OhosPlatform]
-OhosPlatform::new() 在 crates/gpui_ohos/src/ohos/platform.rs 到 global_app() 在 openharmony-ability crates/ability/src/app.rs  [从 GLOBAL_APP 取 app；gpui 不直接接触 OpenHarmonyApp]
+OhosPlatform::new() 在 crates/gpui_ohos/src/ohos/platform.rs 到 global_app() 在 openharmony-ability-zed/crates/ability/src/app.rs  [从 GLOBAL_APP 取 app；gpui 不直接接触 OpenHarmonyApp]
 main() 在 crates/zed/src/main.rs 到 app.run() 在 crates/gpui/src/app.rs  [启动 GPUI]
 app.run() 在 crates/gpui/src/app.rs 到 OhosPlatform::run() 在 crates/gpui_ohos/src/ohos/platform.rs  [注册事件循环]
-OhosPlatform::run() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OpenHarmonyApp::run_loop() 在 openharmony-ability crates/ability/src/app.rs  [注册 ArkTS 事件回调]
+OhosPlatform::run() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OpenHarmonyApp::run_loop() 在 openharmony-ability-zed/crates/ability/src/app.rs  [注册 ArkTS 事件回调]
 handle_ohos_event() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosWindow::handle_event() 在 crates/gpui_ohos/src/ohos/window.rs  [事件路由到各窗口]
 ```
 
@@ -120,7 +126,7 @@ handle_ohos_event() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosWindow::ha
 ### ArkTS → Rust（NAPI）
 
 ```
-EntryAbility (ArkTS) 到 [NAPI init] 到 launch_app() 在 crates/gpui_ohos/depend/openharmony-ability/crates/launch-zed/src/launch_app.rs  [RustAbility 基类加载 libhicodeer.so 后调用 init；launch-zed 的 #[ability] 宏生成代码调 launch_app]
+EntryAbility (ArkTS) 到 [NAPI init] 到 launch_app() 在 crates/gpui_ohos/depend/launch-zed/src/launch_app.rs  [RustAbility 基类加载 libhicodeer.so 后调用 init；launch-zed 的 #[ability] 宏生成代码调 launch_app]
 ```
 
 ### Rust 内事件循环（openharmony-ability Event → GPUI）
@@ -130,7 +136,7 @@ OpenHarmonyApp::run_loop 回调 到 [Event 枚举] 到 handle_ohos_event() 在 c
 handle_ohos_event() 到 [Event::SurfaceCreate] 到 on_finish_launching 回调（Zed 的 app.run 闭包）  [on_finish_launching 只在收到 SurfaceCreate 时触发；此时才创建窗口]
 OpenHarmonyWaker::wake() 到 [Event::UserEvent] 到 handle_ohos_event() 在 crates/gpui_ohos/src/ohos/platform.rs  [TSFN 回调向 event_loop 发 UserEvent；handle_ohos_event 的 UserEvent 分支跑 run_due_timers + run_foreground_tasks]
 handle_ohos_event(UserEvent) 到 run_foreground_tasks() 在 crates/gpui_ohos/src/ohos/platform.rs  [执行 main_receiver 里排队的 GPUI foreground 任务，含窗口创建任务 restore_or_create_workspace]
-OhosDispatcher::dispatch_on_main_thread() 在 crates/gpui_ohos/src/ohos/dispatcher.rs 到 OpenHarmonyWaker::wake() 在 openharmony-ability crates/ability/src/waker.rs  [GPUI 任务入 main_sender 后唤醒主线程；wake 必须实时读全局 WAKER（见常见坑 WAKER 时序）]
+OhosDispatcher::dispatch_on_main_thread() 在 crates/gpui_ohos/src/ohos/dispatcher.rs 到 OpenHarmonyWaker::wake() 在 openharmony-ability-zed/crates/ability/src/waker.rs  [GPUI 任务入 main_sender 后唤醒主线程；wake 必须实时读全局 WAKER（见常见坑 WAKER 时序）]
 ```
 
 ### 窗口创建后的渲染（OpenHarmonyApp → wgpu surface）
@@ -178,17 +184,17 @@ XComponent `on_frame_callback`（`OH_NativeXComponent_RegisterOnFrameCallback`�
 
 ```
 渲染 到 OhosWindowHandle::frame_waker() 在 crates/gpui_ohos/src/ohos/window.rs  [由 GPUI 需要渲染时（wake_platform：dirty/动画）调用；无条件置 PENDING_REDRAW=true（隐藏期间也不丢帧），窗口可见（window_visibility()）时 enable_frame_callback 注册帧回调（内部幂等）]
-渲染 到 OpenHarmonyApp::enable_frame_callback() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/app.rs  [由 frame_waker / VisibilityChanged(true) 调用；is_frame_callback_enabled 幂等门控（已注册直接 return），注册成功才置 enabled 标志；回调仅在有渲染需求（enabled）且 surface 活跃时发 WindowRedraw]
-渲染 到 OpenHarmonyApp::disable_frame_callback() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/app.rs  [由 WindowRedraw 消费完无后续需求（PENDING_REDRAW 清空）/ VisibilityChanged(false) 调用；is_frame_callback_enabled 幂等门控（已注销直接 return），注销后清 enabled 标志；OH_NativeXComponent_UnregisterOnFrameCallback 真正注销，空闲完全停止唤醒主线程；幂等防重复注销（DisplaySync DelFromPipeline nullptr 修复）]
-渲染 到 window_visibility() / set_window_visibility() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/input/mod.rs  [由 frame_waker 可见性判断 / lifecycle 的 windowVisibilityChange 回调调用；ArkTS windowVisibilityChange 事件驱动，true=可见 false=隐藏]
+渲染 到 OpenHarmonyApp::enable_frame_callback() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 frame_waker / VisibilityChanged(true) 调用；is_frame_callback_enabled 幂等门控（已注册直接 return），注册成功才置 enabled 标志；回调仅在有渲染需求（enabled）且 surface 活跃时发 WindowRedraw]
+渲染 到 OpenHarmonyApp::disable_frame_callback() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 WindowRedraw 消费完无后续需求（PENDING_REDRAW 清空）/ VisibilityChanged(false) 调用；is_frame_callback_enabled 幂等门控（已注销直接 return），注销后清 enabled 标志；OH_NativeXComponent_UnregisterOnFrameCallback 真正注销，空闲完全停止唤醒主线程；幂等防重复注销（DisplaySync DelFromPipeline nullptr 修复）]
+渲染 到 window_visibility() / set_window_visibility() 在 openharmony-ability-zed/crates/ability/src/input/mod.rs  [由 frame_waker 可见性判断 / lifecycle 的 windowVisibilityChange 回调调用；ArkTS windowVisibilityChange 事件驱动，true=可见 false=隐藏]
 渲染 到 WindowRedraw 处理 在 crates/gpui_ohos/src/ohos/window.rs  [由 XComponent on_frame_callback 产生 Event::WindowRedraw；request_frame 后 PENDING_REDRAW.swap(false)，无后续需求则 disable_frame_callback（内部幂等），不再外部 set enabled 标志]
 ```
 
 跨文件跳转：
 ```
-OhosWindowHandle::frame_waker() 在 crates/gpui_ohos/src/ohos/window.rs 到 OpenHarmonyApp::enable_frame_callback() 在 openharmony-ability crates/ability/src/app.rs  [经 openharmony_ability::global_app() 取 app]
-OhosWindow WindowRedraw 分支 在 crates/gpui_ohos/src/ohos/window.rs 到 OpenHarmonyApp::disable_frame_callback() 在 openharmony-ability crates/ability/src/app.rs  [PENDING_REDRAW 无后续需求时]
-NativeAbility.ets 的 onWindowVisibilityChange 到 lifecycle.rs 的 on_window_visibility_change 回调 在 openharmony-ability crates/ability/src/lifecycle.rs  [ArkTS win.on('windowVisibilityChange') → NAPI → 存 WINDOW_VISIBLE + 发 Event::VisibilityChanged(visible)；不再路由 GainedFocus/LostFocus（focus 回归纯焦点语义）]
+OhosWindowHandle::frame_waker() 在 crates/gpui_ohos/src/ohos/window.rs 到 OpenHarmonyApp::enable_frame_callback() 在 openharmony-ability-zed/crates/ability/src/app.rs  [经 openharmony_ability::global_app() 取 app]
+OhosWindow WindowRedraw 分支 在 crates/gpui_ohos/src/ohos/window.rs 到 OpenHarmonyApp::disable_frame_callback() 在 openharmony-ability-zed/crates/ability/src/app.rs  [PENDING_REDRAW 无后续需求时]
+NativeAbility.ets 的 onWindowVisibilityChange 到 lifecycle.rs 的 on_window_visibility_change 回调 在 openharmony-ability-zed/crates/ability/src/lifecycle.rs  [ArkTS win.on('windowVisibilityChange') → NAPI → 存 WINDOW_VISIBLE + 发 Event::VisibilityChanged(visible)；不再路由 GainedFocus/LostFocus（focus 回归纯焦点语义）]
 ```
 
 跨运行时跳转：
@@ -220,15 +226,15 @@ OhosPlatform::new() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosTextSystem
 
 触摸屏（`InputEvent::TouchEvent` → GPUI Mouse/Scroll，手指触摸专属通道）：
 ```
-触摸屏 到 dispatch_touch_event() C 回调 在 crates/gpui_ohos/depend/ohos-xcomponent-binding/src/events/native_callbacks.rs  [系统触摸事件进 Rust 第一站；构造 TouchEventData 转发给 X_COMPONENT_CALLBACKS.dispatch_touch_event]
-触摸屏 到 on_touch_event 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/render/xcomponent.rs  [XComponent DispatchTouchEvent 回调；仅 tool_type == Finger 的触摸才推 Event::Input(TouchEvent) 入 event_loop；鼠标/触控板被此过滤排除，各自走独立通道]
+触摸屏 到 dispatch_touch_event() C 回调 在 ohos-native-bindings-zed/crates/xcomponent/src/events/native_callbacks.rs  [系统触摸事件进 Rust 第一站；构造 TouchEventData 转发给 X_COMPONENT_CALLBACKS.dispatch_touch_event]
+触摸屏 到 on_touch_event 闭包 在 openharmony-ability-zed/crates/ability/src/render/xcomponent.rs  [XComponent DispatchTouchEvent 回调；仅 tool_type == Finger 的触摸才推 Event::Input(TouchEvent) 入 event_loop；鼠标/触控板被此过滤排除，各自走独立通道]
 触摸屏 到 handle_input_event() 的 TouchEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [Down→MouseDown、Move→拖动、Up→MouseUp/滚动/惯性；触摸 slop 检测区分点击与滚动，滚动经 dispatch_touch_scroll_wheel]
 ```
 
 鼠标（`InputEvent::MouseEvent` → GPUI MouseMove/MouseDown/MouseUp，独立通道）：
 ```
-鼠标 到 on_mouse_event() C 回调 在 crates/gpui_ohos/depend/ohos-xcomponent-binding/src/events/native_callbacks.rs  [系统鼠标事件进 Rust 第一站；查询 ExtraMouseEventInfo 修饰键填 data.modifiers，构造 MouseEventData(含 button_mask) 转发给 X_COMPONENT_CALLBACKS.on_mouse_event]
-鼠标 到 on_mouse_event 闭包 + register_mouse_event_callback() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/render/xcomponent.rs  [XComponent RegisterMouseEventCallback；推 Event::Input(MouseEvent) 入 event_loop]
+鼠标 到 on_mouse_event() C 回调 在 ohos-native-bindings-zed/crates/xcomponent/src/events/native_callbacks.rs  [系统鼠标事件进 Rust 第一站；查询 ExtraMouseEventInfo 修饰键填 data.modifiers，构造 MouseEventData(含 button_mask) 转发给 X_COMPONENT_CALLBACKS.on_mouse_event]
+鼠标 到 on_mouse_event 闭包 + register_mouse_event_callback() 在 openharmony-ability-zed/crates/ability/src/render/xcomponent.rs  [XComponent RegisterMouseEventCallback；推 Event::Input(MouseEvent) 入 event_loop]
 鼠标 到 handle_input_event() 的 MouseEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [Move→MouseMove(pressed_button 从 button_mask 解析)、Press→MouseDown、Release→MouseUp；修饰键从事件即时查询，不缓存状态]
 鼠标 到 pressed_button_from_mask() / modifiers_from_key_mask() 在 crates/gpui_ohos/src/ohos/window.rs  [Move 事件从 button 位掩码即时解析按下的键；修饰键从事件携带值重建]
 鼠标 到 ClickTracker::on_button_press/current_count/on_click_complete 在 crates/gpui_ohos/src/ohos/window.rs  [双击/三击选词计数器；400ms/5px 阈值对齐 Linux，鼠标 Press/Release 与触摸屏 Down/Up 共享；Press 算 count、Release 记新双击基线]
@@ -236,9 +242,9 @@ OhosPlatform::new() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosTextSystem
 
 触控板 / 鼠标滚轮（`InputEvent::AxisEvent` → GPUI ScrollWheel，Axis 通道按 tool_type 区分设备）：
 ```
-滚轮 到 on_ui_input_event() C 回调 在 crates/gpui_ohos/depend/ohos-xcomponent-binding/src/events/native_callbacks.rs  [UIInputEvent(Axis) 进 Rust 第一站；转发给 X_COMPONENT_CALLBACKS.on_ui_input_event]
-滚轮 到 on_ui_input_event(UIInputEvent::Axis) 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/render/xcomponent.rs  [OH_NativeXComponent_RegisterUIInputEventCallback 仅支持 Axis 事件；注册 UIInputEvent::Axis，推 InputEvent 入 event_loop]
-滚轮 到 ui_input_event_to_input_event() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/input/mod.rs  [Axis 事件转 AxisEventData；tool_type Touchpad→AxisToolType::Touchpad、Mouse→AxisToolType::Mouse，区分触控板双指与鼠标滚轮]
+滚轮 到 on_ui_input_event() C 回调 在 ohos-native-bindings-zed/crates/xcomponent/src/events/native_callbacks.rs  [UIInputEvent(Axis) 进 Rust 第一站；转发给 X_COMPONENT_CALLBACKS.on_ui_input_event]
+滚轮 到 on_ui_input_event(UIInputEvent::Axis) 闭包 在 openharmony-ability-zed/crates/ability/src/render/xcomponent.rs  [OH_NativeXComponent_RegisterUIInputEventCallback 仅支持 Axis 事件；注册 UIInputEvent::Axis，推 InputEvent 入 event_loop]
+滚轮 到 ui_input_event_to_input_event() 在 openharmony-ability-zed/crates/ability/src/input/mod.rs  [Axis 事件转 AxisEventData；tool_type Touchpad→AxisToolType::Touchpad、Mouse→AxisToolType::Mouse，区分触控板双指与鼠标滚轮]
 滚轮 到 handle_input_event() 的 AxisEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [转 ScrollWheelEvent 分发]
 滚轮 到 handle_axis_input() 在 crates/gpui_ohos/src/ohos/window.rs  [modifiers.shift 按下时 swap 横纵轴（shift+滚轮水平滚动，对齐 gpui_linux）；Mouse→ScrollDelta::Lines(每 120 单位 3 行)、Touchpad→ScrollDelta::Pixels(1:1 不放大)；两分支对 scroll_vertical/horizontal 取反与触摸屏方向一致]
 ```
@@ -246,15 +252,15 @@ OhosPlatform::new() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosTextSystem
 IME 输入（ArkTS 插件持有 `InputMethodController`，控制面与输入面各占一条 NAPI 桥；不再是 NDK/TSFN 路径）：
 ```
 IME 到 ImePlugin 注册 在 hap/entry/src/main/ets/entryability/EntryAbility.ets  [EntryAbility.bridgePlugins 以 LazyPlugin 登记；窗口 stage 创建时由 NativeAbility 安装]
-IME 到 onInstall() 在 crates/gpui_ohos/depend/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [插件安装时调用一次；注册 windowSizeChange/windowRectChange 用于重算候选框位置]
-IME 到 invokeAsync() 在 .../plugins/ime/src/main/ets/ImePlugin.ets  [Rust 经异步桥调用；按 action 分派 attach / detach / update-cursor]
-IME 到 attach() → bindWithRetries() 在 .../ImePlugin.ets  [Rust 请求 attach；attachWithUIContext + showTextInput 后 attached=true，回调注册由 callbacksRegistered 单独保证只做一次。已 attached 的请求也必须真正重绑——窗口隐藏时系统会收走会话而该标志仍为 true（2026-09-15 修复）；绑定成功后末尾再调一次 updateCursor()，用缓存坐标重推候选框（ImePlugin.ets:216）]
-IME 到 stopInputSession() 在 .../ImePlugin.ets  [Rust 请求 detach；attached=false 并结束系统会话，controller 与回调保留复用]
-IME 到 updateCursor() → computeCursorScreenPos() 在 .../ImePlugin.ets  [三个触发源：Rust 请求 update-cursor、attach 绑定成功后由 bindWithRetries 末尾调用（ImePlugin.ets:216）、windowSizeChange/windowRectChange 由 onInstall 注册的监听触发；窗口坐标换算成屏幕坐标后喂 controller.updateCursor。守卫是 attached && controller && lastCursor，lastCursor 是 Rust 推来的最近一次光标，故 attach 那一刻若缓存为空则无坐标可推]
+IME 到 onInstall() 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [插件安装时调用一次；注册 windowSizeChange/windowRectChange 用于重算候选框位置]
+IME 到 invokeAsync() 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [Rust 经异步桥调用；按 action 分派 attach / detach / update-cursor]
+IME 到 attach() → bindWithRetries() 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [Rust 请求 attach；attachWithUIContext + showTextInput 后 attached=true，回调注册由 callbacksRegistered 单独保证只做一次。已 attached 的请求也必须真正重绑——窗口隐藏时系统会收走会话而该标志仍为 true（2026-09-15 修复）；绑定成功后末尾再调一次 updateCursor()，用缓存坐标重推候选框（ImePlugin.ets:216）]
+IME 到 stopInputSession() 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [Rust 请求 detach；attached=false 并结束系统会话，controller 与回调保留复用]
+IME 到 updateCursor() → computeCursorScreenPos() 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [三个触发源：Rust 请求 update-cursor、attach 绑定成功后由 bindWithRetries 末尾调用（ImePlugin.ets:216）、windowSizeChange/windowRectChange 由 onInstall 注册的监听触发；窗口坐标换算成屏幕坐标后喂 controller.updateCursor。守卫是 attached && controller && lastCursor，lastCursor 是 Rust 推来的最近一次光标，故 attach 那一刻若缓存为空则无坐标可推]
 IME 到 register_plugins() 在 crates/gpui_ohos/src/ohos/platform.rs  [OhosPlatform::new 启动时注册 ImeBridgePlugin（插件 ID "ohos.ime"）]
-IME 到 ImeBridgePlugin::on_main_thread_event() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-ime/src/lib.rs  [ArkTS invokeNativeSync 送来的主线程事件入口；按事件名分派 insert-text/delete-left/delete-right/function-key/keyboard-status/preview-text]
-IME 到 push_input() 在 .../crates/plugin-ime/src/lib.rs  [把 IME 回调转成 Event::Input(InputEvent::ImeEvent)，经 global_app().dispatch_input_event 入事件循环]
-IME 到 ImeClient::attach()/detach()/update_cursor() 在 .../crates/plugin-ime/src/lib.rs  [控制面入口，由 ImeExt::ime() 取得；经异步桥调 ArkTS 对应 action]
+IME 到 ImeBridgePlugin::on_main_thread_event() 在 openharmony-ability-zed/crates/plugin-ime/src/lib.rs  [ArkTS invokeNativeSync 送来的主线程事件入口；按事件名分派 insert-text/delete-left/delete-right/function-key/keyboard-status/preview-text]
+IME 到 push_input() 在 openharmony-ability-zed/crates/plugin-ime/src/lib.rs  [把 IME 回调转成 Event::Input(InputEvent::ImeEvent)，经 global_app().dispatch_input_event 入事件循环]
+IME 到 ImeClient::attach()/detach()/update_cursor() 在 openharmony-ability-zed/crates/plugin-ime/src/lib.rs  [控制面入口，由 ImeExt::ime() 取得；经异步桥调 ArkTS 对应 action]
 IME 到 handle_input_event() 的 ImeEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [ImeEvent 消费点；经 foreground_executor.spawn 异步处理]
 IME 到 handle_ime_backspace()/handle_ime_delete_forward()/handle_ime_enter() 在 crates/gpui_ohos/src/ohos/window.rs  [有组合(marked)文本→走 IME 文本层；无组合→派发真实 backspace/delete/enter KeyDown]
 IME 到 update_ime_enabled() 在 crates/gpui_ohos/src/ohos/window.rs  [唯一决策点；由 OhosWindowHandle::completed_frame 每帧调用（window.rs:2711-2714）；判据 active && input_handler.is_some()，与本地镜像 ime_enabled 比较做边沿检测，只在翻转时调 show_/hide_keyboard_if_needed，故每帧成本仅一次比较]
@@ -266,24 +272,24 @@ IME 到 push_ime_cursor_rect()/refresh_ime_cursor() 在 crates/gpui_ohos/src/oho
 
 窗口生命周期与 IME（关键时序，决定输入法能否被重新激活）：
 ```
-IME 到 onWindowStageEvent() 在 crates/gpui_ohos/depend/openharmony-ability/native_ability/src/main/ets/ability/NativeAbility.ets  [windowStage 注册；windowStageEvent 与 windowVisibilityChange 都由这里转发]
-IME 到 window_stage_event 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/lifecycle.rs  [ArkTS 送来的 event_type 原始整数映射为 Event：SHOWN(1)→Start、ACTIVE(2)→GainedFocus、INACTIVE(3)→LostFocus、HIDDEN(4)→Stop]
+IME 到 onWindowStageEvent() 在 target/ohos-arkts/openharmony-ability/native_ability/src/main/ets/ability/NativeAbility.ets  [windowStage 注册；windowStageEvent 与 windowVisibilityChange 都由这里转发]
+IME 到 window_stage_event 闭包 在 openharmony-ability-zed/crates/ability/src/lifecycle.rs  [ArkTS 送来的 event_type 原始整数映射为 Event：SHOWN(1)→Start、ACTIVE(2)→GainedFocus、INACTIVE(3)→LostFocus、HIDDEN(4)→Stop]
 ```
 实测时序（tablet）：最小化 `INACTIVE`→`HIDDEN`；恢复 `SHOWN`→`ACTIVE`，且 `windowVisibilityChange(true)` 比 `SHOWN` 晚约 30ms、`ACTIVE` 再晚约 100ms。**只有 `ACTIVE` 同时满足「已可见 + 已获焦」**：`GainedFocus` 写下 `active = true`（`LostFocus` 写 false，window.rs:1543 / :1560），而 attach 的判据里就含 `active`，所以恢复后只有 `ACTIVE` 之后那一帧的决策才可能建会话；在它之前的每一帧（含 `SHOWN`、`windowVisibilityChange(true)`）`wants_ime` 都判不出来，压根不会发起 attach。**不要把 attach 挂回任何窗口生命周期事件**：在「不可见、未获焦」的窗口上发起 attach，`attachWithUIContext`/`showTextInput` 不抛异常、ack 也正常，但系统不建会话，属静默失败。
 
 跨运行时跳转：
 ```
-IME 到 ImePlugin.invokeAsync() 在 .../plugins/ime/src/main/ets/ImePlugin.ets 到 [ohos.ime attach / detach / update-cursor] 到 ImeClient::attach()/detach()/update_cursor() 在 .../crates/plugin-ime/src/lib.rs  [控制面：Rust → ArkTS 异步桥]
-IME 到 registerCallbacksOnce() 注册的回调 在 .../ImePlugin.ets 到 [insert-text / delete-left / delete-right / function-key / keyboard-status / preview-text] 到 ImeBridgePlugin::on_main_thread_event() 在 .../crates/plugin-ime/src/lib.rs  [输入面：ArkTS → Rust 主线程同步桥；回调不可注销，重复注册会让一次按键裂成 N 个 insert-text]
-IME 到 push_input() 在 .../crates/plugin-ime/src/lib.rs 到 [Event::Input(InputEvent::ImeEvent)] 到 OhosWindow::handle_input_event() 在 crates/gpui_ohos/src/ohos/window.rs
-IME 到 window_stage_event 闭包 在 .../crates/ability/src/lifecycle.rs 到 [Event::GainedFocus / Event::LostFocus] 到 OhosWindow::handle_event() 在 crates/gpui_ohos/src/ohos/window.rs  [只是把窗口活跃状态写进 active（true/false，window.rs:1543 / :1560）；core 在该回调里还会 refresh() 产生一帧（crates/gpui/src/window.rs:1701），attach/detach 由那一帧的 update_ime_enabled() 据此决定，事件本身不再直接调用 show/hide]
+IME 到 ImePlugin.invokeAsync() 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets 到 [ohos.ime attach / detach / update-cursor] 到 ImeClient::attach()/detach()/update_cursor() 在 openharmony-ability-zed/crates/plugin-ime/src/lib.rs  [控制面：Rust → ArkTS 异步桥]
+IME 到 registerCallbacksOnce() 注册的回调 在 target/ohos-arkts/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets 到 [insert-text / delete-left / delete-right / function-key / keyboard-status / preview-text] 到 ImeBridgePlugin::on_main_thread_event() 在 openharmony-ability-zed/crates/plugin-ime/src/lib.rs  [输入面：ArkTS → Rust 主线程同步桥；回调不可注销，重复注册会让一次按键裂成 N 个 insert-text]
+IME 到 push_input() 在 openharmony-ability-zed/crates/plugin-ime/src/lib.rs 到 [Event::Input(InputEvent::ImeEvent)] 到 OhosWindow::handle_input_event() 在 crates/gpui_ohos/src/ohos/window.rs
+IME 到 window_stage_event 闭包 在 openharmony-ability-zed/crates/ability/src/lifecycle.rs 到 [Event::GainedFocus / Event::LostFocus] 到 OhosWindow::handle_event() 在 crates/gpui_ohos/src/ohos/window.rs  [只是把窗口活跃状态写进 active（true/false，window.rs:1543 / :1560）；core 在该回调里还会 refresh() 产生一帧（crates/gpui/src/window.rs:1701），attach/detach 由那一帧的 update_ime_enabled() 据此决定，事件本身不再直接调用 show/hide]
 ```
 
 键盘输入（物理按键 `InputEvent::KeyEvent` → GPUI Keystroke + 文本兜底）：
 ```
-键盘 到 on_key_event() 注册方法 在 crates/gpui_ohos/depend/ohos-xcomponent-binding/src/native_xcomponent.rs  [封装 OH_NativeXComponent_RegisterKeyEventCallback；由 xcomponent.rs render() 初始化时调用，把 C 回调挂到 XComponent 上]
-键盘 到 key_event() C 回调 在 crates/gpui_ohos/depend/ohos-xcomponent-binding/src/events/native_callbacks.rs  [NDK 按键事件进入 Rust 第一站；查询 code/action/modifier_state/capslock 构造 KeyEventData，转发给 X_COMPONENT_CALLBACKS.on_key_event]
-键盘 到 on_key_event 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/render/xcomponent.rs  [render() 里 xcomponent.on_key_event(...) 注册的 Rust 闭包；XComponent 按键事件触发，推 Event::Input(InputEvent::KeyEvent) 入 event_loop]
+键盘 到 on_key_event() 注册方法 在 ohos-native-bindings-zed/crates/xcomponent/src/native_xcomponent.rs  [封装 OH_NativeXComponent_RegisterKeyEventCallback；由 xcomponent.rs render() 初始化时调用，把 C 回调挂到 XComponent 上]
+键盘 到 key_event() C 回调 在 ohos-native-bindings-zed/crates/xcomponent/src/events/native_callbacks.rs  [NDK 按键事件进入 Rust 第一站；查询 code/action/modifier_state/capslock 构造 KeyEventData，转发给 X_COMPONENT_CALLBACKS.on_key_event]
+键盘 到 on_key_event 闭包 在 openharmony-ability-zed/crates/ability/src/render/xcomponent.rs  [render() 里 xcomponent.on_key_event(...) 注册的 Rust 闭包；XComponent 按键事件触发，推 Event::Input(InputEvent::KeyEvent) 入 event_loop]
 键盘 到 handle_input_event() 的 KeyEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [收到 KeyDown 时调用；无状态处理，不缓存任何修饰键状态]
 键盘 到 key_event_to_keystroke() 在 crates/gpui_ohos/src/ohos/keycodes.rs  [KeyEvent → GPUI Keystroke；key_char 字母大小写按 shift XOR capslock 计算，与桌面 xkb 一致；功能键（方向键/回车/删除/F1-F12）key_char 为 None]
 键盘 到 dispatch_input() 在 crates/gpui_ohos/src/ohos/window.rs  [KeyDown 分发到 GPUI；GPUI 未消费（propagate）且 key_char 有值且修饰键只含 shift 时，X11 式兜底：input_handler.replace_text_in_range(None, key_char) 输入字符]
@@ -294,9 +300,9 @@ IME 到 window_stage_event 闭包 在 .../crates/ability/src/lifecycle.rs 到 [E
 
 键盘焦点与输入路由（关键约束，影响按键是否到达 Rust）：
 ```
-焦点 到 set_focusable/set_default_focus 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/render/xcomponent.rs  [XComponent 必须可聚焦并成为默认焦点；否则系统把按键路由给 ArkTS 层焦点节点（DefaultXComponent 的 Row/secure_field），NDK on_key_event 永不触发（2026-08-18 修复）]
+焦点 到 set_focusable/set_default_focus 在 openharmony-ability-zed/crates/ability/src/render/xcomponent.rs  [XComponent 必须可聚焦并成为默认焦点；否则系统把按键路由给 ArkTS 层焦点节点（DefaultXComponent 的 Row/secure_field），NDK on_key_event 永不触发（2026-08-18 修复）]
 焦点 到 window.handle_input() 在 crates/gpui/src/window.rs  [编辑器渲染时注册 input handler，仅当 focus_handle.is_focused 时生效；draw 结束 set_input_handler 到平台窗口，字符输入/IME 依赖它存在]
-键盘 到 OH_NativeXComponent_GetKeyEventCapsLockState 在 crates/gpui_ohos/depend/ohos-xcomponent-binding/src/events/native_callbacks.rs  [查询按键事件时的 CapsLock 状态入 KeyEventData.capslock；modifier_state 无 capslock 位]
+键盘 到 OH_NativeXComponent_GetKeyEventCapsLockState 在 ohos-native-bindings-zed/crates/xcomponent/src/events/native_callbacks.rs  [查询按键事件时的 CapsLock 状态入 KeyEventData.capslock；modifier_state 无 capslock 位]
 ```
 
 跨运行时跳转：
@@ -314,18 +320,18 @@ OhosWindow::dispatch_input() 兜底 到 input_handler.replace_text_in_range() �
 
 捏合（pinch）：
 ```
-捏合 到 PinchPlugin.ets onAction 在 crates/gpui_ohos/depend/openharmony-ability/plugins/pinch/src/main/ets/PinchPlugin.ets  [透明 overlay 绑定 PinchGesture；invokeNativeSync(pinch-begin/update/end, PinchSample{scale, center_x, center_y})]
-捏合 到 PinchBridgePlugin::on_main_thread_event 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-pinch/src/lib.rs  [解析 PinchSample；Begin/End 重置 LAST_SCALE、Update 算增量 delta = scale - last_scale；thread_local PINCH_CALLBACK 回调]
+捏合 到 PinchPlugin.ets onAction 在 target/ohos-arkts/openharmony-ability/plugins/pinch/src/main/ets/PinchPlugin.ets  [透明 overlay 绑定 PinchGesture；invokeNativeSync(pinch-begin/update/end, PinchSample{scale, center_x, center_y})]
+捏合 到 PinchBridgePlugin::on_main_thread_event 在 openharmony-ability-zed/crates/plugin-pinch/src/lib.rs  [解析 PinchSample；Begin/End 重置 LAST_SCALE、Update 算增量 delta = scale - last_scale；thread_local PINCH_CALLBACK 回调]
 捏合 到 dispatch_pinch_event() 在 crates/gpui_ohos/src/ohos/window.rs  [累积 delta，越过 PINCH_ZOOM_THRESHOLD(0.15) 才发一步 Ctrl+ScrollWheel(Lines±1)；End 清零累积器；GPUI editor 不消费 PinchEvent，转 Ctrl+滚轮实现 zoom]
 捏合 到 register_platform_event_handlers() 在 crates/gpui_ohos/src/ohos/window.rs  [set_pinch_callback 注册 thread_local 回调，主线程事件驱动]
 ```
 
 文件拖放（filedrop）：
 ```
-拖放 到 FileDropPlugin.ets onDragEnter/onDragMove/onDrop 在 crates/gpui_ohos/depend/openharmony-ability/plugins/filedrop/src/main/ets/FileDropPlugin.ets  [透明 overlay 绑定拖放事件；onDrop 用 event.getData().getRecords() 取 File URI + getWindowX/Y 取位置，invokeNativeSync(drag-enter/drag-move/drop-files)]
-拖放 到 FileDropBridgePlugin::on_main_thread_event 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-filedrop/src/lib.rs  [解析 DragMoveData/DropFilesData；构造 FileDropEventData(Enter/Move/Drop) 经 thread_local FILEDROP_CALLBACK 回调]
+拖放 到 FileDropPlugin.ets onDragEnter/onDragMove/onDrop 在 target/ohos-arkts/openharmony-ability/plugins/filedrop/src/main/ets/FileDropPlugin.ets  [透明 overlay 绑定拖放事件；onDrop 用 event.getData().getRecords() 取 File URI + getWindowX/Y 取位置，invokeNativeSync(drag-enter/drag-move/drop-files)]
+拖放 到 FileDropBridgePlugin::on_main_thread_event 在 openharmony-ability-zed/crates/plugin-filedrop/src/lib.rs  [解析 DragMoveData/DropFilesData；构造 FileDropEventData(Enter/Move/Drop) 经 thread_local FILEDROP_CALLBACK 回调]
 拖放 到 dispatch_filedrop_enter/dispatch_filedrop_move/dispatch_drop_files 在 crates/gpui_ohos/src/ohos/window.rs  [Enter→空 paths FileDrop::Entered 建 drag 态；Move→MouseMove+FileDrop::Pending 保持 hover 链；Drop→path_from_uri 解析授权→带路径 Entered+Submit 同步触发 on_drop]
-拖放 到 path_from_uri() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/file_uri.rs  [OH_FileUri_GetPathFromUri 映射 URI→沙箱路径 + OH_FileShare_PersistPermission 持久化授权]
+拖放 到 path_from_uri() 在 openharmony-ability-zed/crates/ability/src/file_uri.rs  [OH_FileUri_GetPathFromUri 映射 URI→沙箱路径 + OH_FileShare_PersistPermission 持久化授权]
 拖放 到 gpui dispatch_event() 的 FileDrop 分支 在 crates/gpui/src/window.rs  [首次 Entered 建 active_drag（空 paths）；后续 Entered 在 active_drag 已存在且载荷为 ExternalPaths 时刷新 paths（2026-08-21 修复）；Submit→MouseUp→on_drop→handle_external_paths_drop→open_paths]
 ```
 
@@ -335,7 +341,7 @@ OhosWindow::dispatch_input() 兜底 到 input_handler.replace_text_in_range() �
 
 ```
 光标 到 set_cursor_style() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 GPUI reset_cursor_style 在鼠标 hover 元素变化时调用（Platform trait）；cursor_style_to_pointer_style 映射 21 个 CursorStyle → Input_PointerStyle → last_cursor_style 去重（相同跳过）→ app.set_cursor_style（CursorExt）]
-光标 到 CursorExt::set_cursor_style() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-cursor/src/lib.rs  [由 OhosPlatform::set_cursor_style 调用；读 WINDOW_ID 全局（None 时 warn 返回 false）→ OH_Input_SetPointerStyle(window_id, pointer_style)，非 0 返回值 log error]
+光标 到 CursorExt::set_cursor_style() 在 openharmony-ability-zed/crates/plugin-cursor/src/lib.rs  [由 OhosPlatform::set_cursor_style 调用；读 WINDOW_ID 全局（None 时 warn 返回 false）→ OH_Input_SetPointerStyle(window_id, pointer_style)，非 0 返回值 log error]
 光标 到 handle_hover_event() 在 crates/gpui_ohos/src/ohos/window.rs  [由 handle_input_event 的 HoverEvent 分支调用；仿 Linux set_hovered（take 回调 → 调用 → 放回），触发 hover_status_change(is_hover) 更新 GPUI hovered]
 光标 到 handle_ohos_event() 的 HoverEvent(false) 分支 在 crates/gpui_ohos/src/ohos/platform.rs  [鼠标离开窗口时重置 last_cursor_style 去重缓存 + 恢复默认光标（pointer_style=0），避免再次进入时去重跳过导致光标不恢复]
 光标 到 cursor_style_to_pointer_style() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 set_cursor_style 调用；CursorStyle 各变体 → OHOS Input_PointerStyle 枚举值（Arrow→0 / PointingHand→19 / IBeam→26 等）]
@@ -343,22 +349,22 @@ OhosWindow::dispatch_input() 兜底 到 input_handler.replace_text_in_range() �
 
 windowId 初始化链路（ArkTS → Rust，只在窗口 stage 就绪时发生一次）：
 ```
-光标 到 CursorBridgePlugin::on_main_thread_event() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-cursor/src/lib.rs  [由 ArkTS CursorPlugin.onInstall 经 invokeNativeSync 发 "window-id" 事件触发；decode::<i32> 存入 WINDOW_ID，响应 WindowIdResponse；WindowStageDestroyed 生命周期清空]
+光标 到 CursorBridgePlugin::on_main_thread_event() 在 openharmony-ability-zed/crates/plugin-cursor/src/lib.rs  [由 ArkTS CursorPlugin.onInstall 经 invokeNativeSync 发 "window-id" 事件触发；decode::<i32> 存入 WINDOW_ID，响应 WindowIdResponse；WindowStageDestroyed 生命周期清空]
 ```
 
 跨文件跳转：
 ```
-OhosPlatform::set_cursor_style() 在 crates/gpui_ohos/src/ohos/platform.rs 到 CursorExt::set_cursor_style() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-cursor/src/lib.rs  [CursorExt trait 扩展 OpenHarmonyApp，由 openharmony-ability-plugin-cursor crate 提供]
+OhosPlatform::set_cursor_style() 在 crates/gpui_ohos/src/ohos/platform.rs 到 CursorExt::set_cursor_style() 在 openharmony-ability-zed/crates/plugin-cursor/src/lib.rs  [CursorExt trait 扩展 OpenHarmonyApp，由 openharmony-ability-plugin-cursor crate 提供]
 OhosWindow::handle_hover_event() 在 crates/gpui_ohos/src/ohos/window.rs 到 hover_status_change 回调 在 crates/gpui/src/window.rs  [GPUI 注册的回调：window.hovered.set(is_hover) + window.refresh()；is_window_hovered 读 hovered 决定 reset_cursor_style 是否生效]
 OhosWindow::handle_mouse_input() 在 crates/gpui_ohos/src/ohos/window.rs 到 dispatch_input(MouseMove) 在 crates/gpui/src/window.rs  [鼠标移动进 GPUI → dispatch_mouse_event → hit_test 变化才 reset_cursor_style → cx.platform.set_cursor_style]
 ```
 
 跨运行时跳转：
 ```
-CursorPlugin.onInstall() 在 crates/gpui_ohos/depend/openharmony-ability/plugins/cursor/src/main/ets/CursorPlugin.ets 到 ["window-id" main-thread 事件] 到 CursorBridgePlugin::on_main_thread_event() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-cursor/src/lib.rs  [ArkTS getWindow().getWindowProperties().id（getWindow 失败回退 getWindowStage().getMainWindowSync()）→ invokeNativeSync → Rust 插件 on_main_thread_event]
+CursorPlugin.onInstall() 在 target/ohos-arkts/openharmony-ability/plugins/cursor/src/main/ets/CursorPlugin.ets 到 ["window-id" main-thread 事件] 到 CursorBridgePlugin::on_main_thread_event() 在 openharmony-ability-zed/crates/plugin-cursor/src/lib.rs  [ArkTS getWindow().getWindowProperties().id（getWindow 失败回退 getWindowStage().getMainWindowSync()）→ invokeNativeSync → Rust 插件 on_main_thread_event]
 XComponent DispatchHoverEvent 到 [Event::Input(HoverEvent(bool))] 到 OhosWindow::handle_hover_event() 在 crates/gpui_ohos/src/ohos/window.rs  [系统鼠标进入/离开窗口 → native_callbacks on_hover_event → xcomponent.rs on_hover_event 闭包 → event_loop → 窗口；is_hover=true/false 驱动 GPUI hovered（仿 X11 XinputEnter/Leave → set_hovered）]
 XComponent DispatchMouseEvent 到 [Event::Input(MouseEvent)] 到 OhosWindow::handle_mouse_input() 在 crates/gpui_ohos/src/ohos/window.rs  [系统鼠标移动/按键 → native_callbacks on_mouse_event → xcomponent.rs on_mouse_event 闭包 → event_loop → 窗口 → GPUI MouseMove/Down/Up]
-CursorExt::set_cursor_style() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-cursor/src/lib.rs 到 [OH_Input_SetPointerStyle] 到 系统光标服务  [libohinput.so（API 22+）；window_id + Input_PointerStyle 值（0=默认 / 19=手型 / 26=IBeam）]
+CursorExt::set_cursor_style() 在 openharmony-ability-zed/crates/plugin-cursor/src/lib.rs 到 [OH_Input_SetPointerStyle] 到 系统光标服务  [libohinput.so（API 22+）；window_id + Input_PointerStyle 值（0=默认 / 19=手型 / 26=IBeam）]
 ```
 
 ### 窗口与事件模块
@@ -388,7 +394,7 @@ OhosWindow::handle_event() 的 WindowResize 分支 到 WgpuRenderer::update_draw
 调度 到 dispatch_on_main_thread() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由要求在主线程执行的 GPUI 任务调用；进 PriorityQueueSender 后 waker.wake()，由 run_loop 消费]
 调度 到 run_foreground_tasks() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 handle_ohos_event 的 UserEvent 分支调用；从 main_receiver 取出排队的 foreground 任务逐条执行]
 调度 到 execute_runnable() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [由 run_foreground_tasks() 在主线程调用；runnable.run() 执行 GPUI foreground 任务]
-调度 到 WorkerPool 在 crates/gpui_ohos/depend/openharmony-ability/crates/worker-pool/src/lib.rs  [由 OhosDispatcher::new() 创建：线程名前缀 gpui-ohos-bg（每 worker 名为 {prefix}-{index}），worker 数 = available_parallelism().clamp(1,4)（查询失败回退 1）；worker 空闲时阻塞在 condvar 上，不空转]
+调度 到 WorkerPool 在 openharmony-ability-zed/crates/worker-pool/src/lib.rs  [由 OhosDispatcher::new() 创建：线程名前缀 gpui-ohos-bg（每 worker 名为 {prefix}-{index}），worker 数 = available_parallelism().clamp(1,4)（查询失败回退 1）；worker 空闲时阻塞在 condvar 上，不空转]
 ```
 
 跨运行时跳转：
@@ -454,7 +460,7 @@ Profiler 到 spawn_profiler_sampler() 在 crates/gpui_ohos/src/ohos/platform.rs 
 定时器 到 LinuxDispatcher::dispatch_after() 在 crates/gpui_linux/src/linux/dispatcher.rs  [Linux 分支；calloop channel 发 TimerAfter{duration, runnable} 给 Timer 线程]
 定时器 到 Timer 线程 在 crates/gpui_linux/src/linux/dispatcher.rs  [独立 calloop 事件循环线程；insert_source calloop::Timer::from_duration，到点 runnable.run()（在 Timer 线程执行）]
 定时器 到 OhosDispatcher::dispatch_after() 在 crates/gpui_ohos/src/ohos/dispatcher.rs  [OHOS 分支；OpenHarmonyTimer::start 排定 FFRT 定时器，回调在 FFRT worker 线程执行 runnable.run()；FFRT 不可用时 inline fallback 执行（log::error 后直接 callback()）]
-定时器 到 OpenHarmonyTimer::start() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/timer.rs  [由 OhosDispatcher::dispatch_after 调用；ffrt_timer_start(QoS=ffrt_qos_default) 排定一次性回调，到点 ffrt_timer_callback 在 FFRT worker 线程执行（catch_unwind 包住），handle<0 时把回调交回调用方 fallback]
+定时器 到 OpenHarmonyTimer::start() 在 openharmony-ability-zed/crates/ability/src/timer.rs  [由 OhosDispatcher::dispatch_after 调用；ffrt_timer_start(QoS=ffrt_qos_default) 排定一次性回调，到点 ffrt_timer_callback 在 FFRT worker 线程执行（catch_unwind 包住），handle<0 时把回调交回调用方 fallback]
 ```
 
 主要消费者（全部是 `executor.timer(...).await` 的延迟/周期任务）：
@@ -486,22 +492,22 @@ OhosDispatcher::dispatch_after() 到 [ffrt_timer_start] 到 FFRT worker 线程 f
 跨文件跳转：
 ```
 OhosPlatform::set_app() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OhosDisplay::new() 在 crates/gpui_ohos/src/ohos/display.rs
-OhosDisplay::bounds() 在 crates/gpui_ohos/src/ohos/display.rs 到 OpenHarmonyApp::content_rect() 在 openharmony-ability crates/ability/src/app.rs
+OhosDisplay::bounds() 在 crates/gpui_ohos/src/ohos/display.rs 到 OpenHarmonyApp::content_rect() 在 openharmony-ability-zed/crates/ability/src/app.rs
 ```
 
 ### NAPI 桥接模块（openharmony-ability）
 
 ```
-桥接 到 OpenHarmonyApp::run_loop() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [由 OhosPlatform::run() 调用；注册 ArkTS 事件回调，收到 Event 转给 run_loop 闭包]
-桥接 到 native_window() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [由 OhosWindow::initialize_renderer() 调用；返回 RawWindow(OH_NativeWindow)]
-桥接 到 content_rect() / window_rect() / avoid_area() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [由 OhosDisplay/OhosWindow 查询窗口几何/遮挡时调用]
-桥接 到 show_keyboard() / hide_keyboard() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [由 OhosWindow 软键盘显隐时调用]
-桥接 到 create_waker() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [由 OhosPlatform::set_app() 调用；创建 TSFN waker]
-桥接 到 bridge() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [由 Rust 侧调用 ArkTS 插件能力时使用；TSFN 桥接]
-桥接 到 config() 在 zed-ohos-gpui/openharmony-ability/crates/ability/src/app.rs  [查询应用配置（主题/密度等）]
+桥接 到 OpenHarmonyApp::run_loop() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 OhosPlatform::run() 调用；注册 ArkTS 事件回调，收到 Event 转给 run_loop 闭包]
+桥接 到 native_window() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 OhosWindow::initialize_renderer() 调用；返回 RawWindow(OH_NativeWindow)]
+桥接 到 content_rect() / window_rect() / avoid_area() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 OhosDisplay/OhosWindow 查询窗口几何/遮挡时调用]
+桥接 到 show_keyboard() / hide_keyboard() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 OhosWindow 软键盘显隐时调用]
+桥接 到 create_waker() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 OhosPlatform::set_app() 调用；创建 TSFN waker]
+桥接 到 bridge() 在 openharmony-ability-zed/crates/ability/src/app.rs  [由 Rust 侧调用 ArkTS 插件能力时使用；TSFN 桥接]
+桥接 到 config() 在 openharmony-ability-zed/crates/ability/src/app.rs  [查询应用配置（主题/密度等）]
 ```
 
-Event 枚举（`zed-ohos-gpui/openharmony-ability/crates/ability/src/event.rs`）：`WindowCreate`/`WindowDestroy`、`SurfaceCreate`/`SurfaceDestroy`、`WindowResize`、`ContentRectChange`、`AvoidAreaChange`、`ConfigChanged`、`GainedFocus`/`LostFocus`、`VisibilityChanged(bool)`、`Start`/`Stop`/`Resume`/`Pause`、`SaveState`、`Create`/`Destroy`、`Input(InputEvent)`、`KeyboardEvent(i32)`、`LowMemory`、`UserEvent`。
+Event 枚举（`openharmony-ability-zed/crates/ability/src/event.rs`）：`WindowCreate`/`WindowDestroy`、`SurfaceCreate`/`SurfaceDestroy`、`WindowResize`、`ContentRectChange`、`AvoidAreaChange`、`ConfigChanged`、`GainedFocus`/`LostFocus`、`VisibilityChanged(bool)`、`Start`/`Stop`/`Resume`/`Pause`、`SaveState`、`Create`/`Destroy`、`Input(InputEvent)`、`KeyboardEvent(i32)`、`LowMemory`、`UserEvent`。
 
 跨运行时跳转：
 ```
@@ -512,13 +518,13 @@ ArkTS 窗口/表面/输入/生命周期事件 到 [NAPI → Event 枚举] 到 Oh
 
 ```
 剪贴板 到 read_from_clipboard() / write_to_clipboard() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 GPUI 编辑器复制/粘贴操作触发（Platform trait 实现）；ClipboardItem ↔ String 适配在平台层]
-剪贴板 到 read_text() / write_text() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/clipboard.rs  [由 OhosPlatform::read/write_to_clipboard 调用；Rust FFI 直调 NDK C API（OH_Pasteboard + UDMF），免 READ_PASTEBOARD 权限]
+剪贴板 到 read_text() / write_text() 在 openharmony-ability-zed/crates/ability/src/clipboard.rs  [由 OhosPlatform::read/write_to_clipboard 调用；Rust FFI 直调 NDK C API（OH_Pasteboard + UDMF），免 READ_PASTEBOARD 权限]
 ```
 
 跨文件跳转：
 ```
-OhosPlatform::read_from_clipboard() 在 crates/gpui_ohos/src/ohos/platform.rs 到 openharmony_ability::read_text() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/clipboard.rs
-OhosPlatform::write_to_clipboard() 在 crates/gpui_ohos/src/ohos/platform.rs 到 openharmony_ability::write_text() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/clipboard.rs
+OhosPlatform::read_from_clipboard() 在 crates/gpui_ohos/src/ohos/platform.rs 到 openharmony_ability::read_text() 在 openharmony-ability-zed/crates/ability/src/clipboard.rs
+OhosPlatform::write_to_clipboard() 在 crates/gpui_ohos/src/ohos/platform.rs 到 openharmony_ability::write_text() 在 openharmony-ability-zed/crates/ability/src/clipboard.rs
 ```
 
 跨运行时跳转：
@@ -530,20 +536,20 @@ clipboard.rs 到 [NDK C API OH_Pasteboard_* / OH_UdmfData_*] 到 系统剪贴板
 
 ```
 文件选择 到 prompt_for_paths() / prompt_for_new_path() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 GPUI 打开文件/目录/保存操作触发（Ctrl+O=OpenFiles、Ctrl+K Ctrl+O=Open）；directories→OPEN_FOLDER、multiple→allow_many，foreground_executor.spawn 异步 + oneshot 返回]
-文件选择 到 show_file_dialog() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-files/src/lib.rs  [由 OhosPlatform::prompt_for_paths 调用；FilesExt trait 扩展 OpenHarmonyApp，构造 FileDialogOptions 经 bridge 发给 ArkTS]
-文件选择 到 path_from_uri() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/file_uri.rs  [由 platform.rs 对返回的 URI 数组调用；OH_FileUri_GetPathFromUri 转本地路径，内部先 OH_FileShare_PersistPermission 固化授权（打开即持久化）]
+文件选择 到 show_file_dialog() 在 openharmony-ability-zed/crates/plugin-files/src/lib.rs  [由 OhosPlatform::prompt_for_paths 调用；FilesExt trait 扩展 OpenHarmonyApp，构造 FileDialogOptions 经 bridge 发给 ArkTS]
+文件选择 到 path_from_uri() 在 openharmony-ability-zed/crates/ability/src/file_uri.rs  [由 platform.rs 对返回的 URI 数组调用；OH_FileUri_GetPathFromUri 转本地路径，内部先 OH_FileShare_PersistPermission 固化授权（打开即持久化）]
 文件选择 到 register_plugins() 在 crates/gpui_ohos/src/ohos/platform.rs  [由 OhosPlatform::set_app() 调用；集中注册 FilesBridgePlugin（平台能力插件一律在此注册，禁止 zed 应用层注册）]
 ```
 
 跨文件跳转：
 ```
-OhosPlatform::prompt_for_paths() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OpenHarmonyApp::show_file_dialog() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-files/src/lib.rs  [FilesExt trait 扩展方法]
-OhosPlatform::prompt_for_paths() 在 crates/gpui_ohos/src/ohos/platform.rs 到 path_from_uri() 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/file_uri.rs  [URI → PathBuf，同时固化授权]
+OhosPlatform::prompt_for_paths() 在 crates/gpui_ohos/src/ohos/platform.rs 到 OpenHarmonyApp::show_file_dialog() 在 openharmony-ability-zed/crates/plugin-files/src/lib.rs  [FilesExt trait 扩展方法]
+OhosPlatform::prompt_for_paths() 在 crates/gpui_ohos/src/ohos/platform.rs 到 path_from_uri() 在 openharmony-ability-zed/crates/ability/src/file_uri.rs  [URI → PathBuf，同时固化授权]
 ```
 
 跨运行时跳转：
 ```
-show_file_dialog() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-files/src/lib.rs 到 [bridge call_async "file-dialog"] 到 FilesPlugin.invokeAsync() 在 crates/gpui_ohos/depend/openharmony-ability/plugins/files/src/main/ets/FilesPlugin.ets  [Rust facade 经 TSFN 调 ArkTS 插件；FileDialogOptions/Response 走 impl_bridge_napi_type 命名类型]
+show_file_dialog() 在 openharmony-ability-zed/crates/plugin-files/src/lib.rs 到 [bridge call_async "file-dialog"] 到 FilesPlugin.invokeAsync() 在 target/ohos-arkts/openharmony-ability/plugins/files/src/main/ets/FilesPlugin.ets  [Rust facade 经 TSFN 调 ArkTS 插件；FileDialogOptions/Response 走 impl_bridge_napi_type 命名类型]
 FilesPlugin.invokeAsync() 到 [DocumentViewPicker.select/save] 到 系统文件选择器  [ArkTS 侧；目录模式 selectMode=FOLDER 不做 canIUse 预检直接让系统决定（warp 同款）；保存走 save()]
 ```
 
@@ -1175,7 +1181,7 @@ MCP OAuth 到 CIMD_URL 在 crates/context_server/src/oauth.rs 到 [GET https://z
 
 - `hap/entry/src/main/ets/entryability/EntryAbility.ets`：`moduleName = "hicodeer"`。
 - `script/bundle-ohos`：`cargo build --lib -p launch-zed`（`CRATE="launch-zed"`）→ 产物直接是 `libhicodeer.so`（launch-zed 的 `[lib] name = "hicodeer"`），复制到 HAP `entry/libs/arm64-v8a/`（`OHOS_LIB_NAME` 可覆盖）。
-- `crates/gpui_ohos/depend/openharmony-ability/crates/launch-zed/`：NAPI 入口 crate（cdylib，libhicodeer.so）。`src/launch_app.rs` 的 `#[ability] launch_app` + `src/lib.rs` 的 `pthread_mutex_*` 补丁符号 + `build.rs` 的 `napi_build_ohos::setup()`。
+- `crates/gpui_ohos/depend/launch-zed/`：NAPI 入口 crate（cdylib，libhicodeer.so）。`src/launch_app.rs` 的 `#[ability] launch_app` + `src/lib.rs` 的 `pthread_mutex_*` 补丁符号 + `build.rs` 的 `napi_build_ohos::setup()`。
 - `crates/zed/src/lib.rs`：仅 `#[cfg(target_env = "ohos")] include!("main.rs")`。
 - `crates/zed/src/main.rs`：`#[cfg(target_env = "ohos")] pub fn start_zed_main(base_path: Option<String>)`（设 data_dir → main）。
 - `crates/zed/Cargo.toml`：`[lib] crate-type = ["rlib"]`；ohos 分支无 `openharmony-ability`/`napi` 依赖（依赖反转：launch-zed 依赖 zed）。
