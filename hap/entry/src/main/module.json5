@@ -10,6 +10,7 @@
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
+    "compressNativeLibs": true,
     "pages": "$profile:main_pages",
     "abilities": [
       {
@@ -148,15 +149,7 @@
     ],
     "hnpPackages": [
       {
-        "package": "openssh.hnp",
-        "type": "private"
-      },
-      {
         "package": "git.hnp",
-        "type": "private"
-      },
-      {
-        "package": "curl.hnp",
         "type": "private"
       },
       {

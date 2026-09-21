@@ -330,10 +330,11 @@ needs_strip() {
 export NAPI_BUILD_TARGET_NAME=hicodeer
 
 # 全量编译加 -A warnings 避免既有警告阻塞；
-# codegen-units=16 降低编译内存峰值
+# release 用 codegen-units=2：Cargo.toml 的 1 在本机内存下编译不了，
+# 16 又会让单态化重复过多、产物体积偏大，越小体积越省但内存峰值越高
 export RUSTFLAGS="${RUSTFLAGS:-} -A warnings"
 if [ "$IS_RELEASE" = true ]; then
-  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=2
 else
   export CARGO_PROFILE_DEV_CODEGEN_UNITS=16
 fi
@@ -453,14 +454,22 @@ if [ "$MODE" != "hap" ]; then
     exit 1
   fi
 
-  # Regenerate the fixed management key pairs on every build: each HAP must ship
-  # a fresh set so keys left on a device from an older build never match.
+  # Fixed management keys (temporary measure): reuse the pair already in KEYS_DIR
+  # instead of regenerating it every build, so a freshly installed HAP still
+  # matches the hicodeerd already running on the device (a fresh pair per build
+  # forced a device restart after every install). The pair is generated once when
+  # absent; set MGMT_KEYS_REGENERATE=1 to restore the per-build regeneration
+  # (the original generate commands below are unchanged).
+  MGMT_KEYS_REGENERATE=0
   KEYS_DIR="$RUST_TARGET_ROOT/${TARGET_PREFIX}-hicodeerd-keys"
   mkdir -p "$KEYS_DIR"
-  rm -f "$KEYS_DIR"/mgmt_host_key "$KEYS_DIR"/mgmt_host_key.pub \
-        "$KEYS_DIR"/mgmt_client_key "$KEYS_DIR"/mgmt_client_key.pub
-  ssh-keygen -t ed25519 -N '' -f "$KEYS_DIR/mgmt_host_key" -q
-  ssh-keygen -t ed25519 -N '' -f "$KEYS_DIR/mgmt_client_key" -q
+  if [ "$MGMT_KEYS_REGENERATE" = 1 ] \
+     || [ ! -f "$KEYS_DIR/mgmt_host_key" ] || [ ! -f "$KEYS_DIR/mgmt_client_key" ]; then
+    rm -f "$KEYS_DIR"/mgmt_host_key "$KEYS_DIR"/mgmt_host_key.pub \
+          "$KEYS_DIR"/mgmt_client_key "$KEYS_DIR"/mgmt_client_key.pub
+    ssh-keygen -t ed25519 -N '' -f "$KEYS_DIR/mgmt_host_key" -q
+    ssh-keygen -t ed25519 -N '' -f "$KEYS_DIR/mgmt_client_key" -q
+  fi
 
   # Stage the public-HNP payload: <pkg>/bin/<daemon binary>, <pkg>/conf/<server
   # keys> and <pkg>/shim/<preloads>.
@@ -914,7 +923,7 @@ PY
     rm -f "$VERIFY_CHAIN" "$VERIFY_PROFILE"
     echo "[hicodeer-ohos-build] INSTALLABLE (with hnp): $HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
   else
-    echo "[hicodeer-ohos-build] WARN: $HNP_SRC_DIR 无 .hnp 载荷，HAP 将不含本机 git/ssh（本地路由会报缺工具）" >&2
+    echo "[hicodeer-ohos-build] WARN: $HNP_SRC_DIR 无 .hnp 载荷，HAP 将不含本机 git（本地路由会报缺工具）" >&2
   fi
 
 fi

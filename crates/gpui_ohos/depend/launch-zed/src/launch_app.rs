@@ -29,7 +29,7 @@ pub fn launch_app(app: openharmony_ability::OpenHarmonyApp) {
     // on-device tools never changes while the process lives, so util::command
     // routes local vs the daemon from this snapshot without re-reading the directory.
     util::command::init_local_tools();
-    // [diag] Report which on-device HNP tools (git/ssh/curl) resolved once the
+    // [diag] Report which on-device HNP tools (git) resolved once the
     // zlog->hilog redirect is live; a missing tool shows one clear line instead
     // of a runtime error later.
     log_local_tools_delayed();
@@ -164,7 +164,7 @@ fn ensure_shell_env(base_path: Option<String>, home_directory: Option<String>) {
     if !resource_dir.is_empty() {
         path_extra.push(resource_dir.clone());
         // Point TLS at the CA bundle shipped in the resfile so device-local
-        // git/ssh/curl over https validates certificates instead of failing
+        // git over https validate certificates instead of failing
         // "unable to get local issuer certificate". Child processes inherit it.
         let ca_bundle = format!("{resource_dir}/{CA_BUNDLE_FILE}");
         if std::fs::metadata(&ca_bundle)
@@ -188,7 +188,7 @@ fn ensure_shell_env(base_path: Option<String>, home_directory: Option<String>) {
         }
         std::env::set_var("PATH", full_path);
     }
-    // Library loading for local HNP tools (ssh/curl/git) is handled by their
+    // Library loading for local HNP tools (git) is handled by their
     // own official DT_RUNPATH ($ORIGIN/../lib on executables, $ORIGIN on the
     // bundled .so) - deliberately NOT via LD_LIBRARY_PATH. A process-level
     // LD_LIBRARY_PATH would be searched before that RUNPATH and shadow the
@@ -207,7 +207,7 @@ fn start_daemon_client(app: &openharmony_ability::OpenHarmonyApp) {
 }
 
 /// [diag] From a background thread ~3s after launch (once the zlog->hilog
-/// redirect is live) resolve each on-device HNP tool (git/ssh/curl) and log
+/// redirect is live) resolve each on-device HNP tool (git) and log
 /// whether it is present and executable. Mirrors `util::command`'s local routing
 /// decision so a missing HNP surfaces as a single clear startup line.
 fn log_local_tools_delayed() {
