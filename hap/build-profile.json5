@@ -77,35 +77,35 @@
     },
     {
       "name": "native_ability",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/native_ability"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/native_ability"
     },
     {
       "name": "plugin_files",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/files"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/files"
     },
     {
       "name": "plugin_cursor",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/cursor"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/cursor"
     },
     {
       "name": "plugin_pinch",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/pinch"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/pinch"
     },
     {
       "name": "plugin_filedrop",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/filedrop"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/filedrop"
     },
     {
       "name": "plugin_openwith",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/openwith"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/openwith"
     },
     {
       "name": "plugin_ime",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/ime"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/ime"
     },
     {
       "name": "plugin_url",
-      "srcPath": "../crates/gpui_ohos/depend/openharmony-ability/plugins/url"
+      "srcPath": "../target/ohos-arkts/openharmony-ability/plugins/url"
     }
   ]
 }

@@ -248,17 +248,19 @@ IME 输入（ArkTS 插件持有 `InputMethodController`，控制面与输入面�
 IME 到 ImePlugin 注册 在 hap/entry/src/main/ets/entryability/EntryAbility.ets  [EntryAbility.bridgePlugins 以 LazyPlugin 登记；窗口 stage 创建时由 NativeAbility 安装]
 IME 到 onInstall() 在 crates/gpui_ohos/depend/openharmony-ability/plugins/ime/src/main/ets/ImePlugin.ets  [插件安装时调用一次；注册 windowSizeChange/windowRectChange 用于重算候选框位置]
 IME 到 invokeAsync() 在 .../plugins/ime/src/main/ets/ImePlugin.ets  [Rust 经异步桥调用；按 action 分派 attach / detach / update-cursor]
-IME 到 attach() → bindWithRetries() 在 .../ImePlugin.ets  [Rust 请求 attach；attachWithUIContext + showTextInput 后 attached=true，回调注册由 callbacksRegistered 单独保证只做一次。已 attached 的请求也必须真正重绑——窗口隐藏时系统会收走会话而该标志仍为 true（2026-09-15 修复）]
+IME 到 attach() → bindWithRetries() 在 .../ImePlugin.ets  [Rust 请求 attach；attachWithUIContext + showTextInput 后 attached=true，回调注册由 callbacksRegistered 单独保证只做一次。已 attached 的请求也必须真正重绑——窗口隐藏时系统会收走会话而该标志仍为 true（2026-09-15 修复）；绑定成功后末尾再调一次 updateCursor()，用缓存坐标重推候选框（ImePlugin.ets:216）]
 IME 到 stopInputSession() 在 .../ImePlugin.ets  [Rust 请求 detach；attached=false 并结束系统会话，controller 与回调保留复用]
-IME 到 updateCursor() → computeCursorScreenPos() 在 .../ImePlugin.ets  [Rust 请求 update-cursor，或 windowSizeChange/windowRectChange 触发；窗口坐标换算成屏幕坐标后喂 controller.updateCursor]
+IME 到 updateCursor() → computeCursorScreenPos() 在 .../ImePlugin.ets  [三个触发源：Rust 请求 update-cursor、attach 绑定成功后由 bindWithRetries 末尾调用（ImePlugin.ets:216）、windowSizeChange/windowRectChange 由 onInstall 注册的监听触发；窗口坐标换算成屏幕坐标后喂 controller.updateCursor。守卫是 attached && controller && lastCursor，lastCursor 是 Rust 推来的最近一次光标，故 attach 那一刻若缓存为空则无坐标可推]
 IME 到 register_plugins() 在 crates/gpui_ohos/src/ohos/platform.rs  [OhosPlatform::new 启动时注册 ImeBridgePlugin（插件 ID "ohos.ime"）]
 IME 到 ImeBridgePlugin::on_main_thread_event() 在 crates/gpui_ohos/depend/openharmony-ability/crates/plugin-ime/src/lib.rs  [ArkTS invokeNativeSync 送来的主线程事件入口；按事件名分派 insert-text/delete-left/delete-right/function-key/keyboard-status/preview-text]
 IME 到 push_input() 在 .../crates/plugin-ime/src/lib.rs  [把 IME 回调转成 Event::Input(InputEvent::ImeEvent)，经 global_app().dispatch_input_event 入事件循环]
 IME 到 ImeClient::attach()/detach()/update_cursor() 在 .../crates/plugin-ime/src/lib.rs  [控制面入口，由 ImeExt::ime() 取得；经异步桥调 ArkTS 对应 action]
 IME 到 handle_input_event() 的 ImeEvent 分支 在 crates/gpui_ohos/src/ohos/window.rs  [ImeEvent 消费点；经 foreground_executor.spawn 异步处理]
 IME 到 handle_ime_backspace()/handle_ime_delete_forward()/handle_ime_enter() 在 crates/gpui_ohos/src/ohos/window.rs  [有组合(marked)文本→走 IME 文本层；无组合→派发真实 backspace/delete/enter KeyDown]
-IME 到 show_keyboard_if_needed() 在 crates/gpui_ohos/src/ohos/window.rs  [SurfaceCreate / 窗口获焦(GainedFocus) / update_ime_position 推光标时调用；受 ime_attached 缓存守卫防重复]
-IME 到 hide_keyboard_if_needed() 在 crates/gpui_ohos/src/ohos/window.rs  [窗口失焦(LostFocus) 时调用，向 ArkTS 下发 detach]
+IME 到 update_ime_enabled() 在 crates/gpui_ohos/src/ohos/window.rs  [唯一决策点；由 OhosWindowHandle::completed_frame 每帧调用（window.rs:2711-2714）；判据 active && input_handler.is_some()，与本地镜像 ime_enabled 比较做边沿检测，只在翻转时调 show_/hide_keyboard_if_needed，故每帧成本仅一次比较]
+IME 到 dispatch_input() 在 crates/gpui_ohos/src/ohos/window.rs  [唯一用户意图入口；MouseDown 且 input_handler 非空且键盘不可见时把 ime_enabled 置回 None（window.rs:2401-2406），由下一帧重新评估；它本身不 attach]
+IME 到 show_keyboard_if_needed() 在 crates/gpui_ohos/src/ohos/window.rs  [唯一调用者是 update_ime_enabled() 在决策翻转为 true 时；ime_attach_in_flight 防重叠 attach，ime_session_open 记「本侧发过 attach、欠一次 detach」]
+IME 到 hide_keyboard_if_needed() 在 crates/gpui_ohos/src/ohos/window.rs  [唯一调用者是 update_ime_enabled() 在决策翻转为 false 时；先 ime_session_open.replace(false)，不欠 detach 则直接返回]
 IME 到 push_ime_cursor_rect()/refresh_ime_cursor() 在 crates/gpui_ohos/src/ohos/window.rs  [光标或窗口几何变化时把 caret rect 推给 ArkTS，驱动候选框跟随]
 ```
 
@@ -267,14 +269,14 @@ IME 到 push_ime_cursor_rect()/refresh_ime_cursor() 在 crates/gpui_ohos/src/oho
 IME 到 onWindowStageEvent() 在 crates/gpui_ohos/depend/openharmony-ability/native_ability/src/main/ets/ability/NativeAbility.ets  [windowStage 注册；windowStageEvent 与 windowVisibilityChange 都由这里转发]
 IME 到 window_stage_event 闭包 在 crates/gpui_ohos/depend/openharmony-ability/crates/ability/src/lifecycle.rs  [ArkTS 送来的 event_type 原始整数映射为 Event：SHOWN(1)→Start、ACTIVE(2)→GainedFocus、INACTIVE(3)→LostFocus、HIDDEN(4)→Stop]
 ```
-实测时序（tablet）：最小化 `INACTIVE`→`HIDDEN`；恢复 `SHOWN`→`ACTIVE`，且 `windowVisibilityChange(true)` 比 `SHOWN` 晚约 30ms、`ACTIVE` 再晚约 100ms。**只有 `ACTIVE`(GainedFocus) 处于「窗口已可见且已获焦」**，窗口恢复后的 IME 会话只有在此时建立才不会失败；在 `SHOWN` 上发起 attach 会落在「不可见、未获焦」的空窗——`attachWithUIContext`/`showTextInput` 不抛异常、ack 也正常，但系统不建会话。
+实测时序（tablet）：最小化 `INACTIVE`→`HIDDEN`；恢复 `SHOWN`→`ACTIVE`，且 `windowVisibilityChange(true)` 比 `SHOWN` 晚约 30ms、`ACTIVE` 再晚约 100ms。**只有 `ACTIVE` 同时满足「已可见 + 已获焦」**：`GainedFocus` 写下 `active = true`（`LostFocus` 写 false，window.rs:1543 / :1560），而 attach 的判据里就含 `active`，所以恢复后只有 `ACTIVE` 之后那一帧的决策才可能建会话；在它之前的每一帧（含 `SHOWN`、`windowVisibilityChange(true)`）`wants_ime` 都判不出来，压根不会发起 attach。**不要把 attach 挂回任何窗口生命周期事件**：在「不可见、未获焦」的窗口上发起 attach，`attachWithUIContext`/`showTextInput` 不抛异常、ack 也正常，但系统不建会话，属静默失败。
 
 跨运行时跳转：
 ```
 IME 到 ImePlugin.invokeAsync() 在 .../plugins/ime/src/main/ets/ImePlugin.ets 到 [ohos.ime attach / detach / update-cursor] 到 ImeClient::attach()/detach()/update_cursor() 在 .../crates/plugin-ime/src/lib.rs  [控制面：Rust → ArkTS 异步桥]
 IME 到 registerCallbacksOnce() 注册的回调 在 .../ImePlugin.ets 到 [insert-text / delete-left / delete-right / function-key / keyboard-status / preview-text] 到 ImeBridgePlugin::on_main_thread_event() 在 .../crates/plugin-ime/src/lib.rs  [输入面：ArkTS → Rust 主线程同步桥；回调不可注销，重复注册会让一次按键裂成 N 个 insert-text]
 IME 到 push_input() 在 .../crates/plugin-ime/src/lib.rs 到 [Event::Input(InputEvent::ImeEvent)] 到 OhosWindow::handle_input_event() 在 crates/gpui_ohos/src/ohos/window.rs
-IME 到 window_stage_event 闭包 在 .../crates/ability/src/lifecycle.rs 到 [Event::GainedFocus / Event::LostFocus] 到 OhosWindow::handle_event() 在 crates/gpui_ohos/src/ohos/window.rs  [窗口前后台与获焦变化驱动 IME 的拆除与重建]
+IME 到 window_stage_event 闭包 在 .../crates/ability/src/lifecycle.rs 到 [Event::GainedFocus / Event::LostFocus] 到 OhosWindow::handle_event() 在 crates/gpui_ohos/src/ohos/window.rs  [只是把窗口活跃状态写进 active（true/false，window.rs:1543 / :1560）；core 在该回调里还会 refresh() 产生一帧（crates/gpui/src/window.rs:1701），attach/detach 由那一帧的 update_ime_enabled() 据此决定，事件本身不再直接调用 show/hide]
 ```
 
 键盘输入（物理按键 `InputEvent::KeyEvent` → GPUI Keystroke + 文本兜底）：

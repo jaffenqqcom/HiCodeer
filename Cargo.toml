@@ -1,8 +1,5 @@
 [workspace]
 resolver = "2"
-# patches/wgpu is a self-contained nested workspace (own [workspace] + Cargo.lock),
-# so exclude it from this workspace to keep its workspace-inherited values intact.
-exclude = ["patches/wgpu"]
 members = [
     "crates/acp_thread",
     "crates/acp_tools",
@@ -1001,17 +998,35 @@ cap-primitives = { path = "patches/cap-primitives" }
 # `#[cfg(target_env = "ohos")]`, so other platforms compile the exact upstream
 # crates.io 0.2.0 code.
 rustix-openpty = { path = "patches/rustix-openpty" }
-ohos-xcomponent-binding = { path = "crates/gpui_ohos/depend/ohos-xcomponent-binding" }
-ohos-xcomponent-sys = { path = "crates/gpui_ohos/depend/ohos-xcomponent-sys" }
-# Local patched wgpu tree (copied from warp-ohos), which adds OHOS Vulkan
+# Consumed from the HiCodeer fork of ohos-native-bindings. The upstream
+# workspace declares its internal dependencies as `{ workspace = true }`, which
+# cargo resolves from the git source instead of crates.io. Any crate reachable
+# from both sources would then exist twice in the graph, and the FFI types it
+# defines (e.g. `ArkUI_Node`) would be distinct types, so type-checking fails in
+# downstream crates such as `ohos-arkui-binding`. Patching the whole reachable
+# set onto the same repository and revision keeps exactly one copy of each.
+ohos-xcomponent-binding = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-xcomponent-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-arkui-input-binding = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-arkui-input-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-arkui-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-enum-derive = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-native-buffer-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-resource-manager-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-image-native-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-image-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-native-drawing-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+ohos-udmf-sys = { git = "https://github.com/jaffenqqcom/ohos-native-bindings-zed", tag = "ohos-xcomponent-binding-v0.3.2-zed.1" }
+# Patched wgpu tree (originally copied from warp-ohos), which adds OHOS Vulkan
 # surface support (VK_OHOS_surface) on top of wgpu 29.0.3. The OHOS-specific
 # changes are guarded by #[cfg(target_env = "ohos")], so other platforms
-# compile the same code as upstream 29.0.3.
-wgpu = { path = "patches/wgpu/wgpu" }
-wgpu-core = { path = "patches/wgpu/wgpu-core" }
-wgpu-hal = { path = "patches/wgpu/wgpu-hal" }
-wgpu-types = { path = "patches/wgpu/wgpu-types" }
-naga = { path = "patches/wgpu/naga" }
+# compile the same code as upstream 29.0.3. All five crates must resolve to
+# the same git source and the same revision.
+wgpu = { git = "https://github.com/jaffenqqcom/wgpu-zed", tag = "v29.0.3-zed.1" }
+wgpu-core = { git = "https://github.com/jaffenqqcom/wgpu-zed", tag = "v29.0.3-zed.1" }
+wgpu-hal = { git = "https://github.com/jaffenqqcom/wgpu-zed", tag = "v29.0.3-zed.1" }
+wgpu-types = { git = "https://github.com/jaffenqqcom/wgpu-zed", tag = "v29.0.3-zed.1" }
+naga = { git = "https://github.com/jaffenqqcom/wgpu-zed", tag = "v29.0.3-zed.1" }
 # Local patched wasmtime 36.0.12: on OHOS the sandbox rejects the
 # `mmap(PROT_NONE)` -> `mprotect(RW)` sequence used to configure the
 # sigaltstack (returns ENOMEM), so the stack region is allocated RW directly;

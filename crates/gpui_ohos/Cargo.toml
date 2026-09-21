@@ -36,12 +36,14 @@ cosmic-text = "0.17.0"
 font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "110523127440aefb11ce0cf280ae7c5071337ec5", package = "zed-font-kit", version = "0.14.1-zed", features = [
     "source-fontconfig-dlopen",
 ] }
-openharmony-ability = { path = "depend/openharmony-ability/crates/ability" }
-openharmony-ability-plugin-cursor = { path = "depend/openharmony-ability/crates/plugin-cursor" }
-openharmony-ability-plugin-files = { path = "depend/openharmony-ability/crates/plugin-files" }
-openharmony-ability-plugin-pinch = { path = "depend/openharmony-ability/crates/plugin-pinch" }
-openharmony-ability-plugin-filedrop = { path = "depend/openharmony-ability/crates/plugin-filedrop" }
-openharmony-ability-plugin-openwith = { path = "depend/openharmony-ability/crates/plugin-openwith" }
-openharmony-ability-plugin-ime = { path = "depend/openharmony-ability/crates/plugin-ime" }
-openharmony-ability-plugin-url = { path = "depend/openharmony-ability/crates/plugin-url" }
-worker-pool = { path = "depend/openharmony-ability/crates/worker-pool" }
+# Consumed from the HiCodeer fork of openharmony-ability. All crates must
+# resolve to the same git source and the same revision.
+openharmony-ability = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-cursor = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-files = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-pinch = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-filedrop = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-openwith = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-ime = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-plugin-url = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+worker-pool = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }

@@ -17,7 +17,8 @@ rustflags = [
 ]
 
 # `--cfg gles` compiles the GLES backend INTO the patched wgpu tree. It is
-# consumed by `#[cfg(gles)]` in patches/wgpu/{wgpu,wgpu-core,wgpu-hal} and
+# consumed by `#[cfg(gles)]` in the wgpu/wgpu-core/wgpu-hal crates of
+# github.com/jaffenqqcom/wgpu-zed and
 # declared in crates/gpui/build.rs. It does NOT select the runtime backend:
 # gpui_ohos defaults to Vulkan -- see crates/gpui_ohos/src/ohos/wgpu_context.rs
 # (`wgpu::Backends::VULKAN`), where an A/B test measured lower CPU usage than

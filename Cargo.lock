@@ -2536,7 +2536,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad8646f98db542e39fc66e68a20b2144f6a732636df7c2354e74645faaa433ce"
 dependencies = [
  "borsh-derive",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
 ]
 
 [[package]]
@@ -3104,9 +3104,9 @@ checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "cfg_aliases"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cgl"
@@ -10117,13 +10117,12 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.97"
+version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1840c94c045fbcf8ba2812c95db44499f7c64910a912551aaaa541decebcacf"
+checksum = "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e"
 dependencies = [
  "cfg-if",
  "futures-util",
- "once_cell",
  "wasm-bindgen",
 ]
 
@@ -12184,12 +12183,13 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 [[package]]
 name = "naga"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "arrayvec",
  "bit-set 0.9.1",
  "bitflags 2.13.1",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "codespan-reporting",
  "half",
  "hashbrown 0.16.1",
@@ -12400,7 +12400,7 @@ version = "0.29.0"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "libc",
  "memoffset",
 ]
@@ -12413,7 +12413,7 @@ checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "libc",
 ]
 
@@ -13176,8 +13176,7 @@ dependencies = [
 [[package]]
 name = "ohos-accessibility-sys"
 version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328ddd8c050829f583bdcde996e9cc0217d15a744aa57c2a00118c00afff1562"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "ohos-arkui-input-sys",
 ]
@@ -13201,8 +13200,7 @@ dependencies = [
 [[package]]
 name = "ohos-arkui-input-binding"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99cef7adee31f6fdac89222a69e94df5236cf4ca049a23e380a1065f9141acb6"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "ohos-arkui-input-sys",
  "ohos-enum-derive",
@@ -13211,14 +13209,12 @@ dependencies = [
 [[package]]
 name = "ohos-arkui-input-sys"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9befe0e30b764a29e2d43aeeb5fad7c53c2a1aa61763b6533ac3f52799caa38"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 
 [[package]]
 name = "ohos-arkui-sys"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d32365469264d0e2f6e35d9b8a509f0eeb83eb639208e134d561c591878d387"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "napi-sys-ohos",
  "ohos-arkui-input-sys",
@@ -13246,8 +13242,7 @@ checksum = "1cf471a32cef6236982949b33a3bc01d5a15e30e5b9d267988e92d94cd89ef67"
 [[package]]
 name = "ohos-enum-derive"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfaa27b9a5519879fcccdb845993e2d2c28df2f84e60f1016bad4557458a4889"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "convert_case 0.6.0",
  "proc-macro2",
@@ -13258,8 +13253,7 @@ dependencies = [
 [[package]]
 name = "ohos-image-native-sys"
 version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331baf1db1c885dcbcdb81dce0563fa9f9fd3a27802ddcbf1726eb6784bd020e"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "napi-sys-ohos",
  "ohos-native-buffer-sys",
@@ -13269,8 +13263,7 @@ dependencies = [
 [[package]]
 name = "ohos-image-sys"
 version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e367c84b78af5ae77d5335601396c1d0af89543becca08f75aedf4ba5258d74c"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "napi-sys-ohos",
  "ohos-resource-manager-sys",
@@ -13302,14 +13295,12 @@ dependencies = [
 [[package]]
 name = "ohos-native-buffer-sys"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1b754679463a2af38c3381936eec015bab187963bd97a6802e5a61ce362573f"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 
 [[package]]
 name = "ohos-native-drawing-sys"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8d58d6a1f1d65d0597c56f1920d86028241ac9cc91c56c9dac41a680f68ac6e"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "ohos-image-native-sys",
  "ohos-image-sys",
@@ -13318,8 +13309,7 @@ dependencies = [
 [[package]]
 name = "ohos-resource-manager-sys"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86fbffb79d6e26b845e77653590e6d8951baeaa6c1a307417e917f37dcf3843a"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "napi-sys-ohos",
 ]
@@ -13327,8 +13317,7 @@ dependencies = [
 [[package]]
 name = "ohos-udmf-sys"
 version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389517bf06530019a0fb90b34c5a408bda45f6584b3487621afd82d524d873ab"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "ohos-image-native-sys",
 ]
@@ -13336,6 +13325,7 @@ dependencies = [
 [[package]]
 name = "ohos-xcomponent-binding"
 version = "0.3.2"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
@@ -13349,6 +13339,7 @@ dependencies = [
 [[package]]
 name = "ohos-xcomponent-sys"
 version = "0.1.2"
+source = "git+https://github.com/jaffenqqcom/ohos-native-bindings-zed?tag=ohos-xcomponent-binding-v0.3.2-zed.1#c7c7df9a07f58357784d30deb64b785b775bb005"
 dependencies = [
  "ohos-accessibility-sys",
  "ohos-arkui-input-sys",
@@ -13583,6 +13574,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "futures-channel",
  "log",
@@ -13598,6 +13590,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-derive"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -13607,6 +13600,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-cursor"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
  "napi-derive-ohos",
@@ -13617,6 +13611,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-filedrop"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
  "napi-derive-ohos",
@@ -13627,6 +13622,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-files"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
@@ -13636,6 +13632,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-ime"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
  "napi-derive-ohos",
@@ -13646,6 +13643,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-openwith"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
  "napi-derive-ohos",
@@ -13656,6 +13654,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-pinch"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
  "napi-derive-ohos",
@@ -13666,6 +13665,7 @@ dependencies = [
 [[package]]
 name = "openharmony-ability-plugin-url"
 version = "1.0.0-beta.1"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
  "napi-derive-ohos",
@@ -16028,7 +16028,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
 dependencies = [
  "bytes 1.11.1",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
@@ -16068,7 +16068,7 @@ version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
 dependencies = [
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "libc",
  "once_cell",
  "socket2 0.6.3",
@@ -22091,9 +22091,9 @@ checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.120"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df52b6d9b87e0c74c9edfa1eb2d9bf85e5d63515474513aa50fa181b3c4f5db1"
+checksum = "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -22104,9 +22104,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.70"
+version = "0.4.78"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af934872acec734c2d80e6617bbb5ff4f12b052dd8e6332b0817bce889516084"
+checksum = "6ef4c5d3d2cdf5c54f4231181768f5510842e350db025faf1f7163b1030ed928"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -22114,9 +22114,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.120"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78b1041f495fb322e64aca85f5756b2172e35cd459376e67f2a6c9dffcedb103"
+checksum = "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -22124,22 +22124,22 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.120"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dcd0ff20416988a18ac686d4d4d0f6aae9ebf08a389ff5d29012b05af2a1b41"
+checksum = "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a"
 dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
  "wasm-bindgen-shared",
 ]
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.120"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49757b3c82ebf16c57d69365a142940b384176c24df52a087fb748e2085359ea"
+checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
 ]
@@ -22775,9 +22775,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.97"
+version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eadbac71025cd7b0834f20d1fe8472e8495821b4e9801eb0a60bd1f19827602"
+checksum = "9fbddc4a036f00ec4f18c83445bd3115cb306a91da554919a099d9222fe4a7f8"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -22899,12 +22899,13 @@ checksum = "a751b3277700db47d3e574514de2eced5e54dc8a5436a3bf7a0b248b2cee16f3"
 [[package]]
 name = "wgpu"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.1",
  "bytemuck",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "document-features",
  "hashbrown 0.16.1",
  "js-sys",
@@ -22927,13 +22928,14 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "arrayvec",
  "bit-set 0.9.1",
  "bit-vec 0.9.1",
  "bitflags 2.13.1",
  "bytemuck",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "document-features",
  "hashbrown 0.16.1",
  "indexmap 2.14.0",
@@ -22959,6 +22961,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "wgpu-hal",
 ]
@@ -22966,6 +22969,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "wgpu-hal",
 ]
@@ -22973,6 +22977,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "wgpu-hal",
 ]
@@ -22980,6 +22985,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "wgpu-hal",
 ]
@@ -22987,6 +22993,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -22996,7 +23003,7 @@ dependencies = [
  "block2 0.6.2",
  "bytemuck",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases 0.2.2",
  "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
@@ -23039,6 +23046,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -23047,6 +23055,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "29.0.3"
+source = "git+https://github.com/jaffenqqcom/wgpu-zed?tag=v29.0.3-zed.1#6410d9f9dc13863c2ae1e0cb1cea3fb3e2594476"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
@@ -24347,6 +24356,7 @@ dependencies = [
 [[package]]
 name = "worker-pool"
 version = "0.1.0"
+source = "git+https://github.com/jaffenqqcom/openharmony-ability-zed?tag=v1.0.0-beta.1-zed.1#e3bba57efed738aee6fe6e1b085ca1104aef75d0"
 dependencies = [
  "log",
 ]

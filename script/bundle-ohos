@@ -747,6 +747,81 @@ fi
 # --server-only 跳过 ohpm install 与 hvigor 打包
 if [ "$MODE" != "server" ]; then
 
+# ==================== ArkTS sources: sync from the cargo git checkout ====================
+# hvigor accepts only project-relative paths and cannot consume a git repository, so the
+# ArkTS modules that hap/ references (native_ability and plugins) are served from a fixed
+# directory under target/. That copy is taken from the very same git checkout cargo already
+# fetched for the openharmony-ability Rust dependency: no second network fetch, and both
+# sides always sit on the same revision (read straight from Cargo.lock).
+# The copy is refreshed only when the revision changes, which leaves hvigor's incremental
+# build artifacts in place across rebuilds.
+ARKTS_SUBDIRS=(native_ability plugins)
+ARKTS_SYNC_DIR="$PROJECT_ROOT/target/ohos-arkts/openharmony-ability"
+ARKTS_SYNC_STAMP="$ARKTS_SYNC_DIR/.synced-rev"
+CARGO_GIT_CHECKOUTS="${CARGO_HOME:-$HOME/.cargo}/git/checkouts"
+# Set when the copy is refreshed. The ohpm links under hap/ then point at a stale module
+# path, so ohpm has to run again even though the symbolic links themselves still resolve.
+ARKTS_RESYNCED=false
+
+# Full 40-character revision cargo resolved for the openharmony-ability dependency.
+arkts_revision_from_lock() {
+  grep -A2 '^name = "openharmony-ability"$' "$PROJECT_ROOT/Cargo.lock" \
+    | grep -o '#[0-9a-f]\{40\}' | head -n 1 | cut -c2-
+}
+
+# Directory cargo checked that revision out to; fails when cargo never fetched it.
+arkts_checkout_dir() {
+  local short="${1:0:7}" dir
+  for dir in "$CARGO_GIT_CHECKOUTS"/openharmony-ability-zed-*/"$short"; do
+    if [ -d "$dir/native_ability" ]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sync_arkts_sources() {
+  local revision short checkout
+  revision="$(arkts_revision_from_lock || true)"
+  if [ -z "$revision" ]; then
+    echo "[hicodeer-ohos-build] ERROR: no git revision for openharmony-ability in Cargo.lock" >&2
+    return 1
+  fi
+  short="${revision:0:7}"
+
+  if [ -f "$ARKTS_SYNC_STAMP" ] && [ "$(cat "$ARKTS_SYNC_STAMP")" = "$revision" ] \
+     && [ -d "$ARKTS_SYNC_DIR/native_ability" ] && [ -d "$ARKTS_SYNC_DIR/plugins" ]; then
+    echo "[hicodeer-ohos-build] ArkTS sources already at $short"
+    return 0
+  fi
+
+  if ! checkout="$(arkts_checkout_dir "$revision")"; then
+    # --hap-only can run before cargo ever resolved the dependency. Offline metadata makes
+    # cargo materialise the checkout from its local git db without touching the network.
+    echo "[hicodeer-ohos-build] cargo checkout missing, materialising it (offline) ..."
+    (cd "$PROJECT_ROOT" && CARGO_NET_OFFLINE=true cargo metadata --format-version 1 >/dev/null)
+    if ! checkout="$(arkts_checkout_dir "$revision")"; then
+      echo "[hicodeer-ohos-build] ERROR: cargo checkout for openharmony-ability not found" >&2
+      echo "  revision: $short" >&2
+      echo "  expected: $CARGO_GIT_CHECKOUTS/openharmony-ability-zed-*/$short" >&2
+      return 1
+    fi
+  fi
+
+  echo "[hicodeer-ohos-build] syncing ArkTS sources from cargo checkout ($short) ..."
+  ARKTS_RESYNCED=true
+  rm -rf "$ARKTS_SYNC_DIR"
+  mkdir -p "$ARKTS_SYNC_DIR"
+  # Sources only: build/, oh_modules/ and .cxx/ are hvigor/ohpm artifacts.
+  (cd "$checkout" && tar cf - \
+      --exclude=build --exclude=oh_modules --exclude=.cxx --exclude=node_modules \
+      "${ARKTS_SUBDIRS[@]}") | (cd "$ARKTS_SYNC_DIR" && tar xf -)
+  printf '%s\n' "$revision" > "$ARKTS_SYNC_STAMP"
+  echo "[hicodeer-ohos-build] ArkTS sources ready: $ARKTS_SYNC_DIR"
+}
+sync_arkts_sources
+
 # ==================== ohpm install（首次 / 为空 / 有坏符号链接 / 关键 so 链接缺失时） ====================
 # 说明：hvigor 在 DevEco Studio 里会自动触发 ohpm install；命令行 assembleHap 不一定触发。
 # 新增 Rust so 依赖（libhicodeer.so）后，若 oh_modules 里缺对应符号链接，ArkTS 编译报
@@ -794,7 +869,7 @@ ohpm_links_missing() {
   done
   return 1
 }
-if ohpm_links_missing; then
+if [ "$ARKTS_RESYNCED" = true ] || ohpm_links_missing; then
   echo "[hicodeer-ohos-build] ohpm install (top-level) ..."
   PATH="$NODE_BIN_DIR:$OHPM_BIN_DIR:$PATH" \
     bash -c "cd '$HAP_DIR' && '$OHPM_CMD' install --all"
@@ -838,19 +913,16 @@ $NO_SHIM "$NODE_CMD" "$HVIGORW_JS" \
   # 载荷缺失 / 证书未配齐都会显式报错，不产出“看似可装”的包。
   HNP_SRC_DIR="$HAP_DIR/entry/hnp/arm64-v8a"
   if [ -d "$HNP_SRC_DIR" ] && ls "$HNP_SRC_DIR"/*.hnp >/dev/null 2>&1; then
-    # Prefer the bare hvigor unsigned.hap. The *unsigned*.hap glob also matched
-    # the derived -packed/-signed copies (already hnp-injected), which appended
-    # duplicate hnp/arm64-v8a entries. Next any non-signed, then signed (the
-    # re-sign step overwrites its signature anyway).
-    UNSIGNED_HAP="$(ls -t "$HAP_DIR"/entry/build/default/outputs/default/entry-default-unsigned.hap 2>/dev/null | head -1 || true)"
-    if [ -z "$UNSIGNED_HAP" ]; then
-      UNSIGNED_HAP="$(ls -t "$HAP_DIR"/entry/build/default/outputs/default/entry-default-*.hap 2>/dev/null | grep -v '\-signed\.hap$' | head -1 || true)"
-    fi
-    if [ -z "$UNSIGNED_HAP" ]; then
-      UNSIGNED_HAP="$(ls -t "$HAP_DIR"/entry/build/default/outputs/default/entry-default-signed.hap 2>/dev/null | head -1 || true)"
-    fi
-    if [ -z "$UNSIGNED_HAP" ]; then
-      echo "[hicodeer-ohos-build] ERROR: no HAP found under outputs/default to inject hnp into" >&2
+    # Only the bare hvigor unsigned.hap is a valid injection source: the derived
+    # -packed/-signed copies already carry hnp entries, so injecting into them
+    # again appends duplicate hnp/arm64-v8a entries. The old fallback to a glob
+    # silently picked the -packed copy when the bare file was missing; it is gone
+    # on purpose, so a missing source fails loudly instead of shipping a wrong
+    # package. The bare file is deleted after a successful injection (see below),
+    # and hvigor regenerates it on every assembleHap run.
+    UNSIGNED_HAP="$HAP_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap"
+    if [ ! -f "$UNSIGNED_HAP" ]; then
+      echo "[hicodeer-ohos-build] ERROR: $UNSIGNED_HAP 不存在；拒绝注入（对已注入的包重复注入会产生重复的 hnp 条目）" >&2
       exit 1
     fi
     PACKED_HAP="${UNSIGNED_HAP%.hap}-packed.hap"
@@ -902,15 +974,17 @@ PY
       echo "[hicodeer-ohos-build] ERROR: OHOS_SIGN_CER / OHOS_SIGN_P7B / OHOS_SIGN_P12 / OHOS_SIGN_PWD 未配齐，无法重签；装配件(未签名): $PACKED_HAP" >&2
       exit 1
     fi
-    SIGNED_HAP="${UNSIGNED_HAP%.hap}-signed.hap"
+    # Sign straight into the stable name install-local.sh expects (its
+    # DEFAULT_HAP). Writing the -unsigned-signed.hap intermediate and copying it
+    # afterwards left two byte-identical ~150 MB packages in outputs/default.
+    SIGNED_HAP="$HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
+    rm -f "$SIGNED_HAP"
     echo "[hicodeer-ohos-build] sign-app -> $SIGNED_HAP"
     $NO_SHIM java -jar "$SIGN_TOOL_JAR" sign-app \
       -keyAlias "$OHOS_SIGN_ALIAS" -signAlg SHA256withECDSA -mode localSign \
       -appCertFile "$OHOS_SIGN_CER" -profileFile "$OHOS_SIGN_P7B" -keystoreFile "$OHOS_SIGN_P12" \
       -inFile "$PACKED_HAP" -outFile "$SIGNED_HAP" \
       -keyPwd "$OHOS_SIGN_PWD" -keystorePwd "$OHOS_SIGN_PWD" -signCode 1 -profileSigned 1
-    # 稳定产物路径给 install_run.sh（其指向 outputs/default/entry-default-signed.hap）
-    cp -f "$SIGNED_HAP" "$HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
     # 校验签名（与 build-harmony.sh 对齐，防止产出不可装的包）
     VERIFY_CHAIN="$(mktemp -t hicodeer-certchain.XXXXXX.cer)"
     VERIFY_PROFILE="$(mktemp -t hicodeer-profile.XXXXXX.p7b)"
@@ -921,7 +995,11 @@ PY
       exit 1
     fi
     rm -f "$VERIFY_CHAIN" "$VERIFY_PROFILE"
-    echo "[hicodeer-ohos-build] INSTALLABLE (with hnp): $HAP_DIR/entry/build/default/outputs/default/entry-default-signed.hap"
+    # Drop the un-injected hvigor package: it is not installable, and with the
+    # source fallback gone it would only leave a stale ~150 MB file behind.
+    # hvigor rebuilds it on the next assembleHap run.
+    rm -f "$UNSIGNED_HAP"
+    echo "[hicodeer-ohos-build] INSTALLABLE (with hnp): $SIGNED_HAP"
   else
     echo "[hicodeer-ohos-build] WARN: $HNP_SRC_DIR 无 .hnp 载荷，HAP 将不含本机 git（本地路由会报缺工具）" >&2
   fi

@@ -25,8 +25,11 @@ zed = { path = "../../../zed" }
 workspace = { path = "../../../workspace" }
 zlog = { path = "../../../zlog" }
 gpui_ohos = { path = "../.." }
-openharmony-ability = { path = "../openharmony-ability/crates/ability" }
-openharmony-ability-derive = { path = "../openharmony-ability/crates/derive" }
+# Consumed from the HiCodeer fork of openharmony-ability, matching the source
+# gpui_ohos uses. A path dependency here would put a second copy of the crate in
+# the graph and its types would no longer match gpui_ohos's.
+openharmony-ability = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
+openharmony-ability-derive = { git = "https://github.com/jaffenqqcom/openharmony-ability-zed", tag = "v1.0.0-beta.1-zed.1" }
 # Link-time shim for the path-taking libc calls. Its `__wrap_*` symbols are what
 # build.rs redirects `open`/`stat`/... to, so the crate has to stay linked into
 # the final cdylib even though no Rust code calls into it.
