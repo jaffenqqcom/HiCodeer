@@ -49,8 +49,8 @@
 
 | 路径 | 定义处 | 内容 | 说明 |
 |---|---|---|---|
-| `tmp/` | `session_tmp.rs:30` | 子进程临时目录 | 守护进程把自己与所有子进程的 `TMPDIR` 指到这里（`:52`）。第三方工具的实际产物：`node-compile-cache/`（Node 编译缓存）、`vscode-typescript<N>/`（TS 服务临时文件）等 |
-| `tmp/shim-trace.log` | `shim/shim.js` | 垫片诊断轨迹 | **仅**在"需要签名的宿主"上、且发生异常时写；正常路径不落盘 |
+| `tmp/` | `session_tmp.rs:38` | 子进程临时目录 | 守护进程按客户端身份把它记为 `TMPDIR`（`session_tmp.rs:60` 的 `adopt` 建档，spawn 点用 `tmpdir(client_id)` 取出后交给子进程；不写本进程自己的 env，避免多个客户端互相顶掉）。第三方工具的实际产物：`node-compile-cache/`（Node 编译缓存）、`vscode-typescript<N>/`（TS 服务临时文件）等 |
+| `tmp/shim-trace.log` | `hicodeerd/shim/shim.js` | 垫片诊断轨迹 | 写在 `$TMPDIR` 下，即本目录。**仅**在"需要签名的宿主"上、且发生异常时写（`shim.js:376` 的 `trace`）；正常路径不落盘 |
 | `logs/hicodeerd.log` | `logger.rs`（`attach_file`） | 守护进程日志镜像 | **仅 `--log` 启动时**创建。内容与 hilog 同源，多一列本地时间（`MM-DD HH:MM:SS 级别 消息`），便于事后读取 |
 
 守护进程**不写**应用那些目录，只写 `tmp/`、`logs/` 两处。垫片不在此列：它们随

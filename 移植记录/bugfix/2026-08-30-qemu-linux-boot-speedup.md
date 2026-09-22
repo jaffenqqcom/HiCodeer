@@ -4,14 +4,14 @@
 >
 > 本文记录 2026-08-30 的启动优化，对象是当时的 `ohos-qemu-agent/cmd-agent`：initramfs 承载根文件系统、`cmd-agentd` 作 guest 命令守护进程、resfile 只读 9p 挂给 guest `/tools`。
 >
-> 此后 QEMU 承载层整体重写为 `qemu-mngt/qemuctrl`，guest 栈整个换成 HiSH（Alpine + linux 6.12.60），**启动路径与本文描述已无一处相同**。本文作为历史记录保留（其中若干结论仍可复用），但**不可当作现架构的说明**——现架构见 `design/2026-09-08-ohos-qemu-runtime-design.md`（下称 A）与 `design/2026-09-02-virtio-fs-replace-9p-design.md`（下称 C）。
+> 此后 QEMU 承载层整体重写为 `qemu-mngt/qemuctrl`，guest 栈整个换成 HiSH（Alpine + linux 6.12.60），**启动路径与本文描述已无一处相同**。本文作为历史记录保留（其中若干结论仍可复用），但**不可当作现架构的说明**——现架构见 `design/2026-09-08-ohos-qemu-runtime-design.md`（下称 A；virtio-fs 文件共享内容见其 §4.6）。
 >
 > | 本文所述（2026-08-30） | 现状（2026-09-12） | 见 |
 > | --- | --- | --- |
 > | `ohos-qemu-agent/cmd-agent`、`launch_app.rs` | `qemu-mngt/qemuctrl`、`launch-zed/qemu_runtime.rs` | A §4.5 / §4.7 |
 > | initramfs：`rootfs.cpio.zst`（18 MB）解压进内存 | **无 initramfs**：`root=/dev/vda rw` 直接引导盘内系统（golden 母盘复制为工作盘） | A §4.6.3 / §4.6.4 |
 > | guest 命令守护进程 `cmd-agentd` | `hicodeerd`（OHOS 宿主版进 HNP，guest 版静态链接进沙箱） | A §4.4 |
-> | resfile 只读 9p 挂载 → guest `/tools` | **`/tools` 这一层已不存在**：host 侧二进制改由**用户数据根**承载，经第二个静态 virtio-fs share `customer_data` 挂入 guest 同名绝对路径 | C §3.1 |
+> | resfile 只读 9p 挂载 → guest `/tools` | **`/tools` 这一层已不存在**：host 侧二进制改由**用户数据根**承载，经第二个静态 virtio-fs share `customer_data` 挂入 guest 同名绝对路径 | A §4.6.1 |
 > | 引导脚本 `S40sandbox` / `S41virtioports` / `S42cmdagentd` | `init` / `rcS` / `S00mount` / `S10sandbox` / `S12data` / `S30cmd-daemon` | A §4.6.4 |
 > | 内核 6.18.7（自编译，为解压 initrd 而开 `CONFIG_RD_ZSTD`） | 6.12.60（HiSH `arm64_virt` 基座 + 5 项能力增量 + 6 项性能增量） | A §4.6.2 |
 > | 引擎：自建 `libqemu-system-aarch64.so`（19.7 MB，外挂 5 个 so） | HiSH release 的 QEMU 10.2.0（52.5 MB，`DT_NEEDED` 只剩 3 个 so） | A §4.6.1 |

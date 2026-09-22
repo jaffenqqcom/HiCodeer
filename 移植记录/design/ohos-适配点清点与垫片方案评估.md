@@ -10,9 +10,13 @@
 
 ## 0 结论摘要
 
-**结论一：剩余适配点 80 个（逻辑口径），分布在 42 个上游文件、175 处 cfg 标记里。**
+**结论一：剩余适配点 80 个（逻辑口径），分布在 46 个上游文件、179 处 cfg 标记里。**
 
-"剩余"指已剔除两类不必再想办法的部分：第三方依赖的 `patches/` 补丁、以及已由 cmd-agent 统一接管的进程执行类。另有 **10 个 Cargo.toml、22 个 `[target.*ohos*]` 段头**（`175` 是 `.rs` 口径，不含 Cargo.toml；两者合计 197 处标记、52 个文件）、`.cargo/config.toml` 两段 rustflags、`script/` 四项。
+（口径与时点：机械计数在 **2026-09-22 复核为 46 个 .rs 文件 / 179 处 cfg 标记**，较 2026-09-17 的
+42 / 175 上升 4 处；逻辑口径 80 个是 2026-09-17 的人工判定，本次**只刷新机械计数、未重判逻辑点**，
+见第 3 节与附二末尾。）
+
+"剩余"指已剔除两类不必再想办法的部分：第三方依赖的 `patches/` 补丁、以及已由命令后端统一接管的进程执行类。另有 **10 个 Cargo.toml、22 个 `[target.*ohos*]` 段头**（`179` 是 `.rs` 口径，不含 Cargo.toml；两者合计 201 处标记、56 个文件）、`.cargo/config.toml` 两段 rustflags、`script/` 四项。
 
 **结论二：按原因分八类，其中四类合计 56 处、占 7 成：平台后端接入（16）、构建系统（15）、功能无需支持（15）、文件沙箱与授权（10）。**
 
@@ -38,11 +42,11 @@
 
 ### 2.1 总量
 
-- **42 个 .rs 文件，175 处 cfg 标记**（均在 `crates/` 下，不含 gpui_ohos）
-  - 这是机械计数，含已由 cmd-agent 接管的进程执行类；剔除后的"剩余逻辑适配点"为 80 个，见第 3 节
+- **46 个 .rs 文件，179 处 cfg 标记**（均在 `crates/` 下，不含 gpui_ohos；2026-09-22 复核值）
+  - 这是机械计数，含已由命令后端接管的进程执行类；剔除后的"剩余逻辑适配点"为 80 个（09-17 口径），见第 3 节
   - **不含 Cargo.toml**：Cargo.toml 的标记是 `[target.'cfg(...)']` 段头，共 22 处，单列如下
 - `crates/*/Cargo.toml` 含 ohos：**10 个文件、22 个 `[target.*ohos*]` 段头**（16 个 `not(ohos)` 排除段 + 6 个正向 ohos 段），段头行 22 处
-  - `.rs` 与 Cargo.toml 合计 **52 个文件、197 处标记**
+  - `.rs` 与 Cargo.toml 合计 **56 个文件、201 处标记**
 - 根 `Cargo.toml`：4 个 OHOS workspace 成员项、3 个 workspace 依赖项
 - `.cargo/config.toml`：2 段 OHOS rustflags（`--cfg gles`、`+fp16`）
 - `script/`：`bundle-ohos`、`clippy`、`ohos-tls-shim.c`、`read-sign-pwd.js` 四项
@@ -52,7 +56,7 @@
   - `crates/util/src/command/ohos.rs`
   - `crates/zlog/src/ohos.rs`
 
-### 2.2 侵入密度 TOP（前 15，含已由 cmd-agent 接管的部分）
+### 2.2 侵入密度 TOP（前 15，含已由命令后端接管的部分；2026-09-22 复核）
 
 - `crates/terminal/src/terminal.rs` — 12
 - `crates/settings_ui/src/settings_ui.rs` — 12
@@ -60,19 +64,22 @@
 - `crates/node_runtime/src/node_runtime.rs` — 10
 - `crates/livekit_client/src/record.rs` — 10
 - `crates/util/src/process.rs` — 9
-- `crates/zed/src/main.rs` — 7
+- `crates/agent_servers/src/acp.rs` — 8
 - `crates/util/src/command.rs` — 7
-- `crates/agent_servers/src/acp.rs` — 7
+- `crates/zed/src/main.rs` — 6
 - `crates/settings_content/src/settings_content.rs` — 6
-- `crates/project/src/git_store.rs` — 5
 - `crates/util/src/archive.rs` — 5
+- `crates/project/src/git_store.rs` — 5
 - `crates/onboarding/src/basics_page.rs` — 5
-- `crates/zed/build.rs` — 4
 - `crates/zlog/src/zlog.rs` — 4
+- `crates/zed/build.rs` — 4
+
+（另有 `crates/settings/src/settings.rs`、`crates/git_ui/src/git_panel.rs`、`crates/crashes/src/crashes.rs`
+同为 4 处，与前 15 并列。较 09-17：`acp.rs` 7→8，`main.rs` 7→6，三个 4 处文件进入并列区间。）
 
 密度最高的 6 个文件（`terminal.rs`…`process.rs`，合计 64 处）承担了近 1/3 的标记量，是升级冲突的第一现场。
 
-注意：本表是**机械计数**（cfg 标记出现次数），不区分是否已接管。其中 `util/process.rs`、`util/command.rs` 及 `terminal.rs` 的一部分属于已由 cmd-agent 接管的进程执行类；`node_runtime.rs`、`languages/*` 中也含少量此类派生点。剔除这些后，密度最高的是 `settings_ui.rs`（12）、`livekit_client/{lib,record}.rs`（21）。`zed/src/main.rs` 经 2026-09-17 的入口链收敛已从 13 降到 7，其中 2 处是本次新增的条件编译壳（见第 3 节 F 类）。
+注意：本表是**机械计数**（cfg 标记出现次数），不区分是否已接管。其中 `util/process.rs`、`util/command.rs` 及 `terminal.rs` 的一部分属于已由命令后端接管的进程执行类；`node_runtime.rs`、`languages/*` 中也含少量此类派生点。剔除这些后，密度最高的是 `settings_ui.rs`（12）、`livekit_client/{lib,record}.rs`（21）。`zed/src/main.rs` 经 09-17 的入口链收敛已从 13 降到 7（其中 2 处是当时新增的条件编译壳），09-22 复核进一步降到 6。
 
 ---
 
@@ -572,3 +579,35 @@ grep -rln 'ohos' --include=Cargo.toml crates 2>/dev/null | grep -v '^crates/gpui
 5. **跨 crate 可见性差异用 7.5 处理**，并把因此新增的侵入点**如实登记**（不要假装非 OHOS 侧没变化）。
 6. **伴生 crate 的退场按 7.4 的顺序走**：消费者 → 依赖段 → crate 目录 + members 项 → 外围引用（`script/` 最容易漏，`ohos-file-geturi` 就是这么漏的）。
 7. **收尾给出判据**：上游文件对应 cfg 归零、被移走的符号只在 `crates/gpui_ohos/**` 命中、`script/bundle-ohos` 通过。非 OHOS 目标若本机没有 target 可编，要如实标注"未实测"，不要用"逻辑上等价"代替验证结论。
+
+---
+
+## 附三：2026-09-22 复核（只刷新机械计数）
+
+本次只重跑机械计数，**未重判逻辑口径**（重判需逐点读上下文判定原因类别，属另一件事）。
+
+- `.rs` cfg 标记：42 个文件 / 175 处 → **46 个文件 / 179 处**（+4 文件、+4 处）。
+- `.rs` + Cargo.toml 合计：52 个文件 / 197 处 → **56 个文件 / 201 处**。
+- Cargo.toml：**10 个文件 / 22 个 `[target.*ohos*]` 段头**，未变。
+- 逻辑口径仍记 80 个（09-17 判定值），本次未复算。
+- 逐文件 TOP 变动：`crates/agent_servers/src/acp.rs` 7→8、`crates/zed/src/main.rs` 7→6；
+  `crates/settings/src/settings.rs`、`crates/git_ui/src/git_panel.rs`、`crates/crashes/src/crashes.rs`
+  （各 4 处）进入并列区间。
+- 四套垫片经抽查仍与代码一致：`musllib-shim.c`（284 行，源码在 `hicodeerd/shim/`）、
+  `shim.js`（605 行，同上目录）、`ohos-meta-shim.c`（在 `$TOOLCHAIN/tool/shim/`，
+  由 `script/bundle-ohos:167-170` 引用，不在本仓库内）、`launch-zed/src/lib.rs` 的
+  `#[unsafe(no_mangle)]` 符号覆盖（`:19`、`:27`）。
+
+### 复核用命令（可重复执行）
+
+```sh
+# .rs cfg 标记总量与文件数（排除 gpui_ohos）
+grep -rn 'target_env = "ohos"' crates/ --include=*.rs | grep -v '^crates/gpui_ohos/' | wc -l
+grep -rl 'target_env = "ohos"' crates/ --include=*.rs | grep -v '^crates/gpui_ohos/' | wc -l
+# Cargo.toml 段头与文件数
+grep -rn '^\[target\..*ohos' crates/*/Cargo.toml | wc -l
+grep -rl '^\[target\..*ohos' crates/*/Cargo.toml | wc -l
+# 逐文件密度 TOP
+grep -rc 'target_env = "ohos"' crates/ --include=*.rs | grep -v '^crates/gpui_ohos/' \
+  | awk -F: '$2>0' | sort -t: -k2 -rn | head -18
+```

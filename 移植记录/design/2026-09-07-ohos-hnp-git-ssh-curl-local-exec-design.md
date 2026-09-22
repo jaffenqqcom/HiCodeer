@@ -1,8 +1,22 @@
-# zcoder git / ssh / curl 本地 HNP 执行设计（去掉 cmd-agent VM 转发）
+# HiCodeer git / ssh / curl 本地 HNP 执行设计（去掉 VM 转发）
+
+> **现状核对（2026-09-22）**：本文的**路由机制仍然有效**——`util::command::init_local_tools()`
+> 在启动时快照 `/data/app/bin`，命中快照的程序本地 fork+exec（`crates/util/src/command/ohos.rs:80`、
+> `:116`），其余交给命令后端执行；`apply_local_tool_env` 也仍然**不注入** `LD_LIBRARY_PATH`
+> （`ohos.rs:440-447` 的注释明写理由）。
+>
+> **已变化的部分**：随 HAP 分发的 HNP 载荷现在只有两个——`hap/entry/src/main/module.json5:150-159`
+> 声明 `git.hnp`(private) + `hicodeerd.hnp`(public)，`hap/entry/hnp/arm64-v8a/` 下也只有
+> `git.hnp` 与 `hicodeerd.hnp` 两个文件，**没有 openssh.hnp / curl.hnp**。因此下文关于
+> ssh / curl 两个包的装配、resfile/curl 残留、以及"产物含 3 个 hnp"的描述属于**当时的设计记录**，
+> 不再对应现状。命令执行后端也已从"cmd-agent → OpenEuler VM"换成宿主侧的 `hicodeerd`
+> 守护进程（`crates/gpui_ohos/depend/cmd-agent/hicodeerd`），详见
+> `2026-09-08-ohos-qemu-runtime-design.md`。
 
 ## 1. 背景与目标
 
-zcoder 在 OHOS 上因沙箱禁止 exec 外部 ELF，所有子进程命令（git / LSP / 终端等）原本经 `util::command` → cmd-agent → OpenEuler VM 执行。这引入 20s 阻塞握手、VM 依赖、路径映射等一堆代价。
+HiCodeer 在 OHOS 上因沙箱禁止 exec 外部 ELF，所有子进程命令（LSP / 终端等）原本经
+`util::command` → 远程 VM 执行。这引入 20s 阻塞握手、VM 依赖、路径映射等一堆代价。
 
 **目标**：把 **git、ssh、curl** 做成 **private 类型 HNP**（HarmonyOS Native Package）内嵌 HAP，安装后 `util::command` 在 OHOS 上**直接本地 fork+exec** 本机 hnp 二进制，不再转发 VM。
 
@@ -94,7 +108,8 @@ pub fn init_local_tools() {
 
 `hap/build-profile.json5`：default product **移除 `signingConfig: "default"`**（签名全部交脚本，不再用 build-profile material，避开 /storage 不存在路径与加密串密码问题）。`hap/cerfile` 的 p12/cer/p7b **用验证可装的那套覆盖**（github zcoder 同源，sha 一致）。
 
-`hap/entry/src/main/module.json5`：`hnpPackages` 声明 `git.hnp` / `openssh.hnp` / `curl.hnp`（均 private）。
+`hap/entry/src/main/module.json5`：`hnpPackages` 声明 `git.hnp`（private）。
+（当时的方案是同时声明 `git.hnp` / `openssh.hnp` / `curl.hnp` 三个 private 包；现状见文首现状核对。）
 
 ## 5. 修改文件
 
@@ -110,8 +125,9 @@ pub fn init_local_tools() {
 
 ## 6. 验证
 
-- `./script/bundle-ohos` 无 env 单命令跑通：Rust 编译 → hvigor unsigned assembleHap → 注入 3 hnp（git/openssh/curl）→ sign-app success。
-- 产物 `entry-default-signed.hap` 含 `hnp/arm64-v8a/{git,openssh,curl}.hnp`，**不含** `resources/resfile/curl`。
+- `./script/bundle-ohos` 无 env 单命令跑通：Rust 编译 → hvigor unsigned assembleHap → 注入 HNP → sign-app success。
+- 产物 `entry-default-signed.hap` 含模块 `hnpPackages` 声明的那几个包（当时是 `{git,openssh,curl}`，
+  现状是 `{git,hicodeerd}`），**不含** `resources/resfile/curl`。
 - `hdc install -r` 成功（install bundle successfully）。
 - 启动日志预期：`init_local_tools: 3 on-device tool(s)` + `[diag] local tool {git,ssh,curl} -> /data/app/bin/…`；终端 `ssh -V` / `curl -I https://…`（CA 走 `SSL_CERT_FILE=resfile/ca-bundle.crt`）/ `git --version` 均本地、无 LD_LIBRARY_PATH 注入。
 
