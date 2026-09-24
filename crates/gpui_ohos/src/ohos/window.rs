@@ -1541,6 +1541,10 @@ impl OhosWindow {
             }
             Event::GainedFocus => {
                 self.active.set(true);
+                // The system drops the bound IME session while the window is away,
+                // so the last decision no longer holds; clear it to force the next
+                // frame to re-evaluate and re-attach.
+                self.ime_enabled.set(None);
                 let mut callback = self.callbacks.borrow_mut().active_status_change.take();
                 if let Some(ref mut cb) = callback {
                     cb(true);
